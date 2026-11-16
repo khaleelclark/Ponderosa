@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {AgentStore,CoordinationV3Store,BranchStore} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store,BranchStore,readBranchRunCounts} from '@ponderosa/agents';
 import {branchOperationalSummary} from '../../apps/server/dist/branch-operations.js';
 import {previewBranchExecutionActions} from '../../apps/server/dist/branch-detail-preview.js';
 import {registerBranchRoutes} from '../../apps/server/dist/routes/branches.js';
@@ -70,7 +70,7 @@ test('an answered Request keeps its exact provider retry visible without claimin
  assert.equal(retry.changes,1);
  const summary=await f.summary();assert.equal(summary.state,'retrying');assert.equal(summary.counts.running,0);
  assert.equal(summary.agentWaits[0].state,'provider_retry');assert.equal(summary.agentWaits[0].nextRetryAt,due);
- assert.deepEqual(f.branches.listBranches().find(branch=>branch.id===f.execution.branchId).runCounts,{running:0,waiting:1,queued:0});
+ assert.deepEqual(f.branches.listBranches().find(branch=>branch.id===f.execution.branchId).runCounts,{running:0,waiting:1,queued:0,retrying:0,stopping:0,needsAttention:0});
  f.pass();
 });
 
@@ -143,6 +143,103 @@ test('focused Run actions preserve exact uncertain Request ownership and existin
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);f.pass();
 });
 
+test('Pinecone regression: explicit Skip of an outcome_unknown execution holds until the exact Run exit is observed, then skips and preserves the unknown result',t=>{
+ const f=fixture(t);f.branches.advance();const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const lease=f.coordination.leaseNextRun({workerId:'lost-worker'});f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ const commit=(kind,identity,value)=>{const json=JSON.stringify(value);f.store.sqlite.prepare('INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)').run(kind,identity,json,json,'test')};
+ commit('provider-process-registration','lifetime:reg',{schema:'provider-process-registration.v1',authorityId:'lifetime',runId:lease.runId,runFence:lease.fencingToken,agentId:f.agent.id});
+ f.coordination.recoverOrphanedRuns('restarted-worker');
+ assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(lease.runId).status,'outcome_unknown');
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(attempt.requestId).state,'outcome_unknown');
+ f.branches.advance();
+ const skip=()=>f.branches.intervene(f.execution.id,{commandKey:'skip',expectedRevision:f.branches.execution(f.execution.id).revision,action:'skip',reason:'Skipped by user'});
+ skip();for(let i=0;i<3;i++)f.branches.advance();
+ assert.equal(f.branches.execution(f.execution.id).state,'waiting','an unobserved provider lifetime keeps the Skip held');
+ commit('provider-process-exit','lifetime',{schema:'provider-process-exit.v1',authorityId:'lifetime',result:'observed_exited',observation:'os-not-alive'});
+ f.branches.advance();
+ const detail=f.branches.detail(f.execution.id);
+ assert.equal(detail.execution.state,'skipped');
+ assert.equal(detail.attempts[0].state,'canceled');assert.match(detail.attempts[0].error,/remains unknown/);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(attempt.requestId).state,'outcome_unknown');
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='agent_cleanup_observed'").get(f.execution.id).n,1);
+ f.pass();
+});
+test('UI030: Skip after a started-but-never-injected Run settles only when no provider start was ever admitted for that exact Run',t=>{
+ for(const admitted of [false,true]){
+  const f=fixture(t);f.branches.advance();
+  const lease=f.coordination.leaseNextRun({workerId:'lost-worker'});f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+  if(admitted){const v=JSON.stringify({schema:'provider-start-admission.v1',identity:'start',runId:lease.runId,runFence:lease.fencingToken,agentId:f.agent.id});
+   f.store.sqlite.prepare("INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES('provider-start-admission','start',?,?,'test')").run(v,v);}
+  f.coordination.recoverOrphanedRuns('restarted-worker');
+  const run=f.store.sqlite.prepare('SELECT status,prompt_injection_state FROM scheduler_runs WHERE id=?').get(lease.runId);
+  assert.notEqual(run.status,'running');assert.equal(run.prompt_injection_state,'not_injected');
+  assert.equal(f.coordination.canRetryUninjectedRun(lease.runId),false,'the strict replay guard stays unchanged');
+  f.branches.advance();
+  f.branches.intervene(f.execution.id,{commandKey:'skip',expectedRevision:f.branches.execution(f.execution.id).revision,action:'skip',reason:'Skipped by user'});
+  for(let i=0;i<3;i++)f.branches.advance();
+  assert.equal(f.branches.execution(f.execution.id).state,admitted?'waiting':'skipped',admitted?'an admitted start without settlement stays held':'nothing could have started');
+  if(admitted)assert.equal(f.branches.detail(f.execution.id).execution.effectiveStatus,'needs_attention','an unsettled start nothing can observe is Needs Attention, not Stopping forever');
+  f.pass();
+ }
+});
+test('UI031: a Run that finishes without its Branch Request result gets bounded result-only redelivery, never new work',t=>{
+ for(const reports of [true,false]){
+  const f=fixture(t);f.branches.advance();const requestId=f.branches.detail(f.execution.id).attempts[0].requestId;
+  const finish=()=>{const lease=f.coordination.leaseNextRun({workerId:'worker'});assert.ok(lease,'the Request is delivered again');f.coordination.markRunStarted(lease.runId,lease.fencingToken);f.coordination.preparePromptInjection({...lease,prompt:'input'});f.coordination.markPromptSubmitted(lease);f.coordination.acknowledgePromptInjection(lease);return lease};
+  const request=()=>f.store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state;
+  const repairs=()=>f.store.sqlite.prepare("SELECT json_extract(a.payload_json,'$.resultRepair.attempt') attempt FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id WHERE s.source_kind='request' AND s.source_id=? AND json_extract(a.payload_json,'$.resultRepair.sourceRunId') IS NOT NULL ORDER BY a.rowid").all(requestId).map(r=>r.attempt);
+  let lease=finish();f.coordination.completeRun(lease.runId,lease.fencingToken);
+  assert.notEqual(request(),'outcome_unknown');assert.deepEqual(repairs(),[1]);
+  lease=finish();
+  if(reports){
+   f.coordination.updateRequest({requestId,updateId:'repaired',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Findings'}});
+   f.coordination.completeRun(lease.runId,lease.fencingToken);f.branches.advance();
+   assert.equal(f.branches.execution(f.execution.id).state,'completed');assert.deepEqual(repairs(),[1]);
+  }else{
+   f.coordination.completeRun(lease.runId,lease.fencingToken);assert.deepEqual(repairs(),[1,2]);
+   lease=finish();f.coordination.completeRun(lease.runId,lease.fencingToken);
+   assert.equal(request(),'outcome_unknown','repair is bounded');assert.deepEqual(repairs(),[1,2]);
+   assert.equal(f.coordination.leaseNextRun({workerId:'worker'}),undefined,'nothing is replayed after exhaustion');
+  }
+  f.pass();
+ }
+});
+test('UI031: header counts, history filter, row and detail share one status; an unknown result outranks a stale retry and Skip reads as Stopping',async t=>{
+ const f=fixture(t);f.branches.advance();const requestId=f.branches.detail(f.execution.id).attempts[0].requestId;
+ const lease=f.coordination.leaseNextRun({workerId:'lost-worker'});f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'input'});f.coordination.markPromptSubmitted(lease);
+ f.coordination.recoverOrphanedRuns('restarted-worker');f.branches.advance();
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending',available_at='2999-01-01T00:00:00.000Z' WHERE id IN(SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?)").run(requestId);
+ const agree=async expected=>{
+  const id=f.execution.id,branchId=f.branches.execution(id).branchId,counts=readBranchRunCounts(f.store.sqlite,[branchId]).get(branchId);
+  assert.equal(counts[expected==='needs_attention'?'needsAttention':expected],1,JSON.stringify(counts));
+  assert.equal(Object.entries(counts).reduce((n,[,v])=>n+v,0),1,'exactly one bucket');
+  assert.deepEqual(f.branches.listExecutions(branchId,undefined,expected).map(run=>run.id),[id]);
+  for(const other of ['queued','running','waiting','retrying','stopping','needs_attention'].filter(s=>s!==expected))assert.deepEqual(f.branches.listExecutions(branchId,undefined,other),[]);
+  assert.equal(f.branches.listExecutions(branchId)[0].effectiveStatus,expected);assert.equal(f.branches.detail(id).execution.effectiveStatus,expected);
+ };
+ await agree('needs_attention');
+ const summary=await f.summary();assert.equal(summary.state,'needs_reconciliation');assert.ok(summary.agentWaits.every(wait=>!wait.nextRetryAt&&wait.state==='needs_reconciliation'),JSON.stringify(summary.agentWaits));
+ f.branches.intervene(f.execution.id,{commandKey:'skip',expectedRevision:f.branches.execution(f.execution.id).revision,action:'skip',reason:'Skipped by user'});
+ await agree('needs_attention');
+ assert.match(f.branches.detail(f.execution.id).execution.stopping.blocked,/cannot finish stopping automatically/,'an injected Run with no lifetime evidence cannot be observed');
+ const registration=JSON.stringify({schema:'provider-process-registration.v1',authorityId:'lifetime',runId:lease.runId,runFence:lease.fencingToken,agentId:f.agent.id});
+ f.store.sqlite.prepare("INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES('provider-process-registration','lifetime:reg',?,?,'test')").run(registration,registration);
+ f.store.sqlite.prepare("INSERT INTO provider_process_authority(id,worker_id,purpose,project_id,agent_id,run_id,pid,pgid,birth_marker,created_at) VALUES('lifetime','worker','provider',?,?,?,1,1,'birth',?)").run(f.project.id,f.agent.id,lease.runId,new Date().toISOString());
+ await agree('stopping');assert.equal(f.branches.detail(f.execution.id).execution.stopping.blocked,undefined,'a live tracked lifetime can still be observed exiting');
+ f.pass();
+});
+test('UI031: a Branch Request parked on its Join is not woken for result repair before the Join resolves',t=>{
+ const f=fixture(t,1);f.branches.advance();const requestId=f.branches.detail(f.execution.id).attempts[0].requestId;
+ const lease=f.coordination.leaseNextRun({workerId:'worker'});f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'input'});f.coordination.markPromptSubmitted(lease);f.coordination.acknowledgePromptInjection(lease);
+ f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.agent.id,actorScope:'controlled-fixture',idempotencyKey:'fan-out',
+  requests:[{recipientAgentId:f.other.id,lifetime:{kind:'indefinite'},payload:{text:'Child task'}}],join:{mode:'all',wakePolicy:'each_result',continuationRequestIds:[requestId]}});
+ f.coordination.completeRun(lease.runId,lease.fencingToken);
+ assert.notEqual(f.store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state,'outcome_unknown');
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE json_extract(payload_json,'$.resultRepair.sourceRunId') IS NOT NULL").get().n,0,'the parked continuation keeps waiting for its Join');
+ f.pass();
+});
 test('focused Run failure evidence survives the latest-history window, uses bounded previews and retains exact full evidence',async t=>{
  const f=fixture(t),values=Array.from({length:112},(_,i)=>`Full input ${i} `+(i===0?'🌲'.repeat(500):''));
  const definition={schema:'ponderosa.branch.v1',name:'Older failure',trigger:{kind:'manual'},entry:'map',steps:[{id:'script',kind:'script',label:'Transform item',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:1000}],

@@ -127,3 +127,43 @@ export async function workspaceFreshnessMountedRegression(): Promise<void> {
     time.restore(); host.remove();
   }
 }
+
+// UI037: freshness is per resource. A slow Agent Directory refresh and a tab resume on a
+// healthy stream never make a confirmed Agent status read as reconnecting or unconfirmed.
+export async function workspacePerResourceFreshnessRegression(): Promise<void> {
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host), client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+  const savedSubscribe = api.subscribeWorkspace, visibilityDescriptor = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+  const time = clock(); let visibility = 'visible', handlers!: WorkspaceStreamHandlers, connection!: WorkspaceConnectionState, releaseDirectory: (() => void) | undefined;
+  const statuses: string[] = [], waiting: Array<() => void> = []; let held = true;
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+  api.subscribeWorkspace = (_cursor, next) => { handlers = next; return { close() {} }; };
+  function Fixture() {
+    useQuery({ queryKey: queryKeys.agents.health('a'), initialData: [], queryFn: async () => [] });
+    useQuery({ queryKey: [...queryKeys.workspaceDirectory.kind('agent'), 'slow'], initialData: [], queryFn: () => held ? new Promise<never[]>(resolve => { waiting.push(() => resolve([])); releaseDirectory = () => { held = false; waiting.splice(0).forEach(run => run()); }; }) : Promise.resolve([]) });
+    connection = useWorkspaceStream(); statuses.push(connection.status);
+    return <WorkspaceConnectionNotice connection={connection} hasSavedData />;
+  }
+  const notice = () => [...host.querySelectorAll('button')].find(button => /Reconnecting|Offline|Delayed/.test(button.textContent ?? ''))?.textContent;
+  const agentFresh = () => connection.phaseEvidenceFresh || (connection.stalePhaseResources !== undefined && !connection.stalePhaseResources.includes('Agent Statuses'));
+  try {
+    localStorage.removeItem('ponderosa.workspace.cursor.v2'); localStorage.removeItem('ponderosa.workspace.instance.v1');
+    flushSync(() => root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><WorkspaceRefreshProvider><Fixture /></WorkspaceRefreshProvider></QueryClientProvider></ThemeProvider>));
+    await settle(); handlers.onStatus?.({ cursor: 0, instanceId: 'ui037' }); await time.tick(150);
+    assert(releaseDirectory, 'directory refresh is held in flight');
+    assert(connection.status === 'live', 'a caught-up stream is live while a slow directory still refreshes');
+    assert(connection.stalePhaseResources?.join() === 'Agent Directory' && agentFresh(), 'only the slow resource is unconfirmed; Agent statuses stay fresh');
+    await time.tick(8_000);
+    assert(connection.status === 'live' && !/Reconnecting|Offline/.test(notice() ?? ''), 'a slow resource never becomes a global reconnect or outage');
+    assert(notice() === 'Agent Directory Delayed', 'one shared indicator names only the delayed resource');
+    statuses.length = 0; visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); await settle();
+    visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange')); await time.tick(150);
+    assert(!statuses.some(status => status !== 'live'), 'tab resume on a connected stream never flashes Reconnecting: ' + statuses.join());
+    releaseDirectory!(); await time.tick(5_000);
+    assert(connection.phaseEvidenceFresh && !connection.stalePhaseResources?.length && !notice(), 'the indicator clears once the resource recovers');
+  } finally {
+    root.unmount(); client.clear(); api.subscribeWorkspace = savedSubscribe;
+    visibilityDescriptor ? Object.defineProperty(document, 'visibilityState', visibilityDescriptor) : Reflect.deleteProperty(document, 'visibilityState');
+    time.restore(); host.remove();
+  }
+}

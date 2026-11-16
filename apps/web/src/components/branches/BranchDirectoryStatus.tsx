@@ -11,7 +11,7 @@ export function BranchDirectoryStatus({branch,delayed=false}:{branch:BranchDto;d
  const mode=branch.triggerId?'Automatic':'Manual';
  const intake=!branch.triggerId?'Manual':state==='unknown'||branch.triggerEnabled===undefined?'Automatic intake unknown':state!=='enabled'||!branch.triggerEnabled?'Automatic intake paused':'Automatic intake on';
  const activity=branchRunStatus(branch.runCounts,delayed);
- const count=branch.runCounts&&activity.compact!=='…'&&activity.compact!=='!'?branch.runCounts.running+branch.runCounts.waiting+branch.runCounts.queued:undefined;
+ const count=activity.total;
  const lines=['Workflow Runs',availability,intake,...activity.lines.slice(1)],detail=lines.join(' · ');
  return <Tooltip title={<>{lines.map(line=><Box key={line}>{line}</Box>)}</>} slotProps={{tooltip:{sx:{maxWidth:'min(280px, calc(100vw - 32px))'}}}}>
   <Box component="span" role="img" aria-label={detail} tabIndex={0} data-sidebar-column="activity" data-branch-availability={state} onContextMenu={event=>event.stopPropagation()}

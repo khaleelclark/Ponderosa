@@ -217,13 +217,18 @@ test('ongoing intake cannot postpone settlement of an earlier Request forever',t
 
 test('provider Run completion is not a Branch handoff',t=>{
  const f=fixture(t),e=f.branches.accept(f.branch.id,'run-only','input');f.branches.advance();
- const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(lease);
- f.coordination.markRunStarted(lease.runId,lease.fencingToken);
- const injection={injectionId:lease.injectionId,runId:lease.runId,fencingToken:lease.fencingToken};
- f.coordination.preparePromptInjection({...injection,prompt:'done'});
- f.coordination.markPromptSubmitted(injection);f.coordination.acknowledgePromptInjection(injection);
- f.coordination.completeRun(lease.runId,lease.fencingToken);
- f.branches.advance();
+ // The original Run plus its two bounded result-only repairs all finish without a result.
+ for(let run=0;run<3;run++){
+  const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(lease,`run ${run}`);
+  f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+  const injection={injectionId:lease.injectionId,runId:lease.runId,fencingToken:lease.fencingToken};
+  f.coordination.preparePromptInjection({...injection,prompt:'done'});
+  f.coordination.markPromptSubmitted(injection);f.coordination.acknowledgePromptInjection(injection);
+  f.coordination.completeRun(lease.runId,lease.fencingToken);
+  f.branches.advance();
+  if(run<2)assert.equal(f.branches.execution(e.id).state,'running');
+ }
+ assert.equal(f.coordination.leaseNextRun({workerId:'provider'}),undefined);
  assert.equal(f.branches.detail(e.id).steps.length,1);
  assert.equal(f.branches.detail(e.id).steps[0].state,'waiting');
  assert.equal(f.branches.execution(e.id).state,'waiting');

@@ -87,6 +87,17 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     if (options.text !== '') await until(() => host.querySelector<HTMLElement>('[aria-label="Message"]')?.textContent?.includes(options.text ?? 'Queued exact') === true, 'Draft insertion settles');
     const editor = host.querySelector<HTMLElement>('[aria-label="Message"]')!; editor.focus(); await settle(); return editor;
   };
+  // UI036: Queue lives only in the Steer button's context menu (right-click, long-press, ContextMenu key, Shift+F10).
+  const steerButton = () => host.querySelector<HTMLButtonElement>('[aria-label="Steer Active Response"]')!;
+  const sendMenu = () => document.querySelector<HTMLElement>('[role="menu"][aria-label="Send Options"]');
+  const openSendMenu = async (how: 'right-click' | 'shift-f10' | 'context-key' | 'long-press') => {
+    await until(() => !sendMenu(), 'Previous Send Options menu closed'); const button = steerButton();
+    if (how === 'right-click') button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+    else if (how === 'long-press') { button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', isPrimary: true })); await new Promise(resolve => setTimeout(resolve, 650)); button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', isPrimary: true })); button.click(); }
+    else { button.focus(); button.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: how === 'context-key' ? 'ContextMenu' : 'F10', shiftKey: how === 'shift-f10' })); }
+    await until(() => Boolean(sendMenu()), 'Send Options opens by ' + how);
+  };
+  const queueViaMenu = async (how: Parameters<typeof openSendMenu>[0] = 'right-click') => { await openSendMenu(how); [...sendMenu()!.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === 'Queue After Active Response')!.click(); await until(() => !sendMenu(), 'Choosing Queue closes the menu'); };
   try {
     let editor = await render({ busy: false }); assert(!host.querySelector('[aria-label="Queue Message"]'), 'Idle has no Queue button');
     await key(editor, true); await until(() => queues.length === 1, 'Idle shortcut invokes existing queue callback');
@@ -106,8 +117,16 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     editor = await render({ busy: true }); failSend = true;
     host.querySelector<HTMLButtonElement>('[aria-label="Steer Active Response"]')!.click(); await until(() => Boolean(host.querySelector('[aria-label="Review Message Error"]')), 'Frozen Send failure retained');
     const sent = sends.length; await key(editor, true); assert(sends.length === sent && queues.length === before && editor.textContent?.includes('Queued exact'), 'Ctrl+Enter cannot retry a frozen Send'); failSend = false;
-    editor = await render({ busy: true }); host.querySelector<HTMLButtonElement>('[aria-label="Queue Message"]')!.click(); await until(() => queues.length === before + 1, 'Existing Queue button remains functional');
-    assert(queues.at(-1)!.text === queues[0].text, 'Button and shortcut use identical queue submission text');
+    editor = await render({ busy: true }); assert(!host.querySelector('[aria-label="Queue Message"]'), 'No separate Queue icon while work is active');
+    for (const how of ['right-click', 'shift-f10', 'context-key', 'long-press'] as const) {
+      const count = queues.length, sent = sends.length; await openSendMenu(how);
+      assert(queues.length === count && sends.length === sent, 'Opening the menu by ' + how + ' never submits');
+      sendMenu()!.closest('.MuiPopover-root')!.querySelector<HTMLElement>('.MuiBackdrop-root')!.click(); await until(() => !sendMenu(), 'Clicking outside closes Send Options');
+      assert(queues.length === count && sends.length === sent && editor.textContent?.includes('Queued exact'), 'Closing the menu changes nothing and keeps the draft');
+    }
+    await queueViaMenu('long-press'); await until(() => queues.length === before + 1, 'Queue from the Steer context menu submits once');
+    await settle(); assert(queues.length === before + 1 && sends.length === sent, 'Exactly one queued intent and no Steer');
+    assert(queues.at(-1)!.text === queues[0].text, 'Menu and shortcut use identical queue submission text');
     for (const text of ['#Queue-Agent /status', '/status with arguments']) {
       editor = await render({ busy: false, text }); const count = queues.length, sent = sends.length, actions = providerActions.length;
       await key(editor, true); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue rejects a runtime action');
@@ -120,7 +139,7 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
       await key(editor, false); await until(() => providerActions.length === actions + 1, 'Ordinary Enter executes the runtime command once when suggestions are closed');
     }
     editor = await render({ busy: true, text: '#Queue-Agent /status' }); const actions = providerActions.length, count = queues.length;
-    host.querySelector<HTMLButtonElement>('[aria-label="Queue Message"]')!.click(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue button uses the same runtime-action validation');
+    await queueViaMenu(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue menu uses the same runtime-action validation');
     assert(providerActions.length === actions && queues.length === count, 'Queue never becomes a provider action');
     for (const text of ['#Queue-Agent /prompt with arguments', '#Queue-Agent /unknown literal']) {
       editor = await render({ busy: false, text }); const before = queues.length; await key(editor, true); await until(() => queues.length === before + 1, 'Prompt commands and unknown slash text retain ordinary queue semantics');

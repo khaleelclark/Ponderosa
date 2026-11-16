@@ -90,6 +90,7 @@ const receipt = extra => ({ activationId: 'delivery-a', targetAgentId: 'agent-a'
 function status(extra, api = {}) {
   const h = hooks(), module = load('components/MessageDeliveryStatus.tsx', {
     react: h.react, '@tanstack/react-query': { useQueryClient: () => client }, '../api': { api }, '../queryKeys': { queryKeys }, '../clientId': { createClientId: () => 'fixture-id' },
+    '../routeRegistry': { routeLinkPath: route => `/workspace/${route.kind}/${route.section}` },
   });
   return () => [...walk(h.render(() => module.MessageDeliveryStatus({ projectId: 'project', receipts: [receipt(extra)], recipientName: () => 'Reader' })))];
 }
@@ -226,11 +227,16 @@ test('UI013 an exact steering wait reason stays visible ahead of generic Waiting
   }
 });
 test('UI013 current queue blockers explain Waiting without borrowing another turn acknowledgement', () => {
-  for (const [reason, label] of Object.entries({ host_resource_pressure: 'Waiting For Host Resources', provider_disabled: 'Provider Disabled', authentication_unknown: 'Checking Provider Sign-In', authentication_required: 'Provider Sign-In Required', provider_unavailable: 'Waiting For Provider', provider_retry: 'Waiting To Retry Provider', current_run: 'Waiting For Current Run' })) {
+  for (const [reason, label] of Object.entries({ host_resource_pressure: 'Waiting For Host Resources', provider_disabled: 'Provider Disabled', authentication_unknown: 'Queued', authentication_required: 'Sign-In Required', provider_unavailable: 'Waiting For Provider', provider_retry: 'Waiting To Retry Provider', current_run: 'Waiting For Current Run' })) {
     const nodes = status({ state: 'queued', queueWaitReason: reason })();
     assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), reason);
     assert.ok(!nodes.some(node => node.type === mui.Typography && text(node) === 'Working'));
   }
+  // UI035: only confirmed invalid sign-in is actionable; a pending shared check stays quiet.
+  const settings = nodes => nodes.filter(node => node.type === mui.Button && text(node) === 'Provider Settings');
+  const required = settings(status({ state: 'queued', queueWaitReason: 'authentication_required' })());
+  assert.equal(required.length, 1); assert.equal(required[0].props.href, '/workspace/settings/providers');
+  assert.equal(settings(status({ state: 'queued', queueWaitReason: 'authentication_unknown' })()).length, 0);
   const terminal = status({ state: 'processed', queueWaitReason: 'host_resource_pressure', steeringWaitReason: 'provider_not_ready' })();
   assert.ok(!terminal.some(node => node.type === mui.Typography && /Waiting/.test(text(node))));
 });

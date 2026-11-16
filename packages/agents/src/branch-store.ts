@@ -32,7 +32,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,replayedTreeCallInput,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptTreeRetryDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
-import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
+import {readBranchRunCounts,readBranchLiveOutputs,readBranchEffectiveStatuses,branchEffectiveStatusPage,runExitUnprovenSql,BRANCH_EFFECTIVE_STATUSES} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
 import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
@@ -52,6 +52,7 @@ import {
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
+  type BranchEffectiveStatus,
 } from "@ponderosa/core";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
 import { branchKey, branchText,branchGateResolutionOutput, validateBranchBindings, validateBranchDefinition } from "./branch-definition.js";
@@ -81,6 +82,7 @@ export class BranchStore {
   private unitGeneration = 0;
   private readonly functionalCursors = new Map<string, {preferAttempt:boolean; path:number}>();
   private advanceCursor = 0;
+  private capacityMemo?: {generation:number; branches:Map<string,string[]>};
   private advanceCeiling = 0;
   private scriptCursor = 0;
   private scriptCeiling = 0;
@@ -2623,7 +2625,7 @@ export class BranchStore {
   execution(id: string): BranchExecutionDto | undefined {
     const r = this.row("SELECT * FROM branch_executions WHERE id = ?", id);
     const origin=r?JSON.parse(r.provenance_json):undefined;
-    return r && { ...(origin?.source==='portable_runtime_data'?{runtimeData:{planId:origin.planId,sourceExecutionId:origin.sourceExecutionId,manifestSha256:origin.manifestSha256,held:true as const,currentAuthority:false as const}}:{}),checkpointInvocation:this.checkpointInvocation(id), id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:origin?.source==='portable_runtime_data'?undefined:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+    return r && { ...(origin?.source==='portable_runtime_data'?{runtimeData:{planId:origin.planId,sourceExecutionId:origin.sourceExecutionId,manifestSha256:origin.manifestSha256,held:true as const,currentAuthority:false as const}}:{}),checkpointInvocation:this.checkpointInvocation(id), id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:origin?.source==='portable_runtime_data'?undefined:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}), ...(r.cancel_requested&&['queued','running','waiting'].includes(r.state)?{stopping:{outcome:r.requested_outcome==='skipped'||r.requested_outcome==='merged'?r.requested_outcome as 'skipped'|'merged':'canceled' as const}}:{}) };
   }
   private scriptEvidence(attemptId:string):import('@ponderosa/core').BranchAttemptDto['scriptEvidence'] {
     const evidence=this.row("SELECT evidence_json FROM branch_checkpoints WHERE kind='script_process_exit' AND transition_key GLOB ? ORDER BY id DESC LIMIT 1",`process-exit:${attemptId}:*`);
@@ -2658,6 +2660,8 @@ export class BranchStore {
   }
   detail(id: string, cursor?: string): BranchExecutionDetailDto | undefined {
     const execution = this.execution(id);if(!execution)return undefined;
+    const status=readBranchEffectiveStatuses(this.sqlite,[id]).get(id);if(status)execution.effectiveStatus=status;
+    if(execution.stopping&&status==='needs_attention')execution.stopping.blocked='A stopped provider process could not be confirmed as exited, so this Run cannot finish stopping automatically. Its earlier work and evidence are kept.';
     const collections=['steps','attempts','resources','paths','gates','decisions','sealedResults','maps','mapItems'] as const;
     let positions:Record<string,number>={};
     if(cursor){
@@ -2887,13 +2891,16 @@ export class BranchStore {
     return {...(branch?{calledBranch:{id:branch.id,name:branch.name,enabled:branch.enabled!==false}}:{}),...(child?{childExecution:{id:child.id,state:child.state,versionId:child.version_id}}:{})};
   }
   listExecutions(branchId: string, beforeId?: string, state?: string, mergeFor?:string): BranchExecutionDto[] {
-    if(state&&!['queued','running','waiting','completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
+    const effective=(BRANCH_EFFECTIVE_STATUSES as readonly string[]).includes(state??'');
+    if(state&&!effective&&!['completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
     if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(state)throw new Error('Merge candidates use their own eligible states');}
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
-    return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
+    const ids=effective?branchEffectiveStatusPage(this.sqlite,branchId,state as BranchEffectiveStatus,before):this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
       (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:state?" AND state = ?":"")+
-      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r => this.execution(r.id)!);
+      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r=>r.id as string);
+    const statuses=readBranchEffectiveStatuses(this.sqlite,ids);
+    return ids.map(id=>{const execution=this.execution(id)!,status=statuses.get(id);return status?{...execution,effectiveStatus:status}:execution;});
   }
   /** Global execution membership is canonical, independent of sidebar pages, search and folders. */
   homeExecutions(input: { activeBefore?: { at: string; id: string }; outcomeBefore?: { at: string; id: string } }) {
@@ -2964,6 +2971,10 @@ export class BranchStore {
       if (!this.row("SELECT 1 FROM branch_executions WHERE id=? AND state IN ('queued','running','waiting')", id)) this.functionalCursors.delete(id);
     }
     this.advanceScheduledChecks(now);
+    this.capacityMemo={generation:this.unitGeneration,branches:new Map()};
+    try { this.advanceExecutions(now); } finally { this.capacityMemo=undefined; }
+  }
+  private advanceExecutions(now:string):void {
     let batch = this.rows("SELECT rowid AS position, id FROM branch_executions WHERE state IN ('queued','running','waiting') AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 100", this.advanceCursor, this.advanceCeiling);
     if (!batch.length) {
       this.advanceCursor = 0;
@@ -3001,6 +3012,8 @@ export class BranchStore {
             if(this.unit?.written.size){this.aggregate(execution.id,now);return;}
           }
           if(this.resumeCheckpointInvocation(execution.id))return;
+          // A full Branch admits no queued sibling either; yield before readiness and FIFO scans.
+          if(execution.state==='queued'&&!this.hasRunnableCapacity(execution.id))return;
           if (!this.functionalReady(execution.id)) return;
           if(execution.state==='queued')execution=this.execution(this.executionBudgets.selectForStart(execution,now,id=>this.hasRunnableCapacity(id)))!;
           if (!this.functionalReady(execution.id)) return;
@@ -3777,6 +3790,14 @@ export class BranchStore {
       const key = `branch-cancel:${attempt.id}:${run.id}`;
       if (['failed', 'cancelled'].includes(run.status) && !cleanupOperation(run.id) &&
           this.coordination.canRetryUninjectedRun(run.id)) continue;
+      // A Run that already left leased/running has no live work to interrupt. Its
+      // owned cleanup is settled only by observed process exits, never by status alone.
+      if (!['leased','running'].includes(run.status) && !cleanupOperation(run.id) && this.runProcessesExited(run)) {
+        const observedKey = `agent-cleanup-observed:${attempt.id}:${run.id}`;
+        if (!this.row('SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND transition_key=?', attempt.execution_id, observedKey))
+          this.checkpoint(attempt.execution_id, observedKey, 'agent_cleanup_observed', { attemptId: attempt.id, requestId: request.id, requestState: request.state, runId: run.id, runStatus: run.status, fence: run.fencing_token }, now);
+        continue;
+      }
       const attached = this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
         SELECT activation.id, source.source_kind, source.source_id, lineage.request_id
         FROM scheduler_run_activations attached
@@ -3836,6 +3857,10 @@ export class BranchStore {
     }
     return settled;
   }
+  /** Run-scoped exit proof shared with the Stopping/Needs Attention classification. */
+  private runProcessesExited(run: Row): boolean {
+    return !this.row(`SELECT 1 WHERE ${runExitUnprovenSql(':run',':injection')}`, { run: run.id, injection: run.prompt_injection_state });
+  }
   private cancelPath(pathId: string, now: string): void {
     const paths = this.rows(`WITH RECURSIVE owned(id) AS (SELECT ? UNION ALL SELECT p.id FROM branch_paths p JOIN owned o ON p.parent_path_id = o.id)
       SELECT p.* FROM branch_paths p JOIN owned o ON o.id = p.id WHERE p.state IN ('active','waiting','joining','canceling')`, pathId);
@@ -3857,7 +3882,8 @@ export class BranchStore {
         }
         if (a.request_id) {
           const settled = this.settleCanceledAgentAttempt({ ...a, execution_id: path.execution_id }, now);
-          this.run("UPDATE branch_attempts SET state=?,error=?,updated_at=? WHERE id=?", settled ? 'canceled' : 'outcome_unknown', settled ? null : 'Cancellation awaiting exact Run settlement or cleanup; shared or uncertain work is retained for reconciliation', now, a.id);
+          const unknown = this.row("SELECT 1 FROM coordination_requests WHERE id=? AND state='outcome_unknown'", a.request_id);
+          this.run("UPDATE branch_attempts SET state=?,error=?,updated_at=? WHERE id=?", settled ? 'canceled' : 'outcome_unknown', settled ? (unknown ? 'Ended by user after cleanup was observed; the original provider result remains unknown and is preserved for review.' : null) : 'Cancellation awaiting exact Run settlement or cleanup; shared or uncertain work is retained for reconciliation', now, a.id);
         }
       }
       const pending = this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id = a.step_execution_id WHERE s.path_id = ? AND a.state = 'outcome_unknown'", path.id);
@@ -4211,13 +4237,21 @@ export class BranchStore {
   }
   /** Waiting parents do not reserve provider or Script capacity. */
   private hasRunnableCapacity(executionId:string,validateInventory=false):boolean {
-    const e=this.execution(executionId)!;
-    const active=this.rows(`${REQUEST_SOURCE_LINEAGE_CTE} SELECT DISTINCT e.id FROM branch_executions e JOIN branch_step_executions s ON s.execution_id=e.id JOIN branch_attempts a ON a.step_execution_id=s.id
+    const e=this.execution(executionId)!, active=this.activeExecutionIds(e.branchId);
+    return validateInventory?active.length<=this.definition(e).policy.maxConcurrentExecutions:active.includes(executionId)||active.length<this.definition(e).policy.maxConcurrentExecutions;
+  }
+  /** One reducer pass reuses a Branch's occupancy until any committed or pending unit write can change it. */
+  private activeExecutionIds(branchId:string):string[] {
+    const memo=this.capacityMemo, cacheable=Boolean(memo&&!this.unit?.written.size);
+    if(cacheable&&memo!.generation!==this.unitGeneration){memo!.generation=this.unitGeneration;memo!.branches.clear();}
+    const cached=cacheable?memo!.branches.get(branchId):undefined;if(cached)return cached;
+    const ids=this.rows(`${REQUEST_SOURCE_LINEAGE_CTE} SELECT DISTINCT e.id FROM branch_executions e JOIN branch_step_executions s ON s.execution_id=e.id JOIN branch_attempts a ON a.step_execution_id=s.id
       WHERE e.branch_id=? AND e.cancel_requested=0 AND (a.state IN ('leased','running') OR EXISTS(
         SELECT 1 FROM coordination_requests q JOIN request_source_lineage source ON source.request_id=q.id
         JOIN agent_activations activation ON activation.id=source.activation_id
-        WHERE q.id=a.request_id AND q.state IN ('open','in_progress') AND activation.state IN ('pending','attached','retry_pending')))`,e.branchId);
-    return validateInventory?active.length<=this.definition(e).policy.maxConcurrentExecutions:active.some(r=>r.id===executionId)||active.length<this.definition(e).policy.maxConcurrentExecutions;
+        WHERE q.id=a.request_id AND q.state IN ('open','in_progress') AND activation.state IN ('pending','attached','retry_pending')))`,branchId).map(r=>r.id as string);
+    if(cacheable)memo!.branches.set(branchId,ids);
+    return ids;
   }
   private advanceCall(execution:BranchExecutionDto,attempt:Row,step:Extract<BranchDefinition['steps'][number],{kind:'branch_call'}>,now:string):void {
     let child=this.row("SELECT * FROM branch_executions WHERE parent_attempt_id=?",attempt.id);

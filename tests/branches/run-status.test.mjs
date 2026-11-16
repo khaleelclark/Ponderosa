@@ -15,7 +15,7 @@ function fixture(t,{script=false,parallel=false,action=false,freshArm=false}={})
  let passed=false;t.after(()=>{store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained count fixture: '+root)});
  return {store,coordination,branches,project,chat,agent,branch,execution,counts:()=>readBranchRunCounts(store.sqlite,[branch.id]).get(branch.id),working:()=>readBranchWorkingStepCount(store.sqlite,execution.id),pass(){passed=true}};
 }
-const expected=(running,waiting,queued)=>({running,waiting,queued});
+const expected=(running,waiting,queued,more={})=>({running,waiting,queued,retrying:0,stopping:0,needsAttention:0,...more});
 
 test('counts require exact started scheduler authority and distinguish accepted, waiting and running workflow Runs',t=>{
  const f=fixture(t);assert.deepEqual(f.counts(),expected(0,0,1));f.branches.advance();assert.deepEqual(f.counts(),expected(0,1,0));
@@ -61,7 +61,7 @@ test('a parallel approval cannot hide a current working Script; queued leases an
  assert.equal(f.branches.claimScript('fresh-arm'),undefined,'An open gate refuses new Script arms');
  assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
  const expired=new Date(Date.now()+60000).toISOString();assert.deepEqual(readBranchRunCounts(f.store.sqlite,[f.branch.id],expired).get(f.branch.id),expected(0,1,0));
- f.branches.scriptCleanupFailed(lease.attemptId,'Controlled uncertain outcome');assert.deepEqual(f.counts(),expected(0,1,0));f.pass();
+ f.branches.scriptCleanupFailed(lease.attemptId,'Controlled uncertain outcome');assert.deepEqual(f.counts(),expected(0,0,0,{needsAttention:1}),'an uncertain outcome is never an ordinary wait');f.pass();
 });
 
 test('notification delivery owns a live Step lease and cancellation removes its work authority without losing Pending',t=>{

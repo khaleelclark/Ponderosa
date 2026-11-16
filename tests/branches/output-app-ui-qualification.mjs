@@ -74,7 +74,7 @@ try{
   await viewer.screenshot({path:path.join(out,entry==='/assistant'?'assistant-file.png':'output-file.png'),fullPage:true});await viewer.close();
  }
  await page.goto(origin+'/assistant');await page.getByRole('textbox').first().waitFor();
- await page.getByText(/Idle · Live/).first().waitFor();
+ await page.getByText(/^Idle$/).first().waitFor();
  await page.screenshot({path:path.join(out,'assistant-desktop.png'),fullPage:true});
  await page.getByRole('button',{name:'Settings',exact:true}).first().click();
  await page.getByLabel('Check Every (Minutes)').fill('20');await Promise.all([page.waitForResponse(response=>response.url().endsWith('/schedule')&&response.status()===200),page.getByRole('button',{name:'Save Schedule',exact:true}).click()]);
@@ -87,7 +87,7 @@ try{
  for(const width of [320,390]){
   await page.setViewportSize({width,height:844});
   const state=page.getByRole('button',{name:/idle.*live/i});await state.waitFor();
-  assert.match(await state.innerText(),/Idle · Live/,'mobile status is visible as text');
+  assert.match(await state.innerText(),/Idle/,'mobile status is visible as text');
   const box=await state.boundingBox();assert(box && box.x>=0 && box.x+box.width<=width && box.height>=44,'status is visible within the viewport and touch-sized');
   await state.tap();const detail=page.getByRole('status').filter({hasText:/idle.*live/i});await detail.waitFor();
   await page.screenshot({path:path.join(out,'status-phone-'+width+'.png')});

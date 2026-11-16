@@ -13,8 +13,8 @@ const presentation=await import('../../apps/web/src/components/branches/executio
 const {previewBranchExecutionActions}=await import('../../apps/server/src/branch-detail-preview.ts');
 const source=await readFile(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8');
 
-function fixture({actions=[],state='waiting',output='Result with the complete original wording.\nSecond line.',savedView,operationsState='waiting_human'}={}){
- const execution={id:'run-a',branchId:'branch-a',versionId:'saved-version',bindingRevisionId:'binding',occurrenceKey:'manual-intent',input:'Original input',inputHash:'input-hash',state,revision:7,createdAt:'2026-10-26T12:00:00Z',updatedAt:'2026-10-26T12:01:00Z',output,admissionSource:'manual'};
+function fixture({actions=[],state='waiting',output='Result with the complete original wording.\nSecond line.',savedView,operationsState='waiting_human',executionPatch={}}={}){
+ const execution={...executionPatch,id:'run-a',branchId:'branch-a',versionId:'saved-version',bindingRevisionId:'binding',occurrenceKey:'manual-intent',input:'Original input',inputHash:'input-hash',state,revision:7,createdAt:'2026-10-26T12:00:00Z',updatedAt:'2026-10-26T12:01:00Z',output,admissionSource:'manual'};
  const step={id:'recent-step',executionId:execution.id,stepId:'review',pathId:'recent-path',invocation:1,state:'completed',input:'Step input'};
  const detail={execution,steps:[step],attempts:[],gates:[],paths:[],resources:[],decisions:[],waits:[]};
  const operations={executionId:execution.id,state:operationsState,label:'Needs Your Review',observedAt:execution.updatedAt,counts:{completed:1,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0};
@@ -56,6 +56,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='./model')return {currentFailedInvocations:()=>[],nodeName:node=>node.label??node.id};
   if(name==='../SemanticStatus')return {SemanticStatus:props=>React.createElement('span',{'data-status':props.status},props.label)};
   if(name==='./executionPresentation')return presentation;
+  if(name==='./branchRunStatus')return {branchExecutionStatus:run=>{const value=run.effectiveStatus??run.state;return {status:value,label:value.split('_').map(word=>word[0].toUpperCase()+word.slice(1)).join(' ')}}};
   throw Error('Unexpected dependency '+name);
  }};
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{...scope,require:name=>name==='react/jsx-runtime'?require('react/jsx-runtime'):scope.require(name)});
@@ -68,7 +69,7 @@ function olderAttempt({unknown=false,current=true,blocked=false}={}){
  return {kind:'attempt',step,current,attempt:{id:'old-attempt',stepExecutionId:step.id,number:2,state:unknown?'outcome_unknown':'failed',fence:1,error:'Original failure summary',...(blocked?{retryBlockedReason:'Path already advanced'}:{})}};
 }
 
-test('selected run keeps canonical status, results and all focused decisions outside one collapsed Technical Details',()=>{
+test('selected run keeps canonical status, results and all focused decisions outside one collapsed Technical Details, with advanced reviews inside it',()=>{
  const old=olderAttempt({unknown:true}),gate={kind:'gate',step:old.step,gate:{id:'gate-a',stepExecutionId:old.step.id,revision:4,state:'waiting',purpose:'approval',prompt:'Approve the original result?',proposal:'Exact proposed result',editable:false}};
  const f=fixture({actions:[gate,old]});
  const html=f.render();
@@ -77,11 +78,24 @@ test('selected run keeps canonical status, results and all focused decisions out
  assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each Items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
  assert.ok(f.queries.get('branch-execution-actions'));assert.ok(f.queries.get('branch-execution-operations'));
+ assert.deepEqual(f.reviewChildren,[],'UI032: advanced review launchers stay unmounted until Technical Details opens');
+ assert.ok(f.button('Retry Anyway'));assert.ok(f.button('Mark Observed Result'));
+ f.disclosures[0].onToggle({currentTarget:{open:true}});f.render();
  assert.deepEqual(f.reviewChildren.map(child=>child.name),['BranchHistoryReview','BranchGroupReview','BranchDisclosureReview']);
  assert.ok(f.reviewChildren.every(child=>child.props.enabled===true),'Fresh live Run passes authority to each review surface');
- assert.ok(f.button('Retry Anyway'));assert.ok(f.button('Mark Observed Result'));
 });
 
+test('UI030: an accepted Skip shows one Stopping status, no Cancel or step decisions, and Needs Attention only when cleanup truly cannot finish',()=>{
+ for(const blocked of [undefined,'A stopped provider process could not be confirmed as exited.']){
+  const f=fixture({actions:[olderAttempt({unknown:true})],executionPatch:{stopping:{outcome:'skipped',...(blocked?{blocked}:{})},effectiveStatus:blocked?'needs_attention':'stopping'}});
+  const html=f.render().replace(/<style[^>]*>[\s\S]*?<\/style>/g,'');
+  assert.match(html,blocked?/data-status="needs_attention">Needs Attention</:/data-status="stopping">Stopping</);
+  assert.match(html,blocked?/could not be confirmed as exited/:/Skip accepted.*Skipped automatically/);
+  for(const label of ['Cancel Run','Skip Run','Merge Into Another Run','Retry Anyway','Mark Observed Result'])assert.equal(buttonOrUndefined(f,label),undefined,label+' is refused while stopping');
+  assert.doesNotMatch(html,/Needs Your Review/,'operations explanations do not compete with the stop status');
+ }
+});
+const buttonOrUndefined=(f,label)=>{try{return f.button(label)}catch{return undefined}};
 test('Inspect Details opens and focuses the exact older invocation and enables its existing evidence query',()=>{
  const f=fixture({actions:[olderAttempt({unknown:true})]});f.render();f.button('Inspect Details').onClick();const html=f.render();
  assert.equal(f.disclosures[0].open,true);assert.match(html,/Pinned Run Graph And Accessible Outline/);assert.match(html,/Load Older Evidence/);assert.match(html,/Run ID: run-a/);assert.match(html,/branch-step-older-step/);

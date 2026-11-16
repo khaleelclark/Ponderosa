@@ -4,7 +4,8 @@ import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import {Alert,Box,Button,List,ListItemButton,MenuItem,Skeleton,Stack,TextField,Typography} from '@mui/material';
 import {notificationPreviewText,type BranchExecutionDto} from '@ponderosa/core';
-import {SemanticStatus,semanticAgentStatus} from '../SemanticStatus';
+import {SemanticStatus} from '../SemanticStatus';
+import {BRANCH_STATUS_FILTERS,branchExecutionStatus} from './branchRunStatus';
 
 const desktopLayout='@container branch-runs (min-width: 48rem)';
 function runPreview(run:BranchExecutionDto):string|undefined {
@@ -22,7 +23,7 @@ function runPreview(run:BranchExecutionDto):string|undefined {
  }
 }
 
-/** History uses recorded Run state. The selected Run's operations owner supplies its current explanation. */
+/** History rows, filters and header counts share the server's effective-status projection. */
 export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,onSelect,loading,error,onRetry,read,hasMore,loadingMore,onMore,triggerEvents,children,active=true}:{
  read?:WorkspaceReadIssue;
  runs:readonly BranchExecutionDto[];selectedId:string;selectedRun?:BranchExecutionDto;filter?:string;
@@ -57,7 +58,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
   <Stack spacing={0.75} sx={{minWidth:0,width:'100%'}}>
    <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.createdAt).toLocaleString()}</Typography>
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{alignItems:'center'}}>
-    <SemanticStatus status={run.state==='queued'?'waiting':semanticAgentStatus(run.state)} label={run.state==='canceled'?'Canceled':run.state[0]!.toUpperCase()+run.state.slice(1)}/>
+    <SemanticStatus {...branchExecutionStatus(run)}/>
     <Typography variant="caption" color="text.secondary">{run.admissionSource==='manual'?'Manual Run':run.admissionSource==='automatic'?'Automatic Run':run.admissionSource==='call'?'Called by Workflow':'Workflow Run'}</Typography>
    </Stack>
    {preview&&<Typography variant="body2" color="text.secondary" sx={{display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',overflowWrap:'anywhere'}}>{preview}</Typography>}
@@ -70,7 +71,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
     <Stack spacing={1.5}>
      <Typography variant="h6">Run History</Typography>
      <TextField select size="small" label="Filter Runs" value={filter??''} onChange={event=>onFilter(event.target.value)}>
-      <MenuItem value="">All Runs</MenuItem>{['queued','running','waiting','completed','failed','canceled','skipped','merged'].map(state=><MenuItem key={state} value={state}>{state[0]!.toUpperCase()+state.slice(1)}</MenuItem>)}
+      <MenuItem value="">All Runs</MenuItem>{BRANCH_STATUS_FILTERS.map(item=><MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
      </TextField>
      {triggerEvents}
      {read?<WorkspaceQueryError active={active} read={read}/>:error&&<Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Run history unavailable. {error.message}</Alert>}

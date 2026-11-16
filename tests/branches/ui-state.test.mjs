@@ -853,22 +853,22 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
  const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderBranchHeader({...props,...extra});
- for(const [extra,label] of [[{runCounts:{running:0,waiting:0,queued:0}},'0 Running'],[{runCounts:{running:4,waiting:1,queued:2}},'4 Running · 3 Pending'],[{},'Run status loading…'],[{executionsUnavailable:true},'Run status unavailable']]){
+ for(const [extra,label] of [[{runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0}},'0 Running'],[{runCounts:{running:4,waiting:1,queued:2,retrying:0,stopping:0,needsAttention:0}},'4 Running · 2 Queued · 1 Waiting'],[{},'Run status loading…'],[{executionsUnavailable:true},'Run status unavailable']]){
   const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('0 Running'),'An unavailable count is not confirmed idle');
  }
- const nested=renderBranchHeader({...props,tab:'chats',runCounts:{running:4,waiting:1,queued:2}});
- assert.ok(nested.includes('4 Running · 3 Pending'),'The retained outer Branch header keeps its own execution status in Chats');
+ const nested=renderBranchHeader({...props,tab:'chats',runCounts:{running:4,waiting:1,queued:2,retrying:0,stopping:0,needsAttention:0}});
+ assert.ok(nested.includes('4 Running · 2 Queued · 1 Waiting'),'The retained outer Branch header keeps its own execution status in Chats');
 });
 
 
 test('workflow directory status keeps availability, trigger intake and active work independent',async()=>{
  const {BranchDirectoryStatus}=await import('../../apps/web/src/components/branches/BranchDirectoryStatus.tsx');
- const branch={id:'stable-id',name:'Full workflow name',versionId:'published',enabled:true,activeExecutions:0,runCounts:{running:0,waiting:0,queued:0}};
+ const branch={id:'stable-id',name:'Full workflow name',versionId:'published',enabled:true,activeExecutions:0,runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0}};
  const render=(patch={},delayed=false)=>renderToStaticMarkup(React.createElement(BranchDirectoryStatus,{branch:{...branch,...patch},delayed}));
- const enabled=render();assert.ok(enabled.includes('aria-label="Workflow Runs · Enabled · Manual · Running: 0 · Waiting: 0 · Queued: 0"'));assert.ok(enabled.includes('data-branch-availability="enabled"'));
- const paused=render({enabled:false,triggerId:'trigger',triggerEnabled:true,activeExecutions:3,runCounts:{running:1,waiting:1,queued:1}});assert.ok(paused.includes('aria-label="Workflow Runs · Paused · Automatic intake paused · Running: 1 · Waiting: 1 · Queued: 1"'));assert.ok(paused.includes('data-branch-availability="paused"'));assert.ok(paused.includes('Automatic'));
- assert.ok(render({triggerId:'trigger',triggerEnabled:true}).includes('Workflow Runs · Enabled · Automatic intake on · Running: 0 · Waiting: 0 · Queued: 0'));
+ const enabled=render();assert.ok(enabled.includes('aria-label="Workflow Runs · Enabled · Manual · Running: 0 · Queued: 0 · Waiting: 0 · Retrying: 0 · Stopping: 0 · Needs Attention: 0"'));assert.ok(enabled.includes('data-branch-availability="enabled"'));
+ const paused=render({enabled:false,triggerId:'trigger',triggerEnabled:true,activeExecutions:3,runCounts:{running:1,waiting:1,queued:1,retrying:0,stopping:0,needsAttention:0}});assert.ok(paused.includes('aria-label="Workflow Runs · Paused · Automatic intake paused · Running: 1 · Queued: 1 · Waiting: 1 · Retrying: 0 · Stopping: 0 · Needs Attention: 0"'));assert.ok(paused.includes('data-branch-availability="paused"'));assert.ok(paused.includes('Automatic'));
+ assert.ok(render({triggerId:'trigger',triggerEnabled:true}).includes('Workflow Runs · Enabled · Automatic intake on · Running: 0 · Queued: 0 · Waiting: 0 · Retrying: 0 · Stopping: 0 · Needs Attention: 0'));
  assert.ok(render({triggerId:'trigger',triggerEnabled:false}).includes('Automatic intake paused'));
  const unknown=render({enabled:undefined,activeExecutions:undefined,runCounts:undefined,triggerId:'trigger',triggerEnabled:true},true);assert.ok(unknown.includes('Availability unknown · Automatic intake unknown · Run status unavailable'));assert.ok(!unknown.includes('Running: 0'));
  assert.ok(render({versionId:''}).includes('Unpublished — cannot run'));assert.ok(!render({versionId:''}).includes('aria-label="Enabled'));
@@ -878,7 +878,7 @@ test('workflow directory status keeps availability, trigger intake and active wo
  const ponderosaCircle=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));
  assert.ok(ponderosaCircle,'The reference is Ponderosa’s actual sidebar renderer');
  for(const patch of [{},{enabled:false},{versionId:''},{enabled:undefined,activeExecutions:undefined}])assert.equal(svg(render(patch)),ponderosaCircle,'Every Branch availability state uses the exact same circle as Ponderosa');
- const busy=render({activeExecutions:200,runCounts:{running:0,waiting:1,queued:199}});assert.ok(busy.includes('Running: 0 · Waiting: 1 · Queued: 199'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
+ const busy=render({activeExecutions:200,runCounts:{running:0,waiting:1,queued:199,retrying:0,stopping:0,needsAttention:0}});assert.ok(busy.includes('Running: 0 · Queued: 199 · Waiting: 1'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
 });
 
 
@@ -1128,7 +1128,7 @@ test('pending actual advanced Apply survives publication retry without a new edi
 
 
 test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
- const props={name:'Workflow',tab:'workflow',published:true,dirty:true,runCounts:{running:2,waiting:0,queued:0},onTab(){},onExport(){},onUpdate(){}};
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,runCounts:{running:2,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0},onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderBranchHeader(props);
  assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
  const clean=renderBranchHeader({...props,dirty:false});assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
@@ -1151,7 +1151,7 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
  const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
  const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
- for(const [props,label,visible] of [[{runCounts:{running:0,waiting:0,queued:0}},'0 Running','0'],[{runCounts:{running:12,waiting:3,queued:4}},'12 Running · 7 Pending','12 / 7'],[{},'Run status loading…','…'],[{executionsUnavailable:true},'Run status unavailable','!']]){
+ for(const [props,label,visible] of [[{runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0}},'0 Running','0'],[{runCounts:{running:12,waiting:3,queued:4,retrying:0,stopping:0,needsAttention:0}},'12 Running · 4 Queued · 3 Waiting','12 / 7'],[{},'Run status loading…','…'],[{executionsUnavailable:true},'Run status unavailable','!']]){
   const html=renderBranchHeader({...base,...props});
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
   const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
@@ -1629,7 +1629,7 @@ test('Branch tabs and execution-control deep links share canonical semantic orde
 });
 
 test('every Branch tab shares a title-adjacent compact Run control with optional defaults for other callers',()=>{
- let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,runCounts:{running:0,waiting:0,queued:0},onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
+ let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0},onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
  for(const tab of ['workflow','executions','chats','settings']){
   const element=BranchWorkspaceHeader({...props,tab}),frame=element.props.children,status=frame.props.status,run=status.props.children[3].props.children.props.children;
   assert.equal(frame.props.collapsedSingleRow,true);assert.equal(run.props['aria-label'],'Run Published Workflow');assert.equal(run.props.sx.minWidth,44);assert.equal(run.props.sx.minHeight,44);assert.equal(run.props.sx['@container (max-width: 40rem)'].width,44);run.props.onClick();
@@ -1657,7 +1657,8 @@ async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}
  return{scope,calls,refreshes,render,dialogs,button:label=>buttons.find(p=>p.children===label),field:label=>fields.find(p=>p.label===label),switches:()=>fields.filter(p=>'checked'in p)};
 }
 
-for(const action of ['retry','resolve_script','merge','skip'])test(`shared execution confirmation retains ${action} payload, fields and pending/error ownership`,async t=>{
+// Skip carries a fixed audit reason and no field; covered by executionSkipWithoutReasonRegression (mounted).
+for(const action of ['retry','resolve_script','merge'])test(`shared execution confirmation retains ${action} payload, fields and pending/error ownership`,async t=>{
  let release;const f=await interventionFixture(t,action,{unknown:['retry','resolve_script'].includes(action),submit:()=>new Promise((resolve,reject)=>{release={resolve,reject};})});
  f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Back').disabled,false);assert.equal(f.button('Apply Decision').disabled,true);assert.equal(f.button('Apply Decision').autoFocus,true);
  f.field('Reason For This Decision').onChange({target:{value:'Verified recovery'}});f.render();if(f.scope.intervention.unknown){assert.equal(f.button('Apply Decision').disabled,true);f.switches()[0].onChange(null,true);}

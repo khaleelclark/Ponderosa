@@ -94,3 +94,49 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   release?.();root.unmount();await client.cancelQueries();client.clear();host.remove();globalThis.fetch=original;
  }
 }
+// UI029/UI032: Skip Run needs no typed reason, keeps one idempotent command, and
+// advanced Saved Work/resource reviews stay unmounted until Technical Details opens.
+export async function executionSkipWithoutReasonRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),original=globalThis.fetch;
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false,gcTime:Infinity},mutations:{retry:false}}});
+ const detail:any={execution:{id:'skip-run',branchId:'skip-branch',versionId:'version',bindingRevisionId:'binding',state:'running',revision:4,input:'Input',inputHash:'hash',createdAt:'2026-11-11T12:00:00Z',updatedAt:'2026-11-11T12:00:00Z'},steps:[],attempts:[],gates:[],paths:[],resources:[],decisions:[],waits:[]};
+ const posts:{path:string;body:any}[]=[];let failNext=true;
+ const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(raw,init)=>{
+  const url=new URL(String(raw),location.origin),method=init?.method??'GET';
+  if(method==='POST'){
+   posts.push({path:url.pathname,body:JSON.parse(String(init?.body))});
+   // First submission fails after the request left; the retry must resend the same command.
+   if(failNext){failNext=false;return json({error:'Engine temporarily unavailable'},503);}
+   return json(detail);
+  }
+  assert(!/checkpoint|disclosure|issued-destinations|resource-group/.test(url.pathname),'Advanced review reads stay closed: '+url.pathname);
+  if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
+  if(url.pathname.endsWith('/operations'))return json({executionId:'skip-run',state:'running',label:'Running',observedAt:detail.execution.updatedAt,counts:{completed:0,running:1,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/actions'))return json({executionId:'skip-run',revision:4,generation:'generation-4',items:[]});
+  throw Error('Unexpected projection read '+url.pathname);
+ };
+ const button=(text:string,scope:ParentNode=document)=>Array.from(scope.querySelectorAll('button')).find(node=>node.textContent===text) as HTMLButtonElement|undefined;
+ try{
+  root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ExecutionPanel detail={detail} viewStates={new Map()}/></MutationNotificationProvider></QueryClientProvider>);
+  await until(()=>Boolean(button('Skip Run',host)&&!button('Skip Run',host)!.disabled),'Skip Run did not become available');
+  assert(!button('Review Saved Work')&&!button('Review Resource Group'),'Advanced reviews are not mounted outside Technical Details');
+  button('Skip Run',host)!.click();
+  await until(()=>Boolean(document.querySelector('[role="dialog"]')),'Skip confirmation did not open');
+  const dialog=document.querySelector('[role="dialog"]')!;
+  assert(!dialog.querySelector('textarea:not([aria-hidden="true"])'),'Skip asks for no reason');
+  const confirm=button('Skip Run',dialog)!;assert(confirm&&!confirm.disabled,'Skip can be confirmed without typing');
+  confirm.click();await until(()=>Boolean(dialog.textContent?.includes('Engine temporarily unavailable')),'Real submission failure stays visible');
+  await until(()=>!button('Skip Run',dialog)!.disabled,'Failed skip can be retried');
+  button('Skip Run',dialog)!.click();await until(()=>posts.length===2&&!document.querySelector('[role="dialog"]'),'Retried skip did not settle');
+  const [first,second]=posts;
+  assert(first!.path==='/api/branch-executions/skip-run/intervene','Uses the existing intervention command');
+  assert(first!.body.action==='skip'&&first!.body.reason==='Skipped by user'&&first!.body.expectedRevision===4,'Truthful fixed audit reason and exact revision');
+  assert(JSON.stringify(first!.body)===JSON.stringify(second!.body),'Retry resends the identical idempotent command');
+  assert(host.textContent?.includes('Running'),'Skip request alone never presents Skipped before the Engine drains work');
+  (Array.from(host.querySelectorAll('summary')).find(node=>node.textContent?.startsWith('Technical Details')) as HTMLElement).click();
+  await until(()=>Boolean(button('Review Saved Work')&&button('Review Resource Group')),'Technical Details did not reveal advanced reviews');
+ }finally{
+  root.unmount();await client.cancelQueries();client.clear();host.remove();globalThis.fetch=original;
+ }
+}

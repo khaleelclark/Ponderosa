@@ -674,7 +674,9 @@ export function compileActivationPrompt(
     const payload = activation.payload && typeof activation.payload === "object"
       ? activation.payload as Record<string, unknown>
       : {};
-    const activationInstruction = activation.kind === "coordination_join_progress"
+    const activationInstruction = activation.kind === "coordination_request" && payload.resultRepair && typeof payload.resultRepair === "object"
+      ? String((payload.resultRepair as { instruction?: unknown }).instruction ?? "")
+      : activation.kind === "coordination_join_progress"
       ? "This is an intermediate aggregate result. Act on it now, but do not terminally update a continuation while the Join remains open; end the Run to return to durable waiting when no independent work remains."
       : activation.kind === "coordination_cancelled"
         ? "The requester cancelled this exact Request. Stop its work at the current safe operation boundary, perform only cleanup needed to leave owned processes and durable state safe, do not continue or restart the cancelled work, and end the Run when no other attached work remains."

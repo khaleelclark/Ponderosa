@@ -107,7 +107,9 @@ export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" |
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
 /** Mutually exclusive current activity of all nonterminal workflow Runs. */
-export interface BranchRunCountsDto {running:number;waiting:number;queued:number}
+/** Effective projection of a nonterminal Run; stored execution states are unchanged. */
+export type BranchEffectiveStatus='queued'|'running'|'waiting'|'retrying'|'stopping'|'needs_attention';
+export interface BranchRunCountsDto {running:number;waiting:number;queued:number;retrying:number;stopping:number;needsAttention:number}
 export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */
   lastUsedAt?: string;
@@ -132,6 +134,10 @@ export interface BranchExecutionDto {
   budgetWait?: {kind:'execution_budget'; branchId:string};
   waitReason?: string; output?: string; mergedInto?: string; revision: number;
   createdAt: string; updatedAt: string;
+  /** Accepted Stop/Skip still draining owned work. `blocked` means an exact Run exit can no longer be observed automatically. */
+  stopping?: {outcome:'canceled'|'skipped'|'merged'; blocked?:string};
+  /** Server classification shared with counts and filters; present on nonterminal history rows and detail. */
+  effectiveStatus?: BranchEffectiveStatus;
 }
 export interface BranchStepExecutionDto {
   id: string; executionId: string; stepId: string; pathId: string; invocation: number;
@@ -200,7 +206,7 @@ export interface BranchOperationalSummaryDto {
   state: "queued" | "running" | "waiting_agent" | "waiting_human" | "retrying" | "provider_unavailable" | "provider_attention" | "needs_reconciliation" | "blocked" | "completed" | "failed" | "canceled" | "skipped" | "merged";
   label: string; observedAt: string;
   counts: { completed:number; running:number; retrying:number; failed:number; waitingAgent:number; waitingHuman:number; needsReconciliation:number; mapItems:number; mapSettled:number };
-  agentWaits: Array<{requestId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention";label:string;since:string;reason?:string;nextRetryAt?:string}>;
+  agentWaits: Array<{requestId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation";label:string;since:string;reason?:string;nextRetryAt?:string}>;
   additionalAgentWaits: number;
 }
 /** Bounded Home metadata; full inputs, outputs and audit history stay in execution inspection. */

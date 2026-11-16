@@ -14,6 +14,7 @@ import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 
 import { messageDeliveryPhase } from "./messageDeliveryPhase";
+import { routeLinkPath } from "../routeRegistry";
 
 function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
   const runtime = receipt.runtime;
@@ -119,8 +120,8 @@ function deliveryWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: strin
   switch (receipt.queueWaitReason) {
     case "host_resource_pressure": return { compact: "Waiting For Host Resources", detail: "host-resource protection is holding new work." };
     case "provider_disabled": return { compact: "Provider Disabled", detail: "the selected provider is disabled; this message has not started." };
-    case "authentication_unknown": return { compact: "Checking Provider Sign-In", detail: "provider sign-in has not been confirmed." };
-    case "authentication_required": return { compact: "Provider Sign-In Required", detail: "the selected provider requires sign-in." };
+    case "authentication_unknown": return { compact: "Queued", detail: "a shared provider check is still running; your message remains saved and starts when admission is confirmed." };
+    case "authentication_required": return { compact: "Sign-In Required", detail: "the selected provider requires sign-in." };
     case "provider_unavailable": return { compact: "Waiting For Provider", detail: "the selected provider is unavailable." };
     case "current_run": return { compact: "Waiting For Current Run", detail: "the recipient's current Run must finish before this delivery starts." };
     case "provider_retry": return { compact: "Waiting To Retry Provider", detail: "the existing provider retry hold is retaining this work." };
@@ -358,6 +359,7 @@ export function MessageDeliveryStatus({
           <Button color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}>Review Interrupted Work</Button>
           <Typography variant="caption" color="text.secondary">Review may close the earlier Run’s idle session.</Typography>
         </> : null}
+        {receipt.queueWaitReason === "authentication_required" ? <Button component="a" href={routeLinkPath({ kind: "settings", section: "providers" })} color="warning" variant="text" size="small" sx={{ minHeight: 28, py: 0.25 }}>Provider Settings</Button> : null}
         {!readOnly && !receipt.taskDecisionRepairHold && !receipt.settingsTransitionHold && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"

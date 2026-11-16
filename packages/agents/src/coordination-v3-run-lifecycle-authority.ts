@@ -1,5 +1,6 @@
 import { requireBranchGuidanceSubmission } from "./branch-guidance-authority.js";
 import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
+import { PRIORITY } from "./coordination-v3-activation.js";
 import { requireBranchScheduleInjectionEligible } from "./coordination-v3-branch-schedule.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -42,6 +43,9 @@ function boundedInternalRunError(value: string | undefined): string {
 }
 
 /** Owns provider-input fences and terminal scheduler Run transitions. */
+const MAX_RESULT_REPAIR_ATTEMPTS = 2;
+const RESULT_REPAIR_INSTRUCTION = "Your previous Run for this Request ended without its canonical result. Do not redo, repeat or restart the work, its file changes, delegations or notifications. Using only what is already done and recorded, report the result now with ponderosa_update_request (completed, failed or blocked). If you cannot determine the result, report blocked and explain why.";
+
 export class CoordinationV3RunLifecycleAuthority {
   constructor(
     private readonly sqlite: Database.Database,
@@ -406,6 +410,7 @@ export class CoordinationV3RunLifecycleAuthority {
         UPDATE scheduler_run_activations
         SET consumed_at = ? WHERE run_id = ?
       `).run(now, runId);
+      const repairing = this.repairMissingBranchResults(runId, now);
       this.markRelatedRequestsOutcomeUnknown(
         runId,
         now,
@@ -413,6 +418,9 @@ export class CoordinationV3RunLifecycleAuthority {
         ["open", "in_progress"],
         ["open", "in_progress", "waiting_dependency"],
         false,
+        undefined,
+        undefined,
+        repairing,
       );
       this.recoverRequiredReply(runId, now);
     })();
@@ -1328,6 +1336,45 @@ export class CoordinationV3RunLifecycleAuthority {
     };
   }
 
+  /** Branch-owned work closes only with its canonical Request result. When a normally finished Run
+   * omitted it, redeliver the same open Request for a bounded result-only report; the Request stays
+   * open, nothing is replayed as new work, and exhausted repair falls through to outcome_unknown. */
+  private repairMissingBranchResults(runId: string, now: string): Set<string> {
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, request.project_id, run.agent_id, activation.scope_key, activation.payload_json
+      FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN agent_activations activation ON activation.id = attached.activation_id AND activation.kind = 'coordination_request'
+      JOIN activation_sources source ON source.activation_id = activation.id AND source.source_kind = 'request'
+      JOIN coordination_requests request ON request.id = source.source_id
+      WHERE attached.run_id = ? AND ${currentRequestAttachmentSql("attached")}
+        AND request.recipient_agent_id = run.agent_id AND request.state IN ('open', 'in_progress')
+        AND EXISTS (SELECT 1 FROM branch_attempts owned JOIN branch_step_executions step ON step.id = owned.step_execution_id
+          JOIN branch_executions execution ON execution.id = step.execution_id
+          WHERE owned.request_id = request.id AND owned.cancel_requested = 0 AND execution.cancel_requested = 0)
+    `).all(runId) as Array<{ id: string; project_id: string; agent_id: string; scope_key: string; payload_json: string }>;
+    const repairing = new Set<string>();
+    for (const row of rows) {
+      // A Request waiting on its Join or an active rollover is durably parked, not missing a result.
+      if (this.requestOwnsViableDependency(row.id, runId, now) || this.requestOwnedByActiveRollover(row.id, runId)) continue;
+      const prior = (this.sqlite.prepare(`SELECT COUNT(*) AS n FROM activation_sources source
+        JOIN agent_activations activation ON activation.id = source.activation_id
+        WHERE source.source_kind = 'request' AND source.source_id = ?
+          AND json_extract(activation.payload_json, '$.resultRepair.sourceRunId') IS NOT NULL`).get(row.id) as { n: number }).n;
+      if (prior >= MAX_RESULT_REPAIR_ATTEMPTS) continue;
+      const { resultRepair: _previous, ...original } = JSON.parse(row.payload_json) as Record<string, unknown>;
+      this.createActivation({
+        projectId: row.project_id, agentId: row.agent_id, scopeKey: row.scope_key,
+        kind: "coordination_request", priority: PRIORITY.request, dispatchPolicy: "next_run", promptClass: "coordination",
+        dedupeKey: `request:${row.id}:result-repair:${runId}`,
+        payload: { ...original, resultRepair: { sourceRunId: runId, attempt: prior + 1, instruction: RESULT_REPAIR_INSTRUCTION } },
+        sourceKind: "request", sourceId: row.id, now,
+      });
+      repairing.add(row.id);
+    }
+    return repairing;
+  }
+
   markRelatedRequestsOutcomeUnknown(
     runId: string,
     now: string,
@@ -1337,6 +1384,7 @@ export class CoordinationV3RunLifecycleAuthority {
     settleOutboundQuestions = true,
     incidentId?: string,
     internalFailureCode?: OutcomeInternalFailureCode,
+    repairing: ReadonlySet<string> = new Set(),
   ): void {
     const normalCompletion = reason === "run_completed_without_request_update";
     const directEligibleStates = normalCompletion ? continuationEligibleStates : eligibleStates;
@@ -1415,7 +1463,7 @@ export class CoordinationV3RunLifecycleAuthority {
       ...new Map(
         [...rows, ...continuationRows].map((row) => [row.id, row]),
       ).values(),
-    ].filter((row) => !(normalCompletion && this.requestOwnsViableDependency(row.id, runId, now)) && !this.requestOwnedByActiveRollover(
+    ].filter((row) => !repairing.has(row.id) && !(normalCompletion && this.requestOwnsViableDependency(row.id, runId, now)) && !this.requestOwnedByActiveRollover(
       row.id,
       runId,
     ));

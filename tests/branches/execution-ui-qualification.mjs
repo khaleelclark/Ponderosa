@@ -116,7 +116,7 @@ export async function startExecutionQualification({web=fileURLToPath(new URL('..
   f.ok(await f.api('PUT',`/api/branches/${pendingBranch.id}/execution-budget`,{commandKey:randomUUID(),expectedRevision:pendingBudget.revision,expectedPeriodId:pendingBudget.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true}));
   for(let i=0;i<40;i++){branches.triggers.recordTriggerOccurrence({triggerId:pendingBranch.triggerId,occurrenceKey:randomUUID(),payload:{document:`Queued document ${i+1}`},provenance:{source:'qualification_schedule'}});if(i===0)branches.advance()}
   const pendingCounts=f.ok(await f.api('GET',`/api/branches/${pendingBranch.id}/lifecycle`)).runCounts;
-  assert.deepEqual(pendingCounts,{running:0,waiting:1,queued:39});
+  assert.deepEqual(pendingCounts,{running:0,waiting:1,queued:39,retrying:0,stopping:0,needsAttention:0});
 
   const updateOwner=await create('Scheduled Document Review — Unconfirmed Update');
   const updateChat=f.ok(await f.api('POST',`/api/branches/${updateOwner.id}/chats`,{label:'Scheduled Review Team',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));

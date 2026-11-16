@@ -79,12 +79,16 @@ export interface WorkspaceConnectionState {
   status: WorkspaceConnectionStatus;
   /** Canonical phase-bearing queries have reconciled after stream catch-up. */
   phaseEvidenceFresh: boolean;
+  /** Per-resource freshness: a slow directory refresh never makes Agent statuses unconfirmed. */
+  stalePhaseResources?: PhaseResource[];
   lastSuccessfulSyncAt?: string;
   prolongedDisconnect: boolean;
   announcement?: string;
   refreshErrorResources?: string[];
   diagnostics?: { disconnects: number; replayEvents: number; replayMs: number; refreshMs: number };
 }
+
+export type PhaseResource = "Agent Statuses" | "Agent Organization" | "Agent Directory";
 
 export interface WorkspaceStreamOptions {
   onProjectDeleted?(projectId: string, at: string): void;
@@ -576,7 +580,7 @@ export function useWorkspaceStream(
     ];
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
-    const resourceName = (query: Query) => query.queryKey[0] === queryKeys.agents.healthAll[0]
+    const resourceName = (query: Query): PhaseResource => query.queryKey[0] === queryKeys.agents.healthAll[0]
       ? "Agent Statuses" : query.queryKey[0] === queryKeys.agents.organizationAll[0]
         ? "Agent Organization" : "Agent Directory";
     const markPhaseEvidenceStale = (projectId?: string) => {
@@ -587,8 +591,13 @@ export function useWorkspaceStream(
       for (const query of phaseQueries().filter(matches)) {
         void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true, refetchType: "none" });
       }
-      setConnection(current => current.phaseEvidenceFresh ? { ...current, phaseEvidenceFresh: false } : current);
+      setConnection(current => ({ ...current, phaseEvidenceFresh: false, stalePhaseResources: staleResources() }));
     };
+    const staleResources = () => [...new Set([...phaseQueryBoundaries.keys()].map(resourceName))].sort();
+    // Transport health is the stream itself: connected and caught up to its replay cursor.
+    // Unfinished resource refresh is reported per resource, never as a global reconnect.
+    const transportCaughtUp = () => connectedOnce && !disconnected
+      && (phaseCatchUpCursor === undefined || cursor.current >= phaseCatchUpCursor);
     const prunePhaseQueries = () => {
       const active = new Set(activePhaseQueries());
       for (const query of phaseQueryBoundaries.keys()) if (!active.has(query)) phaseQueryBoundaries.delete(query);
@@ -599,12 +608,11 @@ export function useWorkspaceStream(
       prunePhaseQueries();
       if (stopped || disconnected || !connectedOnce || !browserPageIsVisible()
         || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)) return;
-      if (recoveryQueries.size) return;
-      const recovered = awaitingRecovery;
-      awaitingRecovery = false;
+      const recovered = awaitingRecovery && !recoveryQueries.size;
+      if (recovered) awaitingRecovery = false;
       if (!failedPhaseQueries.size) clearConnectionTimers();
       setConnection(current => ({ ...current, status: "live",
-        phaseEvidenceFresh: phaseQueryBoundaries.size === 0,
+        phaseEvidenceFresh: phaseQueryBoundaries.size === 0, stalePhaseResources: staleResources(),
         lastSuccessfulSyncAt: verified && (recovered || phaseQueryBoundaries.size === 0)
           ? new Date().toISOString() : current.lastSuccessfulSyncAt, prolongedDisconnect: false,
         retrying: false, announcement: undefined,
@@ -685,8 +693,8 @@ export function useWorkspaceStream(
       markPhaseEvidenceStale();
       for (const query of activePhaseQueries()) recoveryQueries.add(query);
       awaitingRecovery = true;
-      setConnection(current => ({ ...current, status: connectedOnce ? "reconnecting" : "connecting",
-        phaseEvidenceFresh: false, prolongedDisconnect: false, refreshErrorResources: undefined,
+      setConnection(current => ({ ...current, status: transportCaughtUp() ? current.status : connectedOnce ? "reconnecting" : "connecting",
+        phaseEvidenceFresh: false, stalePhaseResources: staleResources(), prolongedDisconnect: false, refreshErrorResources: undefined,
         announcement: undefined }));
       if (browserPageIsVisible()) {
         foregroundWarning.start();
@@ -706,7 +714,7 @@ export function useWorkspaceStream(
         if (awaitingRecovery) recoveryQueries.add(query);
       }
       prunePhaseQueries();
-      if (added.length) setConnection(current => ({ ...current, phaseEvidenceFresh: false }));
+      if (added.length) setConnection(current => ({ ...current, phaseEvidenceFresh: false, stalePhaseResources: staleResources() }));
       schedulePhaseReconciliation(true);
     });
     const invalidateAll = () => {
@@ -979,7 +987,7 @@ export function useWorkspaceStream(
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     const foregroundWarning = createForegroundTimer(() => {
       if (stopped) return;
-      if (disconnected || awaitingRecovery) setConnection(current => ({ ...current,
+      if (disconnected || awaitingRecovery && !transportCaughtUp()) setConnection(current => ({ ...current,
         status: current.lastSuccessfulSyncAt ? "stale" : "unavailable", prolongedDisconnect: true,
         retrying: false, announcement: "Live workspace updates are unavailable.",
         refreshErrorResources: failedPhaseQueries.size ? [...new Set([...failedPhaseQueries].map(resourceName))] : undefined, diagnostics: { ...diagnostics } }));

@@ -1083,3 +1083,21 @@ test('admitted Run authentication fence ignores diagnostic expiry but retains ob
  assert.equal(cache.get('codex',async()=>{throw Error('must retain existing pending slot')}),pending);
  release(signedIn);await pending;assert.equal(pendingInvalidated(),false,'the same refreshed credentials cannot revive invalidated work');
 });
+
+test('UI035: provider status changes wake once per settled probe and never grant admission from an unknown snapshot', async () => {
+  const changed = [];
+  const auth = new EngineAuthStatusCache(id => changed.push(id));
+  let release, probes = 0;
+  const load = () => { probes++; return new Promise(resolve => { release = resolve; }); };
+  const reading = auth.read('codex', load);
+  assert.deepEqual((await reading).status, 'unknown', 'A slow refresh reads as pending, not authenticated');
+  assert.equal(auth.snapshot('codex').state, 'unknown', 'Admission snapshot stays unknown while the probe runs');
+  assert.deepEqual(changed, [], 'No wake before the probe settles');
+  release({ authenticated: true, source: 'cli_status' });
+  await auth.get('codex', load);
+  assert.deepEqual(changed, ['codex'], 'Settled probe wakes exactly once');
+  assert.equal(auth.snapshot('codex').state, 'known');
+  for (let index = 0; index < 5; index++) await auth.get('codex', load);
+  assert.equal(probes, 1, 'Woken scheduler passes reuse the fresh result instead of probing again');
+  assert.deepEqual(changed, ['codex'], 'Cached reads cannot re-trigger the wake (no scheduler loop)');
+});

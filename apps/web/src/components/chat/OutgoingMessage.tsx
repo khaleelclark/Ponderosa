@@ -140,7 +140,7 @@ function CapturedRecovery({item,canonicalObserved=false}:{item:CapturedSubmissio
   const activity=capturedSubmissionActivity(item.pending.idempotencyKey),earlier=earlierCapturedSubmission(item);
   if(item.status==="accepted")return null;
   const running=Boolean(activity),unknown=item.status==="unknown"||item.dispatchStarted&&item.status!=="failed";
-  const status=activity==="remove"?"Removing":earlier?"Waiting":running?(unknown?"Checking Delivery":"Sending"):unknown?"Delivery Not Confirmed":"Message Not Sent";
+  const status=activity==="remove"?"Removing":earlier?"Waiting":running?"Sending":unknown?"Delivery Not Confirmed":"Message Not Sent";
   const removable=!canonicalObserved&&item.status==="failed";
   const explanation=unknown?"Delivery has not been confirmed. Retry checks the original message without creating another send.":"Your message wasn’t sent. Retry to send it, or remove it.";
   return <Box sx={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:.5,minWidth:0}}>

@@ -77,7 +77,7 @@ import {
   createProjectFolderPathBoundary
 } from "./routes/project-folders.js";
 import { registerServerControlRoutes } from "./routes/server-control.js";
-import { createRuntimeAuthority } from "./runtime-authority.js";
+import { createRuntimeAuthority, runtimeCleanupFailed } from "./runtime-authority.js";
 import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
 import { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import {
@@ -429,7 +429,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const oneShotRuntime = (agentId: string, runId: string): OneShotRuntimeTeardown | undefined =>
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
-  const providerStatusChanged = (engineId?: string) => { appendWorkspace({ type: "provider_status_changed", ...(engineId ? { engineId } : {}) }); };
+  let wakeProviderScheduler: (() => void) | undefined;
+  const providerStatusChanged = (engineId?: string) => { appendWorkspace({ type: "provider_status_changed", ...(engineId ? { engineId } : {}) }); wakeProviderScheduler?.(); };
   const resourceAdmission = new ResourceAdmission(opts.resourceAdmission ?? {
     enabled: process.env.PONDEROSA_RESOURCE_ADMISSION !== "off",
     ...(process.env.PONDEROSA_RESOURCE_RESERVE_MIB ? { reserveBytes: Number(process.env.PONDEROSA_RESOURCE_RESERVE_MIB) * 1024 * 1024 } : {}),
@@ -760,11 +761,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     teamDirectory,
   } = createServerReadModels({
     contextRecoveryActivity,
-    runtimeCleanupPending: (agentId) => {
-      const authority = runtimeAuthority(agentId);
-      return Boolean(authority?.closing || authority?.opening?.lastError ||
-        [...(authority?.oneShots.values() ?? [])].some(state => state.operation || state.lastError));
-    },
+    runtimeCleanupFailed: (agentId) => runtimeCleanupFailed(runtimeAuthority(agentId)),
     admissionBlocker: (agent) => {
       const registration = engines.get(agent.activeEngine);
       return registration ? runtimeAdmissionBlocker(agent.activeEngine, registration) : { kind: "provider_unavailable", providerId: agent.activeEngine.slice(0, 128) };
@@ -979,6 +976,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     projectCommunicationArtifact,
     providerProcessAuthority,
   });
+  wakeProviderScheduler = () => coordinationV3Scheduler.notify();
   let deploymentControl!: ReturnType<typeof createDeploymentControl>;
   function drainDeploymentIdleAuthorities(): void {
     deploymentControl.drainIdleAuthorities();

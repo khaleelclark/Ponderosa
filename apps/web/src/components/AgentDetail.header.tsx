@@ -12,7 +12,6 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import StopCircleOutlinedIcon from "@mui/icons-material/StopCircleOutlined";
 import { Box, Button, IconButton, Link, Popover, Stack, Tooltip, Typography, useMediaQuery } from "@mui/material";
 import { useContext, useState } from "react";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
@@ -105,12 +104,14 @@ function AgentRunState({
     health?.assignedWorkOutcome ? "Assigned Work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
-  const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
-  const visibleLabel = connectionStatus === "live" && phaseEvidenceFresh
-    ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`;
+  const visibleLabel = runState;
+  // UI037: brief reconnect/refresh stays quiet; only stale or unavailable evidence is
+  // de-emphasized, and real failures or attention states are never faded.
+  const faded = (connectionStatus === "stale" || connectionStatus === "unavailable")
+    && !["error", "failed", "needs_attention", "needs_decision", "blocked"].includes(presentation.status);
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
-  if (contact) return <Tooltip title={accessibleDetail}><Box component="span" role="status" tabIndex={0} aria-label={accessibleDetail} sx={{display:'flex',alignItems:'center',justifyContent:'center',gap:.75,minWidth:0,minHeight:24,color:'text.secondary'}}>
-    <Typography component="span" variant="caption" noWrap>{`${delayed ? "Last known: " : ""}${presentation.label}`}</Typography>
+  if (contact) return <Tooltip title={accessibleDetail}><Box component="span" role="status" tabIndex={0} aria-label={accessibleDetail} sx={{display:'flex',alignItems:'center',justifyContent:'center',gap:.75,minWidth:0,minHeight:24,color:'text.secondary',opacity:faded?.65:1}}>
+    <Typography component="span" variant="caption" noWrap>{presentation.label}</Typography>
     <Box component="span" aria-hidden="true" sx={{width:7,height:7,flex:'0 0 7px',borderRadius:'50%',bgcolor:theme=>semanticStatusColorToken(presentation.status,theme.palette.mode)}}/>
   </Box></Tooltip>;
   if (mobile && !paused) return <>
@@ -125,7 +126,7 @@ function AgentRunState({
     </Popover>
   </>;
   return (
-    <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1 }}>
+    <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1, opacity: faded ? .65 : 1 }}>
       <SemanticStatus
         status={presentation.status}
         label={visibleLabel}
@@ -150,8 +151,6 @@ interface AgentDetailHeaderProps {
   phaseEvidenceFresh: boolean;
   startedAt?: string;
   agentNameForId(agentId: string): string | undefined;
-  running: boolean;
-  stopping: boolean;
   tab: AgentTab;
   showSubagents: boolean;
   transcriptMarkdown: string;
@@ -159,11 +158,8 @@ interface AgentDetailHeaderProps {
   onOpenProject(): void;
   onOpenChat(conversationId: string): void;
   onOpenAgent(agentId: string): void;
-  onStop(): void;
   paused?:boolean;
   accessRestricted?:boolean;
-  pausePending?:boolean;
-  onPauseResume?():void;
   onExportPackage(): void;
   onDuplicate?(): void;
   onOpenTechnical(): void;
@@ -188,8 +184,6 @@ export function AgentDetailHeader({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
-  running,
-  stopping,
   tab,
   showSubagents,
   transcriptMarkdown,
@@ -197,8 +191,7 @@ export function AgentDetailHeader({
   onOpenProject,
   onOpenChat,
   onOpenAgent,
-  onStop,
-  paused, accessRestricted, pausePending, onPauseResume,
+  paused, accessRestricted,
   onExportPackage,
   onDuplicate,
   onOpenTechnical,
@@ -211,12 +204,10 @@ export function AgentDetailHeader({
   const auditOnly=useWorkspaceReadOnly();
   const conversationChrome=useContext(ConversationChromeContext);
   const notify=useMutationNotification();
-  const controlsInComposer=conversationChrome?.assistantAgentId===agent.id && tab==='chat';
-  if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&(controlsInComposer||!running&&!paused)&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
+  // Pause/Resume and Stop live only in the composer's Run Controls menu.
+  if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
     {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back To Chat</Button>}
-    {!controlsInComposer&&(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
-    {!controlsInComposer&&running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
   </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
   return (
     <TabbedWorkspaceFrame
@@ -275,8 +266,6 @@ export function AgentDetailHeader({
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />
-        {running && !auditOnly ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
-          aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
       </Stack>}
       actions={
         <Stack
@@ -286,19 +275,6 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
-          {running && !auditOnly ? (
-            <Button
-              size="small"
-              color="error"
-              variant="outlined"
-              disabled={stopping}
-              onClick={onStop}
-              sx={{ minHeight: 36, display: { xs: "none", md: "inline-flex" } }}
-            >
-              {stopping ? "Cancelling…" : "Stop"}
-            </Button>
-          ) : null}
           <ChatOverflowMenu
             label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}

@@ -61,6 +61,14 @@
       "origin": "Passive Request update metadata: interrupted projection/replay/restart, historical exact validation and scope fences"
     },
     {
+      "path": "tests/agents/cleanup-health.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned inert roots; no provider account",
+      "origin": "UI034 successful reply with in-flight provider close must not flash interrupted/Error"
+    },
+    {
       "path": "tests/agents/provider-cleanup.test.mjs",
       "feature": "agents",
       "lane": "server",

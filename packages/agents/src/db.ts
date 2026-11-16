@@ -84,6 +84,7 @@ const schemaExtensions = [
   "0045_agent_import_submission_intents.sql",
   "0046_retained_coordination_cut_sources.sql",
   "0047_memory_exposure_receipts.sql",
+  "0048_lifecycle_run_lookup.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

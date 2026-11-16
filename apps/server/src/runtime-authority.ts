@@ -56,6 +56,16 @@ interface RuntimeAuthorityContext {
   clearRunLivenessTimer(run: ActiveRun): void;
 }
 
+/** Health-only view of provider teardown. A recorded teardown error keeps the
+ * Agent failed through its retry window; healthy close after a finished Run is
+ * routine cleanup and must not be shown as interrupted work (UI034). */
+export function runtimeCleanupFailed(authority: AgentRuntimeAuthority | undefined): boolean {
+  if (!authority) return false;
+  const oneShots = [...authority.oneShots.values()];
+  return Boolean(authority.closing?.lastError || authority.opening?.lastError || oneShots.some(state => state.lastError)
+    || authority.retryAttempt > 0 || authority.retryTimer);
+}
+
 export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
   const {
     runtimeAuthorities,

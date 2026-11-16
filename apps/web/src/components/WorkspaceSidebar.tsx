@@ -82,7 +82,7 @@ import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
-import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
+import { phaseResourceFresh, useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { SearchSnippet, routeForGlobalSearchSelection } from "./GlobalChatSearch";
 
 export function WorkspaceSidebar({
@@ -664,7 +664,7 @@ export function WorkspaceSidebar({
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
             onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
-            status={<SidebarActivityBadge agent={{ title: agent.title, health }} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
+            status={<SidebarActivityBadge agent={{ title: agent.title, health }} fresh={phaseResourceFresh(workspaceConnection,'Agent Directory')} showLabel />} />
         </Stack>
       );
     });

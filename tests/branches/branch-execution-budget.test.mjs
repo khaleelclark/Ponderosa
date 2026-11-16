@@ -93,6 +93,20 @@ test('oldest-eligible admission uses each frozen concurrency policy; a full olde
  f.branches.settleScript(lease,{failed:false,output:'done'},now);grant(f,b.id);f.branches.advance(now);
  assertAdmissions(f,b,[blocked,eligible],[blocked,eligible]);assert.equal(f.branches.executionBudget(b.id,now).used,3);
 });
+test('Pinecone regression: a full Branch yields its queued backlog with one occupancy scan per pass and keeps FIFO once released',t=>{
+ const f=fixture(t),b=triggered(f,'capacity-backlog',[script],1);
+ const active=intake(f,b,'active');f.branches.advance(now);const lease=f.branches.claimScript('worker',now);assert.equal(lease.executionId,active);
+ const queued=Array.from({length:120},(_,i)=>intake(f,b,'backlog-'+i));
+ const db=f.db,prepare=db.prepare.bind(db);let scans=0;
+ db.prepare=sql=>{if(sql.includes('request_source_lineage source ON source.request_id=q.id'))scans++;return prepare(sql)};
+ for(let pass=0;pass<3;pass++)f.branches.advance(now);
+ // Before the fix every queued row re-ran this scan for every queued sibling (~120² per pass).
+ assert.ok(scans<=6,`occupancy scans for three blocked passes: ${scans}`);
+ assertAdmissions(f,b,queued,[]);db.prepare=prepare;
+ f.branches.settleScript(lease,{failed:false,output:'done'},now);f.branches.advance(now);
+ const admitted=queued.filter(id=>f.branches.execution(id).admittedAt);
+ assert.ok(admitted.length>=1);assert.deepEqual(admitted,queued.slice(0,admitted.length));
+});
 test('last unit starts once; held child is pinned, resource-free, restartable and not a traversal failure',t=>{
  const f=fixture(t),b=f.deploy('child');f.budget(b.id);
  const first=call(f,b,'one');f.branches.advance(now);assert.equal(f.branches.executionBudget(b.id,now).used,1);

@@ -38,7 +38,7 @@ import {
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
-import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
+import { phaseResourceFresh, useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
@@ -530,7 +530,6 @@ export function AgentDetail({
   }, [engine, effort, model, persistedModel]);
 
   const runtimeActivity = projectedHealth?.runtimeActivity;
-  const running = Boolean(runtimeActivity);
 
   const status = projectedHealth?.status ?? projectedStatus ?? deriveAgentStatus(detail);
   const mcp = mcpPresentation(engineCapability?.mcpServers);
@@ -943,11 +942,9 @@ export function AgentDetail({
         status={status}
         health={projectedHealth}
         connectionStatus={agentConnectionStatus}
-        phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
+        phaseEvidenceFresh={phaseResourceFresh(workspaceConnection,'Agent Statuses')}
         startedAt={status === "running" ? runtimeActivity?.startedAt : undefined}
         agentNameForId={agentNameForId}
-        running={running||Boolean(pause)}
-        stopping={stopping}
         tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
@@ -955,11 +952,8 @@ export function AgentDetail({
         onOpenProject={onOpenProject}
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
-        onStop={stopActiveRun}
         paused={Boolean(pause)}
         accessRestricted={pause?.reason === "access_restricted"}
-        pausePending={controlPending}
-        onPauseResume={onPauseResume}
 
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
@@ -1129,10 +1123,10 @@ export function AgentDetail({
           queueReviewHref: assistantMessages?productWorkspacePath(`/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}?view=chat`):undefined,
           disabled: false,
           submissionDisabled: runtimeSaving,
-          running: assistantMessages && Boolean(runtimeActivity?.executionId || pause?.runId),
-          allowSendWhileRunning: assistantMessages,
+          running: Boolean(runtimeActivity?.executionId || pause?.runId),
+          allowSendWhileRunning: true,
           cancelPending: stopping,
-          runControl: assistantMessages ? {paused:Boolean(pause),pending:pausePending,resumeDisabled:pause?.reason==='access_restricted',onPauseResume} : undefined,
+          runControl: {paused:Boolean(pause),pending:pausePending,resumeDisabled:pause?.reason==='access_restricted',onPauseResume},
           placeholder: assistantMessages?"":runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
             : `Message ${detail.agent.title} directly`,

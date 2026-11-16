@@ -63,11 +63,13 @@ export async function branchOperationalSummary(
       AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)
   ), evidence AS (
     SELECT waits.*,retry.available_at retry_at,retry.provider_failure_category,
-      CASE WHEN request_state='awaiting_answer' THEN 'waiting_human'
+      CASE WHEN request_state IN ('outcome_unknown','superseded','recipient_unavailable') THEN 'needs_reconciliation'
+        WHEN request_state='awaiting_answer' THEN 'waiting_human'
         WHEN request_state='waiting_dependency' THEN 'waiting_dependency'
         WHEN attached_run THEN 'agent_running' WHEN active_run THEN 'agent_busy'
         ELSE 'waiting_agent' END base_state
-    FROM waits LEFT JOIN agent_activations retry ON retry.id=waits.retry_id
+    -- A held unknown outcome is never a scheduled retry, whatever stale activation remains.
+    FROM waits LEFT JOIN agent_activations retry ON retry.id=waits.retry_id AND waits.request_state IN ('open','in_progress') AND retry.available_at>:now
   )`;
   const bindings={executionId:execution.id,activeExecution:Number(activeExecution),now};
   const waitingAttempts = includeAgentWaits
@@ -84,7 +86,7 @@ export async function branchOperationalSummary(
   const classify=(a:Row)=>{
     const provider=engines.get(a.engine_id);
     let state:BranchOperationalSummaryDto['agentWaits'][number]['state']=a.base_state;
-    let label=state==='waiting_human'?'Agent needs an answer':state==='waiting_dependency'?'Agent waiting on another task':state==='agent_running'?'Agent work in progress':state==='agent_busy'?'Agent busy - queued':'Waiting for Agent';
+    let label=state==='needs_reconciliation'?'Agent result unknown':state==='waiting_human'?'Agent needs an answer':state==='waiting_dependency'?'Agent waiting on another task':state==='agent_running'?'Agent work in progress':state==='agent_busy'?'Agent busy - queued':'Waiting for Agent';
     let reason:string|undefined=state==='agent_busy'?'Another Run is active for this Agent.':undefined;
     let nextRetryAt:string|undefined;
     if(state==='waiting_agent'){
@@ -103,7 +105,7 @@ export async function branchOperationalSummary(
   const classifiedWaits=waitingAttempts.map(a=>({requestId:a.request_id as string,agentId:a.agent_id as string,
     agentName:a.agent_title||'Agent',engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...classify(a)}));
   const classifications=groups.map(group=>({...classify(group),total:Number(group.total)}));
-  const unknown=Number(attempts.unknown??0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
+  const unknown=Number(attempts.unknown??0)+classifications.filter(row=>row.state==='needs_reconciliation').reduce((n,row)=>n+row.total,0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
   const humanRequests=classifications.filter(row=>row.state==='waiting_human').reduce((n,row)=>n+row.total,0);
   const totalWaits=classifications.reduce((n,row)=>n+row.total,0);
   const counts={completed:Number(steps.completed??0),running:readBranchWorkingStepCount(db,execution.id,now),retrying,failed:Number(steps.failed??0),

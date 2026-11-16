@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type {BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
+import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
 /** Bound the shared source map by live scheduler authority before mapping
@@ -54,7 +54,7 @@ export function readBranchLiveOutputs(db:Database.Database,executionId:string,at
 const workingSteps = `
   current_branch_attempts AS (
     SELECT run.id execution_id,step.id step_id,attempt.id attempt_id,
-      attempt.state,attempt.lease_owner,attempt.lease_until,
+      attempt.state,attempt.lease_owner,attempt.lease_until,attempt.available_at,
       attempt.process_identity_json IS NOT NULL process_authorized,attempt.request_id
     FROM active_branch_runs run
     JOIN branch_step_executions step ON step.execution_id=run.id
@@ -76,22 +76,100 @@ const workingSteps = `
     ))
   )`;
 
+/** True when nothing yet proves the exact Run's provider processes exited: an
+ * unexited registration, a live authority, an unsettled or unknown start, or no
+ * registration at all. A never-injected Run with no durable start admission is
+ * proven never started, because every provider spawn requires one. */
+export function runExitUnprovenSql(run:string,injection:string):string {
+  return `(EXISTS(SELECT 1 FROM provider_process_authority live WHERE live.run_id=${run})
+    OR EXISTS(SELECT 1 FROM host_lifecycle_commits registration WHERE registration.kind='provider-process-registration'
+      AND json_extract(registration.receipt_json,'$.runId')=${run} AND NOT EXISTS(SELECT 1 FROM host_lifecycle_commits exited
+        WHERE exited.kind='provider-process-exit' AND exited.identity=json_extract(registration.receipt_json,'$.authorityId')
+          AND json_extract(exited.receipt_json,'$.result')='observed_exited'))
+    OR EXISTS(SELECT 1 FROM host_lifecycle_commits claim WHERE claim.kind='provider-start-admission'
+      AND json_extract(claim.receipt_json,'$.runId')=${run} AND (EXISTS(SELECT 1 FROM host_lifecycle_commits unknown
+        WHERE unknown.kind='provider-start-unknown' AND unknown.identity=claim.identity) OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits settled
+        WHERE settled.kind='provider-start-settlement' AND settled.identity=claim.identity)))
+    OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.runId')=${run})
+      AND (${injection}<>'not_injected' OR EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=${run})))`;
+}
+
+/** A held Stop/Skip that can no longer finish by itself: a terminal Run whose exit
+ * is unproven while no live authority remains to observe it. Settlement uses the
+ * same proof (runExitUnprovenSql), so Stopping never waits on something it cannot see. */
+export function branchStopBlockedSql(executionId:string):string {
+  return `EXISTS(SELECT 1 FROM branch_step_executions blocked_step
+    JOIN branch_attempts blocked ON blocked.step_execution_id=blocked_step.id AND blocked.cancel_requested=1 AND blocked.state='outcome_unknown'
+    JOIN activation_sources blocked_source ON blocked_source.source_kind='request' AND blocked_source.source_id=blocked.request_id
+    JOIN scheduler_run_activations blocked_attached ON blocked_attached.activation_id=blocked_source.activation_id
+    JOIN scheduler_runs blocked_run ON blocked_run.id=blocked_attached.run_id AND blocked_run.status NOT IN ('leased','running')
+    WHERE blocked_step.execution_id=${executionId}
+      AND NOT EXISTS(SELECT 1 FROM scheduler_cancellation_receipts receipt JOIN provider_operation_outbox operation ON operation.run_id=receipt.run_id
+        AND operation.idempotency_key='cancel:'||receipt.agent_id||':'||receipt.idempotency_key AND operation.operation='interrupt' AND operation.state='completed'
+        WHERE receipt.run_id=blocked_run.id AND receipt.accepted=1)
+      AND ${runExitUnprovenSql('blocked_run.id','blocked_run.prompt_injection_state')}
+      AND NOT EXISTS(SELECT 1 FROM provider_process_authority live WHERE live.run_id=blocked_run.id OR live.id IN (
+        SELECT json_extract(registration.receipt_json,'$.authorityId') FROM host_lifecycle_commits registration
+        WHERE registration.kind='provider-process-registration' AND json_extract(registration.receipt_json,'$.runId')=blocked_run.id)))`;
+}
+
+/** The one effective-status projection for header counts, history rows, filters
+ * and selected detail. Precedence: an accepted Stop/Skip, then unresolved
+ * outcomes, then proven work, a real future retry, startup queue, valid waits. */
+function classifiedBranchRunsCte(scope:string):string {
+  return `${BRANCH_LIVE_REQUEST_LINEAGE_CTE},active_branch_runs AS (
+    SELECT id,branch_id,state,cancel_requested FROM branch_executions WHERE ${scope} AND state IN ('queued','running','waiting')
+  ),${workingSteps}, attention_runs AS (
+    SELECT DISTINCT current.execution_id FROM current_branch_attempts current
+    LEFT JOIN coordination_requests request ON request.id=current.request_id
+    WHERE current.state='outcome_unknown' OR current.state='waiting' AND request.state IN ('outcome_unknown','superseded','recipient_unavailable')
+  ), retry_runs AS (
+    SELECT DISTINCT current.execution_id FROM current_branch_attempts current
+    WHERE current.state='prepared' AND current.available_at>:now
+      OR current.state='waiting' AND EXISTS(SELECT 1 FROM coordination_requests request
+        JOIN activation_sources source ON source.source_kind='request' AND source.source_id=request.id
+        JOIN agent_activations activation ON activation.id=source.activation_id
+        WHERE request.id=current.request_id AND request.state IN ('open','in_progress')
+          AND activation.state='retry_pending' AND activation.available_at>:now)
+  ), classified AS (
+    SELECT run.id,run.branch_id,CASE
+      WHEN run.cancel_requested=1 THEN CASE WHEN ${branchStopBlockedSql('run.id')} THEN 'needs_attention' ELSE 'stopping' END
+      WHEN run.id IN (SELECT execution_id FROM attention_runs) THEN 'needs_attention'
+      WHEN EXISTS(SELECT 1 FROM working_branch_steps work WHERE work.execution_id=run.id) THEN 'running'
+      WHEN run.id IN (SELECT execution_id FROM retry_runs) THEN 'retrying'
+      WHEN run.state='queued' THEN 'queued' ELSE 'waiting' END state
+    FROM active_branch_runs run
+  )`;
+}
+
+export const BRANCH_EFFECTIVE_STATUSES=['queued','running','waiting','retrying','stopping','needs_attention'] as const satisfies readonly BranchEffectiveStatus[];
+const emptyCounts=():BranchRunCountsDto=>({running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0});
+
 /** One bounded aggregate read for a directory page or one lifecycle owner.
  * Every nonterminal Run belongs to exactly one bucket; history filters and
  * pagination never participate in these counts. No provider probes are needed. */
 export function readBranchRunCounts(db:Database.Database,branchIds:readonly string[],now=new Date().toISOString()):Map<string,BranchRunCountsDto> {
-  const ids=[...new Set(branchIds)],counts=new Map(ids.map(id=>[id,{running:0,waiting:0,queued:0}]));
+  const ids=[...new Set(branchIds)],counts=new Map(ids.map(id=>[id,emptyCounts()]));
   if(!ids.length)return counts;
-  const rows=db.prepare(`${BRANCH_LIVE_REQUEST_LINEAGE_CTE},active_branch_runs AS (
-    SELECT id,branch_id,state,cancel_requested FROM branch_executions
-    WHERE branch_id IN (SELECT value FROM json_each(:branchIds)) AND state IN ('queued','running','waiting')
-  ),${workingSteps}, classified AS (
-    SELECT run.branch_id,CASE WHEN EXISTS(SELECT 1 FROM working_branch_steps work WHERE work.execution_id=run.id)
-      THEN 'running' WHEN run.state='queued' THEN 'queued' ELSE 'waiting' END state FROM active_branch_runs run
-  ) SELECT branch_id,SUM(state='running') running,SUM(state='waiting') waiting,SUM(state='queued') queued
-    FROM classified GROUP BY branch_id`).all({branchIds:JSON.stringify(ids),now}) as Array<{branch_id:string;running:number;waiting:number;queued:number}>;
-  for(const row of rows)counts.set(row.branch_id,{running:Number(row.running),waiting:Number(row.waiting),queued:Number(row.queued)});
+  const rows=db.prepare(`${classifiedBranchRunsCte('branch_id IN (SELECT value FROM json_each(:branchIds))')}
+    SELECT branch_id,SUM(state='running') running,SUM(state='waiting') waiting,SUM(state='queued') queued,SUM(state='retrying') retrying,
+      SUM(state='stopping') stopping,SUM(state='needs_attention') needsAttention FROM classified GROUP BY branch_id`).all({branchIds:JSON.stringify(ids),now}) as Array<{branch_id:string}&Record<keyof BranchRunCountsDto,number>>;
+  for(const {branch_id,...row} of rows)counts.set(branch_id,Object.fromEntries(Object.entries(row).map(([key,value])=>[key,Number(value)])) as unknown as BranchRunCountsDto);
   return counts;
+}
+
+/** Effective status for one bounded history page: one query, never one per row. */
+export function readBranchEffectiveStatuses(db:Database.Database,executionIds:readonly string[],now=new Date().toISOString()):Map<string,BranchEffectiveStatus> {
+  if(!executionIds.length)return new Map();
+  const rows=db.prepare(`${classifiedBranchRunsCte('id IN (SELECT value FROM json_each(:ids))')} SELECT id,state FROM classified`).all({ids:JSON.stringify(executionIds),now}) as Array<{id:string;state:BranchEffectiveStatus}>;
+  return new Map(rows.map(row=>[row.id,row.state]));
+}
+
+/** History filter membership uses the exact count predicate across every page. */
+export function branchEffectiveStatusPage(db:Database.Database,branchId:string,status:BranchEffectiveStatus,beforeRowid:number,now=new Date().toISOString()):string[] {
+  return (db.prepare(`${classifiedBranchRunsCte('branch_id=:branchId AND rowid<:before')}
+    SELECT classified.id FROM classified JOIN branch_executions execution ON execution.id=classified.id
+    WHERE classified.state=:status ORDER BY execution.rowid DESC LIMIT 100`).all({branchId,before:beforeRowid,status,now}) as Array<{id:string}>).map(row=>row.id);
 }
 
 /** Selected-Run diagnostics reuse the exact batch-count proof, not a second

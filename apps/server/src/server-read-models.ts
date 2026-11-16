@@ -41,7 +41,10 @@ import {
 
 interface ReadModelContext {
   contextRecoveryActivity?(agentId:string):"running"|"cleanup_pending"|"idle";
-  runtimeCleanupPending?(agentId: string): boolean;
+  /** Ordinary teardown after a finished Run is "cleaning"; only recorded teardown
+   * failure (including its retry window) is "failed". Admission is enforced by the
+   * runtime authority itself, not by this observation. */
+  runtimeCleanupFailed?(agentId: string): boolean;
   admissionBlocker?(agent: AgentDto): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
@@ -763,7 +766,7 @@ export function createServerReadModels(context: ReadModelContext) {
       }]),
     );
     for (const agent of agents) {
-      if (ownership.has(agent.id) || !context.runtimeCleanupPending?.(agent.id)) continue;
+      if (ownership.has(agent.id) || !context.runtimeCleanupFailed?.(agent.id)) continue;
       const retained = store.sqlite.prepare(`
         SELECT run_id, created_at FROM provider_process_authority
         WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1

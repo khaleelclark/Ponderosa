@@ -28,7 +28,7 @@ import type {
   WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { normalizeResetPages, uniqueBy } from "../collections";
@@ -154,7 +154,7 @@ function SearchResultRow({
     onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); onSelect(); } }}
     alignItems="flex-start"
     aria-label={ariaLabel}
-    sx={{ borderRadius: 1.5, mb: .5 }}
+    sx={{ borderRadius: 1.5, mb: .5, minWidth: 0, maxWidth: "100%", "& .MuiListItemText-root": { minWidth: 0 } }}
   >
     <ListItemText primary={primary} secondary={secondary} />
   </ListItemButton>;
@@ -180,9 +180,9 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
         {result.unread ? <Box component="span" aria-label="Unread" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", flexShrink: 0 }} /> : null}
-        <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto !important", flexShrink: 0 }}>{new Date(result.timestamp).toLocaleString()}</Typography>
+        <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto !important", minWidth: 0, maxWidth: "65%" }}>{new Date(result.timestamp).toLocaleString()}</Typography>
       </Stack>}
-    secondary={<Stack spacing={.25} component="span">
+    secondary={<Stack spacing={.25} component="span" sx={{ minWidth: 0 }}>
         <Typography component="span" variant="caption" color="text.secondary">{result.chat.kind === "agent" ? "Agent" : "Chat"} · {result.author.label}</Typography>
         <SearchSnippet snippet={result.snippet} ranges={result.highlights} query={query} />
       </Stack>}
@@ -203,11 +203,11 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
     onActive={onActive}
     onSelect={onSelect}
     ariaLabel={`Open Recent Chat ${recent.chat.title}`}
-    primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-        <Typography fontWeight={700} noWrap>{recent.chat.title}</Typography>
-        {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800 }}>{recent.unreadCount} unread</Typography> : null}
+    primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+        <Typography fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>{recent.chat.title}</Typography>
+        {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800, flexShrink: 0 }}>{recent.unreadCount} unread</Typography> : null}
       </Stack>}
-    secondary={<Stack component="span" spacing={.25}>
+    secondary={<Stack component="span" spacing={.25} sx={{ minWidth: 0 }}>
         <Typography component="span" variant="caption" color="text.secondary">{recent.chat.kind === "agent" ? "Agent" : "Chat"}</Typography>
         {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{plainGlobalSearchSnippet(recent.snippet)}</Typography> : null}
       </Stack>}
@@ -323,6 +323,16 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
     setResultLimit(25);
   }, [query, scope]);
   useEffect(() => { setActiveIndex(-1); }, [entryIdentity]);
+  const resultsBody = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Scroll only the results body: scrollIntoView would also move the dialog,
+    // header or background workspace when they are scrollable.
+    const body = resultsBody.current, option = activeIndex >= 0 ? document.getElementById(`global-search-option-${activeIndex}`) : null;
+    if (!open || !body || !option || !body.contains(option)) return;
+    const view = body.getBoundingClientRect(), item = option.getBoundingClientRect();
+    if (item.top < view.top) body.scrollTop -= view.top - item.top;
+    else if (item.bottom > view.bottom) body.scrollTop += item.bottom - view.bottom;
+  }, [open, activeIndex]);
   const chooseSelection = (selection: GlobalSearchSelection) => {
     onSelect(selection);
     onClose();
@@ -345,8 +355,8 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
     }
   };
 
-  return <Dialog open={open} onClose={onClose} onTransitionExited={onExited} disableRestoreFocus fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
-    <Box component="header" sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
+  return <Dialog open={open} onClose={onClose} onTransitionExited={onExited} disableRestoreFocus fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none", display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" } }}>
+    <Box component="header" sx={{ p: 0, flexShrink: 0, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <Typography
         id="global-chat-search-title"
         component="h2"
@@ -373,12 +383,12 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />
-    </Box>
-    <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
-      <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ px: { xs: 1.5, sm: 2 }, pb: 1.5 }}>
         {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
-      <Box role="status" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>
+    </Box>
+    <DialogContent ref={resultsBody} sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: 0, minWidth: 0, flex: "1 1 auto", overflowY: "auto" }}>
+      <Box role="status" aria-atomic="true" sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>
         {isSearching ? "Searching…" : searchFailed ? "Some search results could not load." : `${entries.length} suggestion${entries.length === 1 ? "" : "s"} available.`}
       </Box>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
