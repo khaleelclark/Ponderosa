@@ -11,9 +11,15 @@ export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 609,
 const fail: (code: string) => never = code => { throw new Error(`bounded state read refused (${code})`); };
 export const stateQuote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 export type Bind = string | number | bigint | Buffer | null;
+// Startup admission already reads every byte of its copied state, so its work
+// bound grows with that size instead of a fixed count. A row charges its count
+// plus one unit per table/index entry, and each entry is a b-tree cell of at
+// least 6 bytes, so real state never needs more than one unit per 3 bytes.
+const ADMITTED_BYTES_PER_ROW = 2;
 export class StateReadBudget {
   #rows = 0;
   #bytes = 0;
+  #rowLimit: number = STATE_READ_LIMITS.rows;
   constructor(private storage?: { charge(bytes: number): void }) {}
   /** Bind invocation storage once, charging already reserved fixed setup bytes.
    * No counter reset/refund; this cost sink supplies no admission authority. */
@@ -31,18 +37,24 @@ export class StateReadBudget {
     try { this.storage?.charge(bytes); } catch (error) { this.exhausted = true; throw error; }
   }
   get rows(): number { return this.#rows; }
+  get rowLimit(): number { return this.#rowLimit; }
+  /** Raise-only: never below the fixed floor for ordinary reads. */
+  scaleRowsToBytes(bytes: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) fail("row-scale");
+    this.#rowLimit = Math.max(this.#rowLimit, Math.ceil(bytes / ADMITTED_BYTES_PER_ROW));
+  }
   exhausted = false;
   // Reservations survive prepare/query/iteration exceptions; only successful
   // bounded scalar discovery settles its unused allowance. No failed refund.
   reserve(rows: number): void {
-    if (!Number.isSafeInteger(rows) || rows < 0 || rows > STATE_READ_LIMITS.rows - this.rows) {
+    if (!Number.isSafeInteger(rows) || rows < 0 || rows > this.#rowLimit - this.rows) {
       this.exhausted = true; fail("work");
     }
     this.#rows += rows;
   }
   discoverPopulation(read: (limit: number) => number, unitsPerRow = 1): number {
     if (!Number.isSafeInteger(unitsPerRow) || unitsPerRow < 1) fail("population-unit-cost");
-    const allowance = Math.floor((STATE_READ_LIMITS.rows - this.#rows) / unitsPerRow);
+    const allowance = Math.floor((this.#rowLimit - this.#rows) / unitsPerRow);
     if (allowance < 2) { this.exhausted = true; fail("population-work"); }
     this.reserve(allowance * unitsPerRow);
     const n = read(allowance - 1);

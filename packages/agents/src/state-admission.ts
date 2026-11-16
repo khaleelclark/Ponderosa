@@ -157,7 +157,7 @@ function verifyDatabase(sqlite: Database.Database, generationId: string,
       const n = reads.population(`"${table.name.replaceAll('"', '""')}"`);
       const keys = reads.population(`pragma_index_list('${table.name.replaceAll("'", "''")}')`);
       if (keys > 512) refuse(); work += n * (keys + 1);
-      if (!Number.isSafeInteger(work) || work > 16_000_000) refuse();
+      if (!Number.isSafeInteger(work) || work > reads.budget.rowLimit) refuse();
     }
     // One integrity pass charged once. A measured row read reruns the check to
     // size its result, tripling both the charge and the disk scan.
@@ -244,7 +244,7 @@ function snapshot(root: string, names: readonly string[], budget: StateReadBudge
       } finally { closeSync(target); }
     }
     verify();
-    return { directory, verify, dispose };
+    return { directory, verify, dispose, bytes: entries.reduce((total, entry) => total + Number(entry.before.size), 0) };
   } catch (error) { dispose(); throw error; }
 }
 
@@ -257,6 +257,7 @@ function verifyRootWithin(root: string, names: string[], marker: StateIdentity, 
   }
   const copied = snapshot(root, names, budget);
   try {
+    budget.scaleRowsToBytes(copied.bytes);
     const contract = expectedContract(budget);
     let upgrade = false;
     for (const name of names) {
@@ -266,6 +267,10 @@ function verifyRootWithin(root: string, names: string[], marker: StateIdentity, 
         bindStateReadBudget(sqlite, budget);
         sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
         upgrade = verifyDatabase(sqlite, marker.generationId, contract, allowHistoryUpgrade);
+      } catch (error) {
+        // An exhausted budget is a deterministic refusal (exit 78), not a crash to restart.
+        if (budget.exhausted && !(error instanceof StateAdmissionError)) refuse(name, "state read budget exceeded");
+        throw error;
       } finally { sqlite.close(); }
     }
     copied.verify();
