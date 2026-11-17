@@ -228,7 +228,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (/\b(?:subscription (?:expired|inactive)|oauth session expired|failed to authenticate|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
     return "authentication";
   }
-  if (/\b(?:0 weighted tokens left|usage limit (?:was )?reached|quota (?:exhausted|reached)|you(?: have|'ve) hit your (?:usage )?limit)\b/u.test(value)) return "quota_exhausted";
+  if (/\b(?:0 weighted tokens left|usage limit (?:was )?reached|out of usage credits|quota (?:exhausted|reached)|you(?: have|'ve) hit your (?:usage )?limit)\b/u.test(value)) return "quota_exhausted";
   if (/\b(?:temporary throttl(?:e|ing)|temporarily (?:throttl(?:ed|ing)|limiting requests))\b/u.test(value)) return "throttled";
   if (/\b(?:rate limit(?:ed)?|too many requests|http 429)\b/u.test(value)) {
     return "rate_limit";

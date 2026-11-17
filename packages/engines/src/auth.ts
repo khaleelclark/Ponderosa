@@ -15,6 +15,7 @@ import {
 import { spawnContainedCli } from "./contained-spawn.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
+import { CLAUDE_MODEL_ENVIRONMENT, CLAUDE_PROBE_MODELS } from "./claude-model-fidelity.js";
 import { mapCodexEvent } from "./events.js";
 
 type AuthCommandRunner = (
@@ -309,65 +310,79 @@ export async function claudeAvailabilityStatus(
       return typeof hint === "string" ? hint.slice(0, 1_000) : undefined;
     } catch { return undefined; }
   };
-  try {
-    const { stdout } = await run(bin, [
-      "--print",
-      "--output-format", "json",
-      "--permission-mode", "dontAsk",
-      "--tools", "",
-      "--safe-mode",
-      "--no-session-persistence",
-      `Reply exactly ${marker} and do nothing else.`,
-    ], {
-      env: runtimeEnvironment(env),
-      timeout: 60_000,
-      maxBuffer: 2 * 1024 * 1024,
-      ...options,
-    });
-    let parsed: unknown;
-    try { parsed = JSON.parse(stdout); }
-    catch {
-      return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
-    }
-    const result = parsed as {
-      type?: unknown; subtype?: unknown; is_error?: unknown;
-      result?: unknown; error?: unknown;
-    };
-    if (result.type !== "result" || result.subtype !== "success" || result.is_error !== false) {
-      const hint = failureHint(stdout) ?? "";
-      const failureCategory = classifyProviderFailure(hint);
+  const attempt = async (model: string): Promise<EngineAvailabilityStatus> => {
+    try {
+      const { stdout } = await run(bin, [
+        "--print",
+        "--output-format", "json",
+        "--permission-mode", "dontAsk",
+        "--tools", "",
+        "--safe-mode",
+        "--no-session-persistence",
+        "--model", model,
+        `Reply exactly ${marker} and do nothing else.`,
+      ], {
+        env: runtimeEnvironment({ ...env, ...CLAUDE_MODEL_ENVIRONMENT }),
+        timeout: 60_000,
+        maxBuffer: 2 * 1024 * 1024,
+        ...options,
+      });
+      let parsed: unknown;
+      try { parsed = JSON.parse(stdout); }
+      catch {
+        return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
+      }
+      const result = parsed as {
+        type?: unknown; subtype?: unknown; is_error?: unknown;
+        result?: unknown; error?: unknown;
+      };
+      if (result.type !== "result" || result.subtype !== "success" || result.is_error !== false) {
+        const hint = failureHint(stdout) ?? "";
+        const failureCategory = classifyProviderFailure(hint);
+        return {
+          available: false,
+          failureCategory,
+          detail: failureCategory === "invalid_request"
+            ? publicProviderFailure({ detail: hint, category: failureCategory }).summary
+            : failureCategory === "authentication"
+            ? "Claude sign-in has expired or was rejected. Sign in to Claude again."
+            : "Claude did not complete the harness-backed test request",
+        };
+      }
+      if (typeof result.result !== "string" || result.result.trim() !== marker) {
+        return { available: false, failureCategory: "unavailable", detail: "Claude did not return the entitlement-test marker" };
+      }
+      return { available: true, detail: "Claude accepted a harness-backed test request" };
+    } catch (error) {
+      const failure = error as Error & { stderr?: string; stdout?: string; probeReason?: string };
+      const detail = failureHint(failure.stdout)
+        || failure.stderr?.trim()
+        || failure.message
+        || String(error);
+      const failureCategory = failure.probeReason ? "unavailable" : classifyProviderFailure(detail);
       return {
         available: false,
         failureCategory,
         detail: failureCategory === "invalid_request"
-          ? publicProviderFailure({ detail: hint, category: failureCategory }).summary
-          : failureCategory === "authentication"
-          ? "Claude sign-in has expired or was rejected. Sign in to Claude again."
-          : "Claude did not complete the harness-backed test request",
+          ? publicProviderFailure({ detail, category: failureCategory }).summary
+          : detail.slice(0, 1_000),
       };
     }
-    if (typeof result.result !== "string" || result.result.trim() !== marker) {
-      return { available: false, failureCategory: "unavailable", detail: "Claude did not return the entitlement-test marker" };
-    }
-    return { available: true, detail: "Claude accepted a harness-backed test request" };
-  } catch (error) {
-    const failure = error as Error & { stderr?: string; stdout?: string; probeReason?: string };
-    const detail = failureHint(failure.stdout)
-      || failure.stderr?.trim()
-      || failure.message
-      || String(error);
-    const failureCategory = failure.probeReason ? "unavailable" : classifyProviderFailure(detail);
-    return {
-      available: false,
-      failureCategory,
-      detail: failureCategory === "invalid_request"
-        ? publicProviderFailure({ detail, category: failureCategory }).summary
-        : detail.slice(0, 1_000),
-    };
+  };
+  // Test models agents use, not whatever the CLI defaults to. A usage limit
+  // can belong to one model: Claude accepts work while any offered model
+  // does, and a Run on a limited model reports its own usage limit.
+  let limited: EngineAvailabilityStatus | undefined;
+  for (const model of CLAUDE_PROBE_MODELS) {
+    options.signal?.throwIfAborted();
+    const result = await attempt(model);
+    if (result.failureCategory !== "quota_exhausted") return result;
+    limited = result;
   }
+  return { ...limited!, detail: "Claude usage limits are reached for every model Ponderosa offers." };
 }
 
 export function parseCodexLoginStatus(output: string): EngineAuthStatus {

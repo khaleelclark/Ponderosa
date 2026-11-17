@@ -31,6 +31,7 @@ import { streamProcess } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
 import { ClaudeModelCatalogProbe } from "./claude-models.js";
+import { CLAUDE_DEFAULT_MODEL, CLAUDE_MODEL_ENVIRONMENT, claudeModelGuard } from "./claude-model-fidelity.js";
 import { readClaudeProviderUsage } from "./provider-usage.js";
 
 export interface ClaudeAdapterOptions {
@@ -235,7 +236,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   defaultModel(): string {
-    return "sonnet";
+    return CLAUDE_DEFAULT_MODEL;
   }
 
   defaultEffort(): string {
@@ -310,9 +311,10 @@ export class ClaudeAdapter implements Adapter {
       this.baseArgs(prompt, opts.systemPrompt, opts.model, opts.effort),
       opts.cwd,
       opts.signal,
-      claudeBillingEnvironment(opts.environment, opts.expectedBillingMode),
+      { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), ...CLAUDE_MODEL_ENVIRONMENT },
       opts.onRuntimeRootExit,
       opts.onRuntimeSpawned,
+      opts.model,
     );
   }
 
@@ -322,7 +324,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), opts.onRuntimeRootExit, opts.onRuntimeSpawned);
+    return this.run(args, opts.cwd, opts.signal, { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), ...CLAUDE_MODEL_ENVIRONMENT }, opts.onRuntimeRootExit, opts.onRuntimeSpawned, opts.model);
   }
 
   private async *run(
@@ -332,7 +334,9 @@ export class ClaudeAdapter implements Adapter {
     environment?: Record<string, string>,
     onRuntimeRootExit?: () => void,
     onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void,
+    model?: string,
   ): AsyncGenerator<AgentEvent> {
+    const mapper = claudeStreamEventMapper(), guard = claudeModelGuard(model, environment);
     for await (const event of streamProcess({
       bin: this.bin,
       args,
@@ -342,13 +346,16 @@ export class ClaudeAdapter implements Adapter {
       onRuntimeSpawned,
       environment,
       killGraceMs: this.killGraceMs,
-      map: claudeStreamEventMapper(),
+      map: (raw, context) => {
+        const substitution = guard(raw);
+        return substitution ? [substitution] : mapper(raw, context);
+      },
       label: "claude",
     })) {
       yield event;
       // Closing the source awaits observed process-group exit, including a
       // CLI watchdog that would otherwise retry independently after rejection.
-      if (event.type === "error" && event.code === "quota_exhausted") return;
+      if (event.type === "error" && (event.code === "quota_exhausted" || event.code === "invalid_model")) return;
     }
   }
 }

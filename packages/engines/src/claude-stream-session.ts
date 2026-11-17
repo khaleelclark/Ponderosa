@@ -36,6 +36,7 @@ import { claudeBillingEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
+import { CLAUDE_MODEL_ENVIRONMENT, claudeModelGuard } from "./claude-model-fidelity.js";
 import { encodeSessionTools } from "./ponderosa-mcp-contract.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
@@ -81,6 +82,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   private historyActive = false;
   private reportDrainedRootExit?: () => void;
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
+  private modelEnvironment: Readonly<Record<string, string | undefined>> = {};
+  private modelGuard: ReturnType<typeof claudeModelGuard> = () => undefined;
   private nativeCommand?: ClaudeNativeCompaction;
   private readonly taskLifetime: ClaudeTaskLifetime;
   private readonly taskStop: ClaudeTaskStop;
@@ -165,7 +168,9 @@ export class ClaudeStreamSession implements RuntimeSession {
     opts.assertHistoryCurrent?.();
     // Session state frames are opt-in. ClaudeTaskLifetime needs the post-result
     // idle frame to close any turn that started native background work.
-    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" };
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1", ...CLAUDE_MODEL_ENVIRONMENT };
+    this.modelEnvironment = environment;
+    this.modelGuard = claudeModelGuard(opts.model, environment);
     const contained = spawnContainedCli({
       bin: opts.bin,
       args,
@@ -520,6 +525,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     try {
       await this.controls.request({ subtype: "set_model", model });
       this.selectedModel = model;
+      this.modelGuard = claudeModelGuard(model, this.modelEnvironment);
       // Native init carries no correlation to a live set_model acknowledgement.
       // A late old-model init cannot prove the current model for compaction.
       this.modelChangedSinceOpen = true;
@@ -681,6 +687,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
         if (this.handleNativeRequest(raw)) continue;
         this.captureModelInitialization(raw);
+        const substitution = this.modelGuard(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.selectedModel);
         if (capabilities && capabilities.sessionId !== this.engineAgentId) throw new Error("Claude session changed");
         if (capabilities?.sessionId === this.engineAgentId) {
@@ -707,8 +714,8 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
         const observation = this.contextObservations.observe(raw);
         if (observation) { this.usageInvalidated = false; yield observation; }
-        const lifetimeEvents = this.taskLifetime.observe(raw);
-        const projected = map(raw, { cwd: this.opts.cwd }).flatMap(event => this.taskLifetime.project(event, raw));
+        const lifetimeEvents = substitution ? [] : this.taskLifetime.observe(raw);
+        const projected = substitution ? [substitution] : map(raw, { cwd: this.opts.cwd }).flatMap(event => this.taskLifetime.project(event, raw));
         for (const event of [...lifetimeEvents, ...projected]) {
           if(event.type==='error'){this.terminalEvent=event;if(!this.initialized){this.initializationFailure=new Error(event.message);this.initializationReady();}}
           if (event.type === "turn_done" || event.type === "error") {
@@ -717,7 +724,7 @@ export class ClaudeStreamSession implements RuntimeSession {
             this.cancelApprovals();
             this.contextObservations.endTurn();
           }
-          if (event.type === "error" && (event.code === "quota_exhausted" || this.taskLifetime.ownsRun)) {
+          if (event.type === "error" && (event.code === "quota_exhausted" || event === substitution || this.taskLifetime.ownsRun)) {
             // A terminal failure cannot leave accepted native work running
             // after its managed Run loses authority. Quota failures likewise
             // drain the provider's own retry watchdog before host recovery.
