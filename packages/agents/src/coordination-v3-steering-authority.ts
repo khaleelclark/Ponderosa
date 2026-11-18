@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { interruptedProviderSwitchSourceIds, wakesInterruptedProviderWork } from "./coordination-v3-task-lineage.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
 import type { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import { preserveInitialRepliesForUnknownSteering } from "./coordination-v3-required-reply-authority.js";
@@ -204,11 +205,23 @@ export class CoordinationV3SteeringAuthority {
         fencing_token: number;
         provider_session_id: string | null;
       }>;
-      const candidate=candidates.find(row=>!row.scheduled||branchScheduleActivationEligible(this.sqlite,row.activation_id,row.run_id,now,this.canonicalTaskDecisions));
+      const sourceIdsByRun = new Map<string, Set<string>>();
+      const historicalSources = (row: typeof candidates[number]) => {
+        let ids=sourceIdsByRun.get(row.run_id);
+        if(!ids) {
+          ids=new Set(interruptedProviderSwitchSourceIds(this.sqlite,row.agent_id,row.project_id,row.scope_key));
+          sourceIdsByRun.set(row.run_id,ids);
+        }
+        return ids;
+      };
+      const candidate=candidates.find(row=>
+        !wakesInterruptedProviderWork(this.sqlite,row.activation_id,historicalSources(row)) &&
+        (!row.scheduled||branchScheduleActivationEligible(this.sqlite,row.activation_id,row.run_id,now,this.canonicalTaskDecisions)));
       if (!candidate) return undefined;
       // Human steering recovery may retry its sources on a fresh Run. Schedule
       // updates must never share that recovery boundary or acquire that fallback.
       const scheduled=Boolean(candidate.scheduled);
+      const historical=historicalSources(candidate);
       const eligibleActivations = (this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
@@ -242,8 +255,9 @@ export class CoordinationV3SteeringAuthority {
         candidate.run_id,
         scheduled?1:0,
         candidate.run_id,
-        scheduled?64:limit,
-      ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions));
+        scheduled||historical.size?64:limit,
+      ) as ActivationRow[]).filter(activation=>!wakesInterruptedProviderWork(this.sqlite,activation.id,historical) &&
+        (!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions)));
       // A workflow guidance delivery has its own receipt and cancellation
       // boundary; never combine it with another activation in one submission.
       const isBranchGuidance=(id:string)=>Boolean(this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='branch_guidance'").get(id));

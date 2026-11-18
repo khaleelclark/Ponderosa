@@ -52,6 +52,29 @@ export function delegationOriginsForActivation(sqlite: Database.Database, activa
     .all(activationId) as Array<{ id: string }>).map(row => row.id);
 }
 
+/** Fence old source work while the exact successor owns its lease, and keep
+ * the fence after submission. A pre-submission failure releases this claim. */
+export function interruptedProviderSwitchSourceIds(sqlite:Database.Database,agentId:string,projectId:string,scopeKey:string):string[] {
+  return (sqlite.prepare(`
+    SELECT DISTINCT old.id FROM activation_sources reference
+    JOIN scheduler_run_activations attached ON attached.activation_id=reference.activation_id
+    JOIN scheduler_runs successor ON successor.id=attached.run_id
+    JOIN scheduler_runs old ON old.id=reference.source_id
+      AND old.agent_id=successor.agent_id AND old.project_id=successor.project_id AND old.scope_key=successor.scope_key
+      AND old.fencing_token<successor.fencing_token
+    WHERE reference.source_kind='interrupted_provider_switch'
+      AND successor.agent_id=? AND successor.project_id=? AND successor.scope_key=?
+      AND (successor.status IN ('leased','running') OR successor.prompt_injection_state<>'not_injected')
+  `).all(agentId,projectId,scopeKey) as {id:string}[]).map(row=>row.id);
+}
+
+export function wakesInterruptedProviderWork(sqlite:Database.Database,activationId:string,sourceRunIds:ReadonlySet<string>):boolean {
+  return sourceRunIds.size!==0 &&
+    // A separately reviewed continuation carries its own exact authority.
+    !sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'").get(activationId) &&
+    delegationOriginsForActivation(sqlite,activationId).some(id=>sourceRunIds.has(id));
+}
+
 /** Bound after structural lineage filtering, never after unrelated inbox rows. */
 export function pendingTaskWakeIds(sqlite: Database.Database, input: {
   projectId: string; agentId: string; scopeKey: string; originRunIds: string[];

@@ -381,6 +381,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
     agentId: string;
     limit?: number;
     now?: string;
+    excludePreviouslySubmittedRunIds?: readonly string[];
   }): CommunicationV4NextRunDelivery[] {
     if (!this.isConversationMember(input.agentId, input.conversationId)) return [];
     const now = input.now ?? new Date().toISOString();
@@ -394,6 +395,12 @@ export class CommunicationV4NextRunDeliveryAuthority {
       WHERE recipient.agent_id = ? AND recipient.state = 'pending'
         AND delivery.project_id = ? AND delivery.conversation_id = ?
         AND (delivery.expires_at IS NULL OR delivery.expires_at > ?)
+        AND NOT EXISTS(SELECT 1 FROM provider_inputs prior
+          JOIN json_each(prior.source_manifest_json,'$.sources') reference
+          WHERE prior.execution_id IN (SELECT value FROM json_each(?))
+            AND prior.project_id=delivery.project_id AND prior.agent_id=recipient.agent_id
+            AND json_extract(reference.value,'$.ref')='ponderosa://next-run-delivery/'||delivery.id
+            AND json_extract(reference.value,'$.delivery')='submitted')
       ORDER BY delivery.created_at, delivery.id
       LIMIT ?
     `).all(
@@ -401,6 +408,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
       input.projectId,
       input.conversationId,
       now,
+      JSON.stringify(input.excludePreviouslySubmittedRunIds ?? []),
       limit,
     ) as DeliveryRow[]).map(view);
   }

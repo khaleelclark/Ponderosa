@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CoordinationRequestState } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { interruptedProviderSwitchSourceIds, wakesInterruptedProviderWork } from "./coordination-v3-task-lineage.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
@@ -407,6 +408,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
         "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
       ).get(activation.id));
       const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
+      const historicalSources=new Set(interruptedProviderSwitchSourceIds(this.sqlite,candidate.agentId,candidate.projectId,candidate.scopeKey));
+      if(wakesInterruptedProviderWork(this.sqlite,candidate.activationId,historicalSources)) return undefined;
       const activations = candidateIsExplicitQueuedTurn || candidateIsBranchGuidance || candidateIsContextRollover || candidateIsReviewedSteering || hasVerifiedTransition(queuedActivations[0]!) || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
         ? [queuedActivations[0]!]
         : queuedActivations
@@ -417,6 +420,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             !awaitsSettingsPreflight(activation) &&
             !isContextRolloverCandidate(activation) &&
             !isReviewedSteering(activation) &&
+            !wakesInterruptedProviderWork(this.sqlite,activation.id,historicalSources) &&
             !hasVerifiedTransition(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask)
           .slice(0, limit);

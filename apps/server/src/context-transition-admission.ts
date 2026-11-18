@@ -41,7 +41,48 @@ type TransitionNotices=ReturnType<typeof createOperationalNotifications>;
 type TransitionContext={app:PonderosaServer;store:AgentStore;coordinationV3:CoordinationV3Store;workspace:WorkspaceStore;
  contextRecoveryRunning?:(agentId:string)=>boolean;
  createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification']};
-export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"workspace">,projectId:string,agentId:string,activationId:string):string{
+
+/** An interrupted generation is not transferable. Only a separately authored,
+ * unsubmitted instruction targeting the newly selected provider may cross it. */
+export function interruptedProviderSwitch(
+ ctx:Pick<TransitionContext,"store"|"coordinationV3"|"workspace">,
+ agent:AgentDto,scopeKey:string,
+){
+ const {store,coordinationV3,workspace}=ctx;
+ const packet=store.acceptedProviderSessionInput(agent.id,true);
+ const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+ if(!contract || contract.engineId===agent.activeEngine ||
+    contract.workingCopyId!==agent.workingCopy.id || contract.cwd!==agent.workingCopy.rootPath) return;
+ const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
+ if(!boundary || boundary.projectId!==agent.projectId || boundary.scopeKey!==scopeKey ||
+    scopeKey!==`conversation:${agent.conversationId}` || agent.workingCopy.state!=='ready' ||
+    coordinationV3.contextRecovery.active(agent.id) || coordinationV3.activeContextRollover(agent.id) ||
+    workspace.listDecisions({projectId:agent.projectId,agentId:agent.id,status:'pending'}).length) return;
+ if(store.sqlite.prepare(`SELECT 1 FROM provider_operation_outbox operation JOIN scheduler_runs run ON run.id=operation.run_id
+   WHERE run.agent_id=? AND operation.state<>'completed' LIMIT 1`).get(agent.id)) return;
+ if(contract.contractHash!==boundary.toolContractHash)return;
+ return boundary;
+}
+
+/** Verify the new input against its authored source rather than text or UI
+ * origin. In preparation the scheduler has already leased the exact input. */
+export function independentProviderSwitchInput(store:AgentStore,agent:AgentDto,activationId?:string):boolean {
+ return Boolean(store.sqlite.prepare(`SELECT 1 FROM agent_activations a
+   JOIN activation_sources source ON source.activation_id=a.id AND source.source_kind='communication'
+   JOIN runtime_communications c ON c.id=source.source_id AND c.project_id=a.project_id
+   WHERE a.agent_id=? AND a.project_id=? AND a.scope_key=? AND a.kind='human_message'
+     AND a.prompt_class='human' AND (a.state IN ('pending','retry_pending') OR a.id=? AND a.state='attached')
+     AND (? IS NULL OR a.id=?)
+     AND coalesce(json_extract(a.payload_json,'$.dispatch.engine'),?)=?
+     AND json_extract(c.sender_json,'$.kind')='user' AND json_extract(c.sender_json,'$.userId')='local-operator'
+     AND c.intent IN ('user_dm','broadcast')
+     AND NOT EXISTS (SELECT 1 FROM activation_sources inherited WHERE inherited.activation_id=a.id
+       AND inherited.source_kind IN ('task_decision','reviewed_steering','context_rollover','context_rollover_recovery'))
+   LIMIT 1`).get(agent.id,agent.projectId,`conversation:${agent.conversationId}`,
+    activationId??null,activationId??null,activationId??null,agent.activeEngine,agent.activeEngine));
+}
+
+export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"workspace">&Partial<Pick<TransitionContext,"coordinationV3">>,projectId:string,agentId:string,activationId:string):string{
  const {app,store,workspace}=ctx,agent=store.getAgent(agentId),chat=agent&&store.getConversation(agent.conversationId),
   project=agent&&store.getChatContext(agent.conversationId),memory=localMemoryFor(app),session=store.resumeSessionState(agentId);
  const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
@@ -53,7 +94,14 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  }catch{contractEvidence='saved_contract_unavailable';}
  const currentTools=providerToolContractHash([...providerDynamicTools(Boolean(memory)),PONDEROSA_HISTORY_TOOL],communicationV3SessionPrompt());
  const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
- return createHash('sha256').update(JSON.stringify(['settings-transition.v2',currentTools,contractEvidence,row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
+ const fingerprint=['settings-transition.v2',currentTools,contractEvidence,row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)];
+ // Recheck existing reservations from older builds only for exact switch input.
+ // A new admission pass still checks that it was never submitted.
+ if(ctx.coordinationV3 && agent && row && independentProviderSwitchInput(store,agent,activationId)) {
+  const boundary=interruptedProviderSwitch({...ctx,coordinationV3:ctx.coordinationV3},agent,(row as {scope_key:string}).scope_key);
+  if(boundary)fingerprint.push('interrupted-provider-switch',boundary.sourceRunId,boundary.sourceFence);
+ }
+ return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
 }
 function contextIncidentKey(projectId:string,agentId:string,scope:string|undefined,session:string|undefined,run:string|undefined,fence:number|undefined):string {
  return `settings-transition:${createHash('sha256').update(JSON.stringify([projectId,agentId,scope,session,run,fence])).digest('hex')}`;
@@ -200,7 +248,13 @@ export async function requestSettingsTransition(input: {
  const {app,opts,store,coordinationV3,workspace,engines,engineAuthStatuses,cachedModelOptions,excludedAgentIds,candidate}=input;
  if(!candidate)return true;
  const pending=coordinationV3.pendingActivations(candidate.projectId).find(item=>item.id===candidate.activationId);
- if(!pending||pending.agentId!==candidate.agentId||!['human_message','coordination_request'].includes(pending.kind)||!['pending','retry_pending'].includes(pending.state))return true;
+ if(!pending||pending.agentId!==candidate.agentId||!['pending','retry_pending'].includes(pending.state))return true;
+ const ordinaryAdmission=pending.kind==='human_message'||pending.kind==='coordination_request';
+ const candidateAgent=store.getAgent(pending.agentId);
+ const providerSwitch=candidateAgent && interruptedProviderSwitch(input,candidateAgent,candidate.scopeKey);
+ const historicalSources=new Set(coordinationV3.interruptedProviderSwitchSourceIds(pending.agentId,pending.projectId,candidate.scopeKey));
+ const historicalWork=coordinationV3.wakesInterruptedProviderWork(pending.id,historicalSources);
+ if(!ordinaryAdmission&&!providerSwitch&&!historicalWork)return true;
  let shouldHold=false,toolsChanged=false;
  const localHolds=unrecordedHolds.get(coordinationV3)??new Map<string,string>();unrecordedHolds.set(coordinationV3,localHolds);
  let currentFingerprint:string;
@@ -219,13 +273,31 @@ export async function requestSettingsTransition(input: {
  };
   try{
    const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state IN ('pending','retry_pending') AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
+   const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
+   const dispatch=payload?.dispatch,agent=candidateAgent,project=agent&&store.getChatContext(agent.conversationId);
+   if(historicalWork)
+    return hold('An earlier provider Run has an uncertain outcome. Its task remains in history without automatic replay.',true);
    if(row&&!coordinationV3.settingsTransitionUnsubmittedActivation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,scopeKey:row.scope_key}))
     return hold('The earlier delivery attempt cannot be proven unsubmitted. The original work remains queued for review.');
-   const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
-   const dispatch=payload?.dispatch,agent=store.getAgent(pending.agentId),project=agent&&store.getChatContext(agent.conversationId);
+   if(agent && historicalSources.size && typeof dispatch?.engine==='string' && dispatch.engine!==agent.activeEngine &&
+      store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").get(pending.id) &&
+      [...historicalSources].some(id=>store.getLatestRun(agent.id,id)?.engine===dispatch.engine))
+    return hold('The saved instruction is pinned to the previous provider and remains held for review.');
+   if(providerSwitch && (!agent||row?.scope_key!==providerSwitch.scopeKey||!independentProviderSwitchInput(store,agent,pending.id)))
+    return hold('The selected provider is waiting for an independent instruction. Earlier work remains in history.',true);
+   store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='interrupted_provider_switch' AND source_id IS NOT ?")
+    .run(pending.id,providerSwitch?.sourceRunId??null);
    const accepted=agent&&store.resumeSessionState(agent.id);
    const stopped=agent&&store.stoppedProviderSessionBoundary(agent.id);
    const stoppedUsage=stopped&&store.acceptedProviderSessionContextUsage(agent!.id);
+   if(providerSwitch) {
+    // This input needs its own recheck and must not carry a coalesced callback
+    // or activation from the generation being left behind.
+    store.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+      VALUES(?,'settings_transition_retry_pending','preflight'),(?,'interrupted_provider_switch',?)`)
+      .run(pending.id,pending.id,providerSwitch.sourceRunId);
+    return true;
+   }
    if(stopped&&row){
     if(!stopped.cleanupConfirmed)return hold('The earlier task stays stopped while its exact input or cleanup requires review. The new instruction remains queued; no provider input was sent.');
     if(row.scope_key!==stopped.scopeKey)return hold('The new instruction changes scope from the stopped context. Its earlier work is preserved; review the context before continuing.');

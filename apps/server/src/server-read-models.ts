@@ -23,6 +23,7 @@ import type {
 import { createHash } from "node:crypto";
 import { communicationMentionBindings } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
+import { independentProviderSwitchInput, interruptedProviderSwitch } from "./context-transition-admission.js";
 import { sqliteCollectionPage } from "./collection-page.js";
 import { withDecisionRecipient } from "./decision-presentation.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
@@ -129,6 +130,8 @@ export function createServerReadModels(context: ReadModelContext) {
       const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(receipt.activationId,agent.id,projectId) as {scope_key:string}|undefined;
       if(!boundary || activation?.agentId!==agent.id || scope?.scope_key!==boundary.scopeKey ||
           !["pending","retry_pending"].includes(activation.state)) continue;
+      if(!recovery && independentProviderSwitchInput(store,agent,receipt.activationId) &&
+         interruptedProviderSwitch({store,coordinationV3,workspace},agent,boundary.scopeKey)) continue;
       receipt.contextRecoveryRequired={sourceRunId:boundary.sourceRunId,...(recovery?{recoveryId:recovery.id}:{})};
       delete receipt.canRetry;
     }
@@ -805,6 +808,9 @@ export function createServerReadModels(context: ReadModelContext) {
       contextRecovery:agentId=>{
         const recovery=coordinationV3.contextRecovery.active(agentId),boundary=recovery??store.uncertainProviderContextRecoveryBoundary(agentId);
         if(!boundary)return undefined;
+        const agent=agentsById.get(agentId);
+        if(!recovery && agent && independentProviderSwitchInput(store,agent) &&
+           interruptedProviderSwitch({store,coordinationV3,workspace},agent,boundary.scopeKey)) return undefined;
         if(!recovery&&!store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND project_id=? AND scope_key=? AND state IN ('pending','retry_pending') AND kind IN ('human_message','coordination_request') LIMIT 1").get(agentId,boundary.projectId,boundary.scopeKey))return undefined;
         const source=store.sqlite.prepare('SELECT terminal_at FROM scheduler_runs WHERE id=? AND agent_id=?').get(boundary.sourceRunId,agentId) as {terminal_at:string|null}|undefined;
         const observedAt=recovery?.progress?.updatedAt??recovery?.createdAt??source?.terminal_at??agentsById.get(agentId)?.updatedAt;

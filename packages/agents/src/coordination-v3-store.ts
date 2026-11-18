@@ -10,7 +10,7 @@ import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-contex
 import { requireAdmittedDatabase } from "./state-admission.js";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type Database from "better-sqlite3";
-import { runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
+import { interruptedProviderSwitchSourceIds, runOwnsAwaitedDelegation, taskOriginRunIds, wakesInterruptedProviderWork } from "./coordination-v3-task-lineage.js";
 import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
 import {
   type MessageDeliveryReceiptDto,
@@ -494,8 +494,17 @@ export class CoordinationV3Store {
     agentId: string;
     limit?: number;
     now?: string;
+    excludePreviouslySubmittedRunIds?: readonly string[];
   }): CommunicationV4NextRunDelivery[] {
     return this.communicationV4NextRunDeliveries.pendingForNextRun(input);
+  }
+
+  interruptedProviderSwitchSourceIds(agentId:string,projectId:string,scopeKey:string):string[] {
+    return interruptedProviderSwitchSourceIds(this.sqlite,agentId,projectId,scopeKey);
+  }
+
+  wakesInterruptedProviderWork(activationId:string,sourceRunIds:ReadonlySet<string>):boolean {
+    return wakesInterruptedProviderWork(this.sqlite,activationId,sourceRunIds);
   }
 
   markCommunicationV4NextRunDeliveriesDelivered(input: {

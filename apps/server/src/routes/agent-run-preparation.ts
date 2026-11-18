@@ -1,7 +1,7 @@
 import {proveRetainedCodexVoiceContext,proveRetainedManagedVoiceContext} from '../retained-codex-voice-context.js';
 import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
 import {prepareWorkingCopyTransition} from "../working-copy-context-transition.js";
-import { settingsTransitionTarget } from "../context-transition-admission.js";
+import { independentProviderSwitchInput, interruptedProviderSwitch, settingsTransitionTarget } from "../context-transition-admission.js";
 import { activationInputAttachmentSource, currentArtifactInputFiles, runtimeInputAttachment, runtimeInputFilesContext } from "../runtime-input-files.js";
 import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
 import {canonicalDefaultReplyRoute} from "../required-reply-route.js";
@@ -361,10 +361,30 @@ export async function prepareAgentRun(
       && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+  const switchScope = v3SchedulerRunId ? coordinationV3.runScopeKey(runId, agent.id) : undefined;
+  const providerSwitch = internalV3Dispatch && switchScope
+    ? interruptedProviderSwitch({store,coordinationV3,workspace},agent,switchScope) : undefined;
+  const admittedSwitch=internalV3Dispatch ? store.sqlite.prepare(`SELECT source.source_id
+    FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id
+    WHERE attached.run_id=? AND source.source_kind='interrupted_provider_switch'`).get(runId) as {source_id:string}|undefined : undefined;
+  if((providerSwitch || admittedSwitch) && (!providerSwitch || admittedSwitch?.source_id!==providerSwitch.sourceRunId ||
+      runtimeEngineId!==agent.activeEngine || folderTransition || manifestActivationIds.length!==1 ||
+      !independentProviderSwitchInput(store,agent,manifestActivationIds[0]!))) {
+    throw new PromptContractAdmissionChanged("Only independently submitted instructions can start the selected provider after an interrupted session.");
+  }
+  const historicalRunIds = [...new Set([
+    ...(providerSwitch ? [providerSwitch.sourceRunId] : []),
+    ...(switchScope ? coordinationV3.interruptedProviderSwitchSourceIds(agent.id,project.id,switchScope) : []),
+  ])];
+  const historicalTaskInputs = new Set(historicalRunIds.flatMap(id=>[
+    ...coordinationV3.activationIdsAttachedToRun(id,agent.id),
+    ...coordinationV3.requiredReplyObligationsForRun(id).map(obligation=>obligation.sourceActivationId),
+  ]));
   // Unfinished task roots are required input, not optional recent history or a
   // model-written summary. Reconstruct them on every fresh seed/fallback.
   const unfinishedTaskActivations = coordinationV3.activationPayloads(agent.id,
-    coordinationV3.unfinishedHumanSourceActivationIds(runId).filter(id => !manifestActivationIds.includes(id)));
+    coordinationV3.unfinishedHumanSourceActivationIds(runId).filter(id =>
+      !manifestActivationIds.includes(id) && !historicalTaskInputs.has(id)));
   const unfinishedHumanInputs = unfinishedTaskActivations.flatMap(source => {
     const communication = (source.payload as { communication?: CommunicationEvent } | undefined)?.communication;
     return communication?.sender.kind === 'user' ? [{ sourceActivationId: source.id, communication }] : [];
@@ -409,8 +429,10 @@ export async function prepareAgentRun(
     ? coordinationV3.contextRecovery.reconstructedBoundary(agent.id,project.id,coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)??'') : undefined;
   const historyRollover=replacementCandidateRollover??(reconstruction?.progress?.reconstructionRolloverId
     ?coordinationV3.contextRollover(reconstruction.progress.reconstructionRolloverId):undefined);
-  const reconstructionNotice=reconstruction
-    ?`Canonical context reconstructed after interrupted provider recovery ${reconstruction.id}. Earlier uncertain work (Run ${reconstruction.sourceRunId}) is history only: its effects and replies remain unknown. Do not repeat, continue, or claim completion of those historical instructions. Respond only to the independently submitted current inputs; consult canonical history as needed.`:'';
+  const reconstructionNotice=historicalRunIds.length
+    ? "An earlier provider session was interrupted. Use authorized history and verified progress as background. Do not resume, repeat or claim completion of the earlier uncertain work. Follow the current input and any separately listed verified unfinished objectives."
+    : reconstruction
+      ?`Canonical context reconstructed after interrupted provider recovery ${reconstruction.id}. Earlier uncertain work (Run ${reconstruction.sourceRunId}) is history only: its effects and replies remain unknown. Do not repeat, continue, or claim completion of those historical instructions. Respond only to the independently submitted current inputs; consult canonical history as needed.`:'';
 
   // Ordinary Runs freeze the existing canonical journal authority too; no
   // managed rollover is fabricated to authorize omitted-history retrieval.
@@ -461,6 +483,7 @@ export async function prepareAgentRun(
         conversationId: routingConversationId,
         agentId: agent.id,
         limit: NEXT_RUN_DELIVERY_BATCH_LIMIT + 1,
+        excludePreviouslySubmittedRunIds: historicalRunIds,
       })
     : [];
   const pendingCommunicationV4NextRunDeliveryBatch = compileNextRunDeliveryBatch(
@@ -634,7 +657,8 @@ export async function prepareAgentRun(
   }
   // A generic handoff may contain the uncertain old provider's own account of
   // its work. The reviewed continuation instead reconstructs canonical context.
-  const genericHandoff = reviewedSteeringRun ? undefined : store.pendingContinuationHandoff(agent.id, schedulerRunScopeKey);
+  const candidateHandoff = reviewedSteeringRun || providerSwitch ? undefined : store.pendingContinuationHandoff(agent.id, schedulerRunScopeKey);
+  const genericHandoff = candidateHandoff && !historicalRunIds.includes(candidateHandoff.executionId) ? candidateHandoff : undefined;
   const eligibleContinuationHandoff = rolloverContinuationHandoff
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)
@@ -763,7 +787,31 @@ export async function prepareAgentRun(
     if(!proof())throw new Error('Memory access changed before the verified voice transition resumed.');
     retainedMemoryProof=proof;retainedVerifiedContext=true;return true;
   };
-  if (eligibleContinuationHandoff) {
+  if (providerSwitch) {
+    const staleRuntime = reusableRuntime(agent.id);
+    if(staleRuntime) await teardownPersistentRuntime(agent.id,staleRuntime,"interrupted provider switch",project.id);
+    const assertCurrent=()=>{
+      const current=store.getAgent(agent.id);
+      const boundary=current && interruptedProviderSwitch({store,coordinationV3,workspace},current,providerSwitch.scopeKey);
+      const lease=coordinationV3.activeAgentRun(agent.id);
+      if(!current || current.activeEngine!==runtimeEngineId || boundary?.sourceRunId!==providerSwitch.sourceRunId ||
+          boundary.sourceFence!==providerSwitch.sourceFence || boundary.providerSessionId!==providerSwitch.providerSessionId ||
+          lease?.id!==runId || lease.fencingToken!==v3FencingToken || runContext.deletingAgentIds.has(agent.id) ||
+          runContext.deletingProjectIds.has(project.id) || runContext.isClosed())
+        throw new PromptContractAdmissionChanged("The earlier provider or cleanup changed during the switch. The instruction remains saved.");
+    };
+    assertCurrent();
+    // A restarted daemon can have a tracked child with no reusable wrapper.
+    await runContext.providerProcessAuthority.terminateAgents(new Set([agent.id]),"interrupted provider switch");
+    assertCurrent();
+    if(runContext.providerProcessAuthority.count({agentId:agent.id})!==0)
+      throw new Error("The previous provider process has not exited. The instruction remains saved.");
+    // Retain the old accepted snapshot for history and safe pre-submission retries
+    // until acknowledgement lets the existing executor publish the replacement.
+    resumeSessionState=undefined;
+    scheduledSessionRollovers.delete(agent.id);
+    organizationEnvelopeStates.delete(agent.id);
+  } else if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to
     // classify its unterminated source Run as interrupted. Durable rollover
     // identity, not the recovered lifecycle label, owns this restart boundary.
@@ -822,6 +870,10 @@ export async function prepareAgentRun(
     const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],currentPolicy);
     const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
     const saved=store.resumeSessionState(agent.id);
+    const switchSnapshotMatches=providerSwitch && (
+      saved?.sessionId===providerSwitch.providerSessionId && saved.toolContractHash===providerSwitch.toolContractHash ||
+      saved?.sessionId!==providerSwitch.providerSessionId && store.acceptedProviderSessionInput(agent.id,true)?.executionId===runId
+    );
     if(retainedMemoryProof&&!retainedMemoryProof())throw new Error('Memory access changed before the saved Codex thread could continue.');
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
        currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
@@ -829,7 +881,7 @@ export async function prepareAgentRun(
        current.role!==agent.role || runtimeSystemPrompt(current,managedRules)!==currentSystemPrompt ||
        current.workingCopy.state!=='ready' || current.workingCopy.id!==workingCopy.id ||
        current.workingCopy.rootPath!==workingCopy.rootPath ||
-       (!(saved?.sessionId===(settingsTransition?preflightResumeSessionState?.sessionId:resumeSessionState?.sessionId) &&
+       (!switchSnapshotMatches && !(saved?.sessionId===(settingsTransition?preflightResumeSessionState?.sessionId:resumeSessionState?.sessionId) &&
          saved?.toolContractHash===(settingsTransition?preflightResumeSessionState?.toolContractHash:resumeSessionState?.toolContractHash)) &&
          !(saved?.sessionId===acceptedTransitionReplacement() && saved?.toolContractHash===effectiveRuntimeSessionContractHash)) ||
        (currentProject.instructions?.trim()??'')!==projectInstructions ||
@@ -841,7 +893,13 @@ export async function prepareAgentRun(
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
       throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
   };
-  const assertSettingsTransitionPolicy = settingsTransition || folderTransition ? () => {
+  const assertSettingsTransitionPolicy = providerSwitch ? () => {
+    assertRetainedContextPolicy();
+    const rollover=coordinationV3.activeContextRollover(agent.id);
+    if(coordinationV3.contextRecovery.active(agent.id) ||
+        rollover && rollover.oldProviderSessionId===providerSwitch.providerSessionId)
+      throw new Error("A context operation now owns the interrupted provider session; the instruction remains saved.");
+  } : settingsTransition || folderTransition ? () => {
     folderTransition?.assertCurrent();
     if(!settingsTransition)return;
     if(settingsTransition!.targetSystemPromptHash && createHash('sha256').update(currentSystemPrompt).digest('hex')!==settingsTransition!.targetSystemPromptHash)
@@ -1589,6 +1647,8 @@ export async function prepareAgentRun(
       ...(manifestConversationId ? { conversationId: manifestConversationId } : {}),
       providerSessionDisposition: input.disposition,
       sources: [
+        ...(providerSwitch ? [{kind:"context_reference" as const,ref:`ponderosa://interrupted-provider-switch/${providerSwitch.sourceRunId}`,
+          hash:createHash("sha256").update(JSON.stringify(providerSwitch)).digest('hex'),delivery:"submitted" as const}] : []),
         ...(reconstruction ? [{kind:"context_reference" as const,ref:`ponderosa://context-reconstruction/${reconstruction.id}/${reconstruction.progress!.reconstructionRolloverId}`,
           hash:createHash("sha256").update(JSON.stringify({sourceRunId:reconstruction.sourceRunId,sourceFence:reconstruction.sourceFence,providerSessionId:reconstruction.providerSessionId,toolContractHash:reconstruction.toolContractHash,scopeKey:reconstruction.scopeKey})).digest('hex'),delivery:"submitted" as const}] : []),
         { kind: "environment", ref: workingCopy.id, delivery: input.policyDelivery, hash: createHash("sha256").update(JSON.stringify(environmentFacts)).digest("hex") },
