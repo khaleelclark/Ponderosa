@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { AgentStore } from '../../packages/agents/dist/index.js';
+import { inertCodex } from '../shared/inert-codex.mjs';
 
 const rendered = turn => [JSON.stringify(turn.history), JSON.stringify(turn.input)].join('\n');
 
@@ -26,25 +28,94 @@ test('checks 1, 12, 16: shared request replay emits one explicit reply and keeps
   assert.ok(!JSON.stringify(conversation).includes('Ordinary fixture execution output'));
 }));
 
-test('checks 6, 7, 9, 56: reply after rename reaches the stable recipient; fresh unrelated context excludes private text', options, t => withFixture(t, async f => {
+test('checks 6, 7, 9, 56: reply after rename reaches the stable recipient; fresh unrelated context excludes private text', {timeout:90000}, async t => {
+ let store,native;
+ await withFixture(t, async f => {
   const chat = await f.createChat('Private reply');
-  const target = await f.createAgent(chat, 'Original name');
+  const target = await f.createIdleAgent(chat, 'Original name');
+  const objective = 'Preserve the original identity context and answer the follow-up after rename.';
+  await f.send(target.id, objective);
+  await until(async () => (await native.requests()).some(x => x.method === 'turn/start'), 'initial native identity context');
+  const finding='The original reader has retained its identity context.';await native.sendWorkResult(finding);
+  await until(()=>store.readEvents(target.id).some(x=>x.event.type==='tool_result'&&x.event.output===finding),'retained native identity finding');
+  await native.sendTool('ponderosa_message', {text:'Identity context retained; awaiting the follow-up.'});
+  await f.settled(target.id);
   const renamed = f.ok(await f.api('PATCH', `/api/agents/${target.id}`, { title: 'Renamed reader' }));
   assert.equal(renamed.id, target.id);
   const marker = `private-${randomUUID()}`, previous = (await f.detail(target.id)).runs.map(r => r.id);
   await f.send(target.id, marker);
+  const queued = await until(() => store.sqlite.prepare('SELECT id FROM agent_activations WHERE agent_id=? AND instr(payload_json,?)>0').get(target.id,marker), 'exact renamed follow-up');
+  const handoff = await until(async () => { const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===2?rows:undefined; }, 'renamed-context handoff',20000);
+  assert.equal(handoff[1].params.threadId,handoff[0].params.threadId);
+  assert.ok(!JSON.stringify(handoff[1]).includes(marker),'The queued private task is not replayed into the old context');
+  const summary = objective+' The original reader has retained its identity context; the follow-up is unfinished.';
+  await native.sendAnswer(summary);
+  const replacement = await until(async () => { const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===3?rows:undefined; }, 'verified renamed replacement',20000);
+  assert.notEqual(replacement[2].params.threadId,handoff[0].params.threadId);
+  assert.ok(JSON.stringify(replacement[2]).includes(summary),'The replacement preserves the original objective and retained finding');
+  await native.sendAnswer('Identity continuity context received.');
+  const turns = await until(async () => { const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===4?rows:undefined; }, 'same private follow-up after handoff',20000);
+  assert.equal(turns[3].params.threadId,replacement[2].params.threadId);
+  assert.ok(JSON.stringify(turns[3]).includes(marker));
+  assert.equal(turns.filter(x=>JSON.stringify(x).includes(marker)).length,1);
+  await native.sendTool('ponderosa_message',{text:'Explicit fixture reply'});
   const d = await f.settled(target.id, previous);
-  const turn = f.turns.filter(x => x.agentId === target.id).at(-1);
-  assert.ok(rendered(turn).includes(marker));
-  const run = d.runs.find(r => !previous.includes(r.id));
+  const run = store.sqlite.prepare('SELECT r.id FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id WHERE a.activation_id=?').get(queued.id);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
   const input = f.ok(await f.api('GET', `/api/runs/${run.id}/provider-input?exact=1`));
   assert.ok(JSON.stringify(input).includes(marker));
-  const other = await f.createAgent(chat, 'Unrelated reader');
-  assert.ok(!rendered(f.turns.find(x => x.agentId === other.id)).includes(marker));
+  assert.ok(JSON.stringify(input).includes('Renamed reader'));
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(target.id).n,1);
+  assert.equal(store.readEvents(target.id).filter(x=>x.event.type==='session_reset').length,0,'Rename cannot silently discard the accepted context');
+  await f.reopen();
+  const other = await f.createIdleAgent(chat, 'Unrelated reader');
+  await f.send(other.id,'Read only your own unrelated task.');
+  const unrelated = await until(async () => { const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===5?rows[4]:undefined; }, 'unrelated fresh context',20000);
+  assert.ok(!JSON.stringify(unrelated).includes(marker));
+  await native.sendTool('ponderosa_message',{text:'Unrelated task completed.'});await f.settled(other.id);
   assert.ok(d.messages.some(x => x.role === 'assistant' && x.text === 'Explicit fixture reply'));
-}));
+ }, {storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
 
-for (const fresh of [false, true]) test(`checks 3, 17: explicitly attached text is read by the ${fresh ? 'fresh' : 'continued'} provider session`, options, t => withFixture(t, async f => {
+for (const fresh of [false, true]) test(`checks 3, 17: explicitly attached text is read by the ${fresh ? 'fresh' : 'continued'} provider session`, fresh?{timeout:90000}:options, async t => {
+ if(fresh){
+  let store,native;
+  await withFixture(t,async f=>{
+   const chat=await f.createChat('Attachment reader'),otherChat=await f.createChat('Other owner'),agent=await f.createIdleAgent(chat,'Reader');
+   const objective='Retain the attachment-reading objective while awaiting the supplied file.';
+   await f.send(agent.id,objective);await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial native attachment context');
+   const finding='The reader is ready to inspect only an explicitly supplied file.';await native.sendWorkResult(finding);
+   await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output===finding),'retained native attachment finding');
+   await native.sendTool('ponderosa_message',{text:'Ready for the explicitly supplied file.'});await f.settled(agent.id);
+   const contents=`Only-in-file ${randomUUID()}`;
+   const asset=f.ok(await f.api('POST',`/api/agents/${agent.id}/attachments`,Buffer.from(contents),{'content-type':'application/octet-stream','x-ponderosa-filename':'fixture.txt','x-ponderosa-media-type':'text/plain'}));
+   const before=(await f.detail(agent.id)).runs.map(r=>r.id),oldSession=store.resumeSessionState(agent.id).sessionId;
+   f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Fresh fixture policy'}));
+   const task='Read only the supplied fixture.txt and report its contents.';
+   await f.send(agent.id,task,{attachmentIds:[asset.id]});
+   const queued=await until(()=>store.sqlite.prepare('SELECT id FROM agent_activations WHERE agent_id=? AND instr(payload_json,?)>0').get(agent.id,task),'exact attachment task');
+   const handoff=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===2?rows:undefined;},'attachment context handoff',20000);
+   assert.equal(handoff[1].params.threadId,oldSession);assert.ok(!JSON.stringify(handoff[1]).includes(task),'The pending file task is not replayed into old context');
+   const summary=objective+' The file-reading task is unfinished; inspect only its explicitly supplied file.';
+   await native.sendAnswer(summary);
+   const replacement=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===3?rows:undefined;},'verified attachment replacement',20000);
+   assert.notEqual(replacement[2].params.threadId,oldSession);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+   await native.sendAnswer('Attachment continuity context received.');
+   const turns=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===4?rows:undefined;},'same attachment task after handoff',20000),turn=turns[3];
+   assert.equal(turn.params.threadId,replacement[2].params.threadId);assert.ok(JSON.stringify(turn).includes(task));
+   assert.equal(turns.filter(x=>JSON.stringify(x).includes(task)).length,1);assert.ok(!JSON.stringify(turn).includes(contents),'Expected file contents leaked into prompt');
+   const candidates=runtimeAttachmentPaths(turn);assert.ok(candidates.length,'No supplied runtime attachment path');
+   const bytes=await readFile(candidates[0],'utf8');assert.equal(bytes,contents);
+   await native.sendTool('ponderosa_message',{text:`Read: ${bytes}`});const d=await f.settled(agent.id,before);
+   assert.ok(d.messages.some(x=>x.text===`Read: ${contents}`));assert.notEqual(store.resumeSessionState(agent.id).sessionId,oldSession);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+   assert.equal(store.readEvents(agent.id).filter(x=>x.event.type==='session_reset').length,0,'Workspace guidance cannot silently discard the accepted context');
+   assert.equal((await f.api('GET',`/api/conversations/${otherChat.id}/assets/${asset.id}/download`)).status,404);
+  },{storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+  return;
+ }
+ return withFixture(t, async f => {
   const chat = await f.createChat('Attachment reader'), otherChat = await f.createChat('Other owner');
   const agent = await f.createAgent(chat, 'Reader');
   const contents = `Only-in-file ${randomUUID()}`;
@@ -66,7 +137,8 @@ for (const fresh of [false, true]) test(`checks 3, 17: explicitly attached text 
   assert.ok(d.messages.some(x => x.text === `Read: ${contents}`));
   assert.equal(f.sessions.get(agent.id).engineAgentId === oldSession, !fresh);
   assert.equal((await f.api('GET', `/api/conversations/${otherChat.id}/assets/${asset.id}/download`)).status, 404);
-}));
+ });
+});
 
 test('checks 69, 70, 79: captured text artifact bytes and full-copy instructions survive reopening', options, t => withFixture(t, async f => {
   const source = await f.createChat('Artifact source'), target = await f.createChat('Import target');
@@ -124,4 +196,37 @@ test('checks 46, 47, 48, 50, 51: manager consumes blocked/failed children before
   const d = await until(async () => { const detail = await f.detail(manager.id); return detail.messages.some(x => x.text === 'Worker A blocked; Worker B failed. Neither succeeded.') ? detail : false; }, 'canonical final');
   assert.equal(d.coordinationV3.joins.find(x => x.id === coordinated.joinId).state, 'satisfied');
   assert.deepEqual(d.coordinationV3.requests.filter(x => coordinated.requestIds.includes(x.id)).map(x => x.state).sort(), ['blocked','failed']);
+}));
+
+test('fresh delegated continuation restores the whole human objective and later steering instead of relying on peer summaries', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Whole objective reconstruction');
+  const manager = await f.createAgent(chat, 'Objective owner'), worker = await f.createAgent(chat, 'Scoped worker');
+  const objective = `Complete ALL implementation before combining and testing the whole product ${randomUUID()}`;
+  const correction = `Preserve every requirement and report exact remaining blockers ${randomUUID()}`;
+  f.plans.set(manager.id, [{ hold: true }]);
+  const before = f.turns.filter(x => x.agentId === manager.id).length;
+  await f.send(manager.id, objective);
+  await until(() => f.turns.filter(x => x.agentId === manager.id).length > before, 'original human task accepted');
+  const session = f.sessions.get(manager.id), oldSession = session.engineAgentId;
+  f.plans.set(worker.id, [{ hold: true }]);
+  f.ok(await f.tool(session, 'ponderosa_coordinate', { recipientAgentId: worker.id, text: 'Implement this scoped piece only.' }));
+  await until(() => f.turns.filter(x => x.agentId === worker.id).length === 2, 'scoped worker accepted');
+  await f.send(manager.id, correction);
+  await until(() => f.steers.some(x => x.agentId === manager.id && x.input.prompt.includes(correction)), 'later human steering delivered');
+  assert.equal((await f.tool(session, 'ponderosa_message', { text: 'More implementation remains.', taskDelivery: 'blocked' })).status, 409);
+  // A changed system contract requires a fresh seed on the next legitimate
+  // joined wake. Nothing starts an extra task or retries external effects.
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { globalInstructions: 'Keep the whole user objective intact.' }));
+  let result;
+  f.plans.set(manager.id, [{ run: async (resumed, input, turn) => {
+    assert.notEqual(resumed.engineAgentId, oldSession);
+    assert.ok(input.prompt.includes('[UNFINISHED HUMAN REQUESTS'));
+    assert.ok(input.prompt.includes(objective)); assert.ok(input.prompt.includes(correction));
+    result = await f.tool(resumed, 'ponderosa_message', { text: 'All requested work and verification complete.', taskDelivery: 'final' });
+    f.ok(result);
+  } }]);
+  session.finish();
+  f.ok(await f.tool(f.sessions.get(worker.id), 'ponderosa_update_request', { text: 'Scoped piece complete.' }));
+  f.sessions.get(worker.id).finish();
+  await until(() => result, 'whole objective reconstructed on fresh canonical wake');
 }));

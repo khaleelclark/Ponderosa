@@ -1,20 +1,20 @@
 import { Alert, Box, Button, CircularProgress, Stack } from "@mui/material";
 import type { ConversationDto, CreateProjectRequest, EngineDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { definitiveSubmissionStatus } from "./idempotentAttempt";
 import { resolveConversationEngine } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
-import { ensureCreationAttemptPersisted, readCreationAttempts, saveCreationAttempts, type ChatCreationAttempt } from "./chatCreationAttempts";
+import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readDurableChatAttempts, saveCreationAttempts, sameCreationOwner, sameCreationAttempt, submitCreationAttempt, type ChatCreationAttempt, type ChatCreationOwner } from "./chatCreationAttempts";
 
 /** A transient entry, not a setup screen: persist an empty Chat, then open its
  * normal workspace. The route identity survives refresh and exact retries. */
-export function NewChatComposer({ creationKey, engines, enginesLoaded = true, onCreated, onCancel, onConfigureProvider, onPendingChange }: {
+export function NewChatComposer({ creationKey, engines, enginesLoaded = true, onCreated, onCancel, onConfigureProvider, onPendingChange, owner, inline = false }: {
   creationKey?: string;
-  engines: EngineDto[]; enginesLoaded?: boolean; preferences: WorkspacePreferencesDto;
-  onCreated(projectId: string, conversationId: string): void;
+  owner?: ChatCreationOwner; inline?: boolean;
+  engines: EngineDto[]; enginesLoaded?: boolean; preferences?: WorkspacePreferencesDto;
+  onCreated(projectId: string, conversationId: string): boolean | void;
   onCancel?(): void;
   onConfigureProvider?(): void;
   onPendingChange?(pending: boolean): void;
@@ -25,24 +25,29 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
   const locked = useRef(false);
   const autoStarted = useRef(false);
   const mounted = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => { onPendingChange?.(busy); }, [busy, onPendingChange]);
-  const retire = (key: string) => {
-    // A late response must not overwrite another + click's newer journal entry.
-    const next = readCreationAttempts().filter(item => item.key !== key);
-    saveCreationAttempts(next);
+  const retire = (attempt:ChatCreationAttempt):boolean => {
+    try {
+      const journal=readDurableChatAttempts();
+      if(!mayRetryCreationAttempt(journal,attempt))return false;
+      return saveCreationAttempts(journal.filter(item=>!sameCreationAttempt(item,attempt)));
+    }catch{return false;}
   };
   const open = (chat: Pick<ConversationDto, "id" | "projectId">) => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }).catch(() => {});
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all }).catch(() => {});
-    if (mounted.current) onCreated(chat.projectId, chat.id);
+    if (mounted.current && onCreated(chat.projectId, chat.id) === false) setError("Chat was saved. Retry to open the same Chat when navigation is available.");
   };
   const create = async (retry?: ChatCreationAttempt) => {
     if (locked.current || !creationKey) return;
-    const saved = retry ?? readCreationAttempts().find(item => item.key === creationKey);
+    let journal:ChatCreationAttempt[];
+    try { journal=readDurableChatAttempts(); }
+    catch { setError("Chat creation storage is unavailable or unreadable. Preserve browser data and recover the earlier request."); return; }
+    const saved = retry ?? journal.find(item => item.key === creationKey && sameCreationOwner(item.owner, owner));
     const engineId = resolveConversationEngine(undefined, engines);
     if (!saved && !engineId) {
       setError("No provider is configured. Configure a provider, then open a new Chat.");
@@ -51,31 +56,42 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
     // The server resolves advertised defaults into the saved Chat. Its normal
     // composer shows/edits that exact tuple; old form values are never reused.
     const current: ChatCreationAttempt = saved ?? {
-      key: creationKey,
+      key: creationKey, ...(owner ? {owner} : {}),
       input: { label: "New Chat", defaultEngine: engineId as CreateProjectRequest["defaultEngine"] },
     };
+    if (current.origin === "import_destination") {
+      setError("Use Recover import destination to review this saved request.");
+      return;
+    }
     if (!ensureCreationAttemptPersisted(current)) {
       setError("Browser storage is unavailable. Enable it so an unconfirmed Chat creation can be retried safely.");
       return;
     }
     locked.current = true; setBusy(true); setError(undefined);
     try {
-      const chat = await api.createChat(current.input, current.key);
+      const chat = await submitCreationAttempt(current);
+      // Refresh the original owner even if navigation or the receipt write fails.
+      if (owner) void queryClient.invalidateQueries({ queryKey: ["branch-chats", owner.branchId] }).catch(() => {});
       // History/settings can revisit a committed key even after navigation.
       // Keep its exact original input and a completion receipt, not a new tuple.
-      const journal = readCreationAttempts();
+      let journal:ChatCreationAttempt[];
+      try { journal=readDurableChatAttempts(); }
+      catch { if (mounted.current) setError("Chat was saved, but its local receipt could not be saved. The original request is retained."); return; }
+      if (!mayRecordCreationReceipt(journal, current, chat)) {
+        throw new Error("Destination receipt conflicts with saved information. The original evidence is retained.");
+      }
       const completed = { ...current, chat: { id: chat.id, projectId: chat.projectId } };
-      if (!saveCreationAttempts([...journal.filter(item => item.key !== current.key), completed])) {
+      if (!saveCreationAttempts([...journal.filter(item => !sameCreationAttempt(item, current)), completed])) {
         // The already-persisted original attempt remains safe for exact replay.
         if (mounted.current) setError("Chat was saved, but its local receipt could not be saved. Retry to open the same Chat.");
         return;
       }
       open(chat);
     } catch (failure) {
-      const definite = failure instanceof ApiRequestError && definitiveSubmissionStatus(failure.status, failure.message) &&
+      const definite = current.origin !== "import_destination" && failure instanceof ApiRequestError && definitiveSubmissionStatus(failure.status, failure.message) &&
         !(failure.status === 409 && /reused|replay conflict/iu.test(failure.message));
-      if (definite && !current.chat) retire(current.key);
-      if (mounted.current) setError(`${failure instanceof Error ? failure.message : String(failure)}${definite
+      const retired=definite && !current.chat && retire(current);
+      if (mounted.current) setError(`${failure instanceof Error ? failure.message : String(failure)}${retired
         ? " Correct the provider settings and retry."
         : " Creation is unconfirmed. Retry to open the same Chat if it was created."}`);
     } finally {
@@ -88,13 +104,13 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
     autoStarted.current = true;
     void create();
   }, [creationKey, enginesLoaded, engines]);
-  return <Box sx={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", p: 2 }}>
+  return <Box sx={{ height: inline ? "auto" : "100%", display: "flex", alignItems: "center", justifyContent: "center", p: inline ? 1 : 2 }}>
     <Stack spacing={2} alignItems="center">
     {!error ? <CircularProgress size={24} aria-label="Opening New Chat" /> : <Stack spacing={2} sx={{ maxWidth: 560 }}>
       <Alert severity="error">{error}</Alert>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
         <Button disabled={busy || !enginesLoaded} onClick={() => void create()}>{busy ? "Opening…" : "Retry"}</Button>
-        {onConfigureProvider ? <Button disabled={busy} onClick={onConfigureProvider}>Provider settings</Button> : null}
+        {onConfigureProvider ? <Button disabled={busy} onClick={onConfigureProvider}>Provider Settings</Button> : null}
       </Stack>
     </Stack>}
     {onCancel ? <Button onClick={onCancel}>Back</Button> : null}

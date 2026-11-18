@@ -1,3 +1,4 @@
+import {useRequestReplyProjection,ReplyReadFeedback} from './chat/useTextReplyProjection';
 import {
   Accordion,
   AccordionDetails,
@@ -15,25 +16,31 @@ import type {
   CoordinationRequestArtifactDto,
   CoordinationRequestUpdateDto,
 } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createClientId } from "../clientId";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import { useWorkspaceReadOnly } from "./WorkspaceReadOnlyContext";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 const UPDATE_PREVIEW_CHARACTERS = 900;
 
 function stateLabel(state: string): string {
-  if (state === "outcome_unknown") return "Result unconfirmed";
+  if (state === "outcome_unknown") return "Result Unconfirmed";
   return state
     .replaceAll("_", " ")
     .replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase());
 }
 
 function updateKindLabel(kind: CoordinationRequestUpdateDto["kind"]): string {
-  if (kind === "waiting_dependency") return "Waiting on dependency";
-  if (kind === "dependency_resolved") return "Dependency resolved";
-  if (kind === "recipient_unavailable") return "Recipient unavailable";
-  if (kind === "outcome_unknown") return "Result unconfirmed";
+  if (kind === "historical_question") return "Historical Question";
+  if (kind === "historical_answer") return "Historical Answer";
+  if (kind === "waiting_dependency") return "Waiting On Dependency";
+  if (kind === "dependency_resolved") return "Dependency Resolved";
+  if (kind === "recipient_unavailable") return "Recipient Unavailable";
+  if (kind === "outcome_unknown") return "Result Unconfirmed";
   return stateLabel(kind);
 }
 
@@ -41,6 +48,7 @@ function updateActor(
   update: CoordinationRequestUpdateDto,
   agentTitle: (agentId: string | undefined) => string,
 ): string {
+  if (update.historicalOrigin) return "Historical import";
   if (update.actorKind === "agent") return agentTitle(update.actorId);
   if (update.actorKind === "user") return "You";
   if (update.actorKind === "supervisor") return "Supervisor";
@@ -74,7 +82,7 @@ function ResultArtifact({
         sx={{ alignItems: { xs: "stretch", sm: "center" } }}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2">{artifact.title || "Request result"}</Typography>
+          <Typography variant="subtitle2">{artifact.title || "Request Result"}</Typography>
           <Typography variant="caption" color="text.secondary">
             {artifact.mediaType} · {artifact.byteLength.toLocaleString()} bytes
           </Typography>
@@ -86,9 +94,9 @@ function ResultArtifact({
             target="_blank"
             rel="noreferrer"
             size="small"
-            aria-label={`Open result ${artifact.title || artifact.id}`}
+            aria-label={`Open Result ${artifact.title || artifact.id}`}
           >
-            Open result
+            Open Result
           </Button>
         ) : null}
         {artifact.downloadUrl ? (
@@ -96,7 +104,7 @@ function ResultArtifact({
             component="a"
             href={artifact.downloadUrl}
             size="small"
-            aria-label={`Download result ${artifact.title || artifact.id}`}
+            aria-label={`Download Result ${artifact.title || artifact.id}`}
           >
             Download
           </Button>
@@ -113,12 +121,14 @@ function ResultArtifact({
 
 function RequestUpdate({
   update,
+  provisional=false,
   questionNumber,
   answeredQuestionNumber,
   agentTitle,
   onOpenWork,
 }: {
   update: CoordinationRequestUpdateDto;
+  provisional?:boolean;
   questionNumber?: number;
   answeredQuestionNumber?: number;
   agentTitle: (agentId: string | undefined) => string;
@@ -133,11 +143,11 @@ function RequestUpdate({
   const unresolvedArtifactRefs = update.refs.filter((ref) =>
     ref.startsWith("ponderosa://artifact/")
     && !update.artifacts.some((artifact) => ref.endsWith(`/${artifact.id}`)));
-  const actionLabel = update.kind === "question"
-    ? "View full question"
-    : ["answer", "completed", "blocked", "failed"].includes(update.kind)
-      ? "View full result"
-      : "View full update";
+  const actionLabel = (update.kind === "question" || update.kind === "historical_question")
+    ? "View Full Question"
+    : ["answer", "historical_answer", "completed", "blocked", "failed"].includes(update.kind)
+      ? "View Full Result"
+      : "View Full Update";
 
   return (
     <Box
@@ -150,10 +160,10 @@ function RequestUpdate({
         borderLeft: 3,
         borderColor: answeredQuestionNumber ? "primary.main" : "divider",
       }}
-      aria-label={`${updateKindLabel(update.kind)} update by ${updateActor(update, agentTitle)}`}
+      aria-label={`${provisional?"Result In Progress":updateKindLabel(update.kind)} Update By ${updateActor(update, agentTitle)}`}
     >
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-        <Chip size="small" variant="outlined" label={updateKindLabel(update.kind)} />
+        <Chip size="small" variant="outlined" label={provisional?"Result In Progress":updateKindLabel(update.kind)} />
         <Typography variant="subtitle2" sx={{ flex: 1 }}>
           {updateActor(update, agentTitle)}
         </Typography>
@@ -181,7 +191,7 @@ function RequestUpdate({
       ) : null}
       {update.outcomeCause?.runId && onOpenWork ? (
         <Button size="small" onClick={() => onOpenWork(`run:${update.outcomeCause!.runId}`)}>
-          Review Agent activity
+          Review Agent Activity
         </Button>
       ) : null}
       {update.outcomeCause?.incidentId ? (
@@ -201,7 +211,7 @@ function RequestUpdate({
           aria-expanded={showFullText}
           onClick={() => setShowFullText((current) => !current)}
         >
-          {showFullText ? "Show bounded preview" : actionLabel}
+          {showFullText ? "Show Bounded Preview" : actionLabel}
         </Button>
       ) : null}
       {update.artifacts.map((artifact) => (
@@ -271,11 +281,53 @@ export function RequestLifecycleCard({
     staleTime: 15_000,
   });
   const lifecycle = query.data?.requestLifecycle;
+  const {rows:replyRows,feedback:replyFeedback}=useRequestReplyProjection(lifecycle?.updates??[],projectId,conversationId,lifecycle?.request,expanded&&lifecycle?.request.id===requestId&&lifecycle?.request.recipientAgentId===recipientAgentId);
+  const readOnly = useWorkspaceReadOnly();
+  const queryClient = useQueryClient();
+  const [confirmRetry, setConfirmRetry] = useState(false);
+  const heldAttempt = useRef<string>();
+  const acceptedHeldRead = useRef<number>();
+  const heldContext = lifecycle?.request.settingsTransitionHold;
+  const retry = useMutation({
+    mutationFn: async () => {
+      const retryHeld=heldContext==="retry_available";
+      if (readOnly || (!retryHeld && (!lifecycle?.request.retryAvailable || heldContext))) throw new Error("This assignment cannot be retried.");
+      try {
+        const result = await api.retryCoordinationRequest(requestId, retryHeld
+          ? { idempotencyKey: heldAttempt.current ??= createClientId(), retryHeldContext:true }
+          : { idempotencyKey: `operator-retry:${requestId}` });
+        if (result?.retryOfRequestId !== requestId || !result.requestIds?.length ||
+            (retryHeld && (result.requestIds.length!==1 || result.requestIds[0]!==requestId))) throw new Error("Unconfirmed recovery");
+        return result;
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status < 500) throw error;
+        throw new Error(retryHeld ? "Could not confirm whether the handoff retry was accepted. Try the same action again or check activity."
+          : "Could not confirm whether the retry started. Check activity before trying again; repeating work may duplicate changes.");
+      }
+    },
+    onSuccess: () => {
+      setConfirmRetry(false);
+      if (heldContext==="retry_available") acceptedHeldRead.current=query.dataUpdatedAt;
+      heldAttempt.current=undefined;
+      // The accepted successor is canonical even if a background refresh fails.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
+      ]).catch(() => {});
+    },
+  });
+  useEffect(() => {
+    // If the same original Request becomes held again after a successful
+    // retry, a fresh canonical read may offer a new explicit attempt.
+    if (heldContext==="retry_available" && retry.isSuccess &&
+        query.dataUpdatedAt !== acceptedHeldRead.current) retry.reset();
+  },[heldContext,query.dataUpdatedAt,retry.isSuccess]);
+  const retryAvailable = !readOnly && (heldContext==="retry_available" || (!heldContext && lifecycle?.request.retryAvailable)) && !retry.isSuccess;
   const questions = useMemo(
     () =>
       new Map(
         (lifecycle?.updates ?? [])
-          .filter((update) => update.kind === "question")
+          .filter((update) => (update.kind === "question" || update.kind === "historical_question"))
           .map((update, index) => [update.id, index + 1]),
       ),
     [lifecycle?.updates],
@@ -298,8 +350,9 @@ export function RequestLifecycleCard({
       }}
     >
       <AccordionSummary
+        id={`${detailsId}-summary`}
         aria-controls={detailsId}
-        aria-label={`${expanded ? "Collapse" : "Expand"} updates for request from ${requester} to ${recipient}`}
+        aria-label={`${expanded ? "Collapse" : "Expand"} Updates For Request From ${requester} To ${recipient}`}
         sx={{ minWidth: 0, "& .MuiAccordionSummary-content": { minWidth: 0 } }}
       >
         <Box sx={{ width: "100%", minWidth: 0 }}>
@@ -335,7 +388,7 @@ export function RequestLifecycleCard({
           </Stack>
         </Box>
       </AccordionSummary>
-      <AccordionDetails id={detailsId} sx={{ pt: 0 }}>
+      <AccordionDetails sx={{ pt: 0 }}>
         {query.isLoading ? (
           <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", py: 1 }}>
             <CircularProgress size={16} />
@@ -369,16 +422,18 @@ export function RequestLifecycleCard({
                 </Typography>
               )}
             </Box>
+            {replyFeedback.length?<ReplyReadFeedback entry={replyFeedback} agentTitle={agentTitle}/>:null}
             {lifecycle.updatesTruncated ? (
               <Alert severity="info">
                 Earlier Request updates are omitted from this bounded view.
               </Alert>
             ) : null}
-            <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request update history">
-              {lifecycle.updates.map((update) => (
+            <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request Update History">
+              {replyRows.map(({update,key,provisional}) => (
                 <RequestUpdate
-                  key={update.id}
+                  key={key}
                   update={update}
+                  provisional={provisional}
                   questionNumber={questions.get(update.id)}
                   answeredQuestionNumber={
                     update.inReplyToUpdateId
@@ -390,7 +445,7 @@ export function RequestLifecycleCard({
                 />
               ))}
             </Box>
-            {lifecycle.updates.length === 0 ? (
+            {replyRows.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 The recipient has not posted an update yet.
               </Typography>
@@ -399,14 +454,37 @@ export function RequestLifecycleCard({
               <Button
                 size="small"
                 onClick={() => onOpenWork(`request:${requestId}`)}
-                aria-label={`Open Work details for request ${requestId}`}
+                aria-label={`Open Work Details For Request ${requestId}`}
                 sx={{ alignSelf: "flex-start" }}
               >
-                Open Work details
+                Open Work Details
               </Button>
             ) : null}
+            {heldContext ? <Alert severity="warning">{heldContext==="retry_available"
+              ? "Context handoff stopped before this assignment started. The original assignment remains queued."
+              : "The context handoff could not be verified. This assignment remains held; review activity before recovery."}</Alert> : null}
+            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>{heldContext==="retry_available" ? "Retry Context Handoff…" : "Retry Assignment…"}</Button> : null}
           </Stack>
         ) : null}
+        <Box onClick={event => event.stopPropagation()}>
+          <ConfirmDialog
+            open={confirmRetry}
+            title={heldContext==="retry_available" ? "Retry context handoff?" : "Retry this assignment?"}
+            cancelLabel="Not Now"
+            confirmLabel={heldContext==="retry_available" ? "Retry Handoff" : "Retry Assignment"}
+            pendingLabel="Starting…"
+            pending={retry.isPending}
+            confirmDisabled={!retryAvailable}
+            error={retry.isError ? retry.error instanceof Error ? retry.error.message : "The retry could not be started." : undefined}
+            onCancel={() => setConfirmRetry(false)}
+            onConfirm={() => retry.mutateAsync()}
+          >
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolvedRequestText ?? "Assignment description unavailable."}</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>{heldContext==="retry_available"
+              ? "This retries the handoff for the same queued assignment. Its instructions and details stay the same."
+              : "Earlier effects unknown · retry starts another attempt and may duplicate changes · review activity first"}</Typography>
+          </ConfirmDialog>
+        </Box>
       </AccordionDetails>
     </Accordion>
   );

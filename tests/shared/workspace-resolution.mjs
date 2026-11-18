@@ -13,6 +13,14 @@ registerHooks({
     if (owner && !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.includes(':')) {
       return next(specifier, { ...context, parentURL: owner });
     }
-    return next(specifier, context);
+    try { return next(specifier, context); }
+    catch (error) {
+      // Server-lane integration tests also execute web workers directly. Match
+      // the web bundler's extensionless TypeScript resolution only in web/src.
+      if (error.code === 'ERR_MODULE_NOT_FOUND' && context.parentURL?.startsWith(new URL('../../apps/web/src/', import.meta.url).href) && /^\.\.?\/.+[^./]$/u.test(specifier)) {
+        return next(specifier + '.ts', context);
+      }
+      throw error;
+    }
   },
 });

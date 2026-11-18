@@ -4,7 +4,6 @@ import type { EngineModelValidationError } from "./adapter.js";
 export const PROVIDER_QUOTA_LIMITS = ["five_hour", "weekly", "weekly_model", "extra_usage"] as const;
 export type ProviderQuotaLimit = typeof PROVIDER_QUOTA_LIMITS[number];
 
-export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 export const MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS = 2_048;
 
 export const PROVIDER_FAILURE_CATEGORIES = [
@@ -229,7 +228,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (/\b(?:subscription (?:expired|inactive)|oauth session expired|failed to authenticate|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
     return "authentication";
   }
-  if (/\b(?:0 weighted tokens left|usage limit (?:was )?reached|quota (?:exhausted|reached)|you(?: have|'ve) hit your (?:usage )?limit)\b/u.test(value)) return "quota_exhausted";
+  if (/\b(?:0 weighted tokens left|usage limit (?:was )?reached|out of usage credits|quota (?:exhausted|reached)|you(?: have|'ve) hit your (?:usage )?limit)\b/u.test(value)) return "quota_exhausted";
   if (/\b(?:temporary throttl(?:e|ing)|temporarily (?:throttl(?:ed|ing)|limiting requests))\b/u.test(value)) return "throttled";
   if (/\b(?:rate limit(?:ed)?|too many requests|http 429)\b/u.test(value)) {
     return "rate_limit";
@@ -324,13 +323,6 @@ export function publicProviderFailureSummary(
 ): string | undefined {
   if (detail === undefined && category === undefined) return undefined;
   return publicProviderFailure({ detail, category }).summary;
-}
-
-export function publicProviderFailureCategorySummary(
-  detail: string | undefined,
-  category?: ProviderFailureCategory | string,
-): string | undefined {
-  return publicProviderFailureSummary(detail, category);
 }
 
 export function publicProviderFailureRemediation(

@@ -1,3 +1,5 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
+import { eventsPath, managedArtifactsLogPath } from "./paths.js";
 import type Database from "better-sqlite3";
 import { and, eq } from "drizzle-orm";
 import {
@@ -30,6 +32,8 @@ export class AgentEventSessionAuthority {
       projectId: string,
       projection: CommunicationProjection,
     ) => void,
+    private readonly progress: ProjectionProgress,
+    private readonly dataDir: string,
   ) {}
 
   recoverInterruptedExecutions(): string[] {
@@ -62,8 +66,9 @@ export class AgentEventSessionAuthority {
   }
 
   appendEvent(agentId: string, event: LogEvent, ts?: string): StoredLogEvent {
-    if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
     const projectId = this.projectIdOf(agentId);
+    let stored: StoredLogEvent | undefined;
+    if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
       ? event.communicationEventId : undefined;
     if (communicationEventId && !this.communicationProjectionAllowed(projectId, {
@@ -75,18 +80,48 @@ export class AgentEventSessionAuthority {
       // projection may not leave an unprojectable user_message in events.jsonl.
       throw new Error("communication scope cannot project to requested surface");
     }
-    const stored = this.eventProjection.append(agentId, projectId, event, ts);
+    const append = () => { stored = this.eventProjection.append(agentId, projectId, event, ts); return stored; };
+    try {
+      stored = this.progress.run([
+        eventsPath(this.dataDir, projectId, agentId), managedArtifactsLogPath(this.dataDir, projectId),
+      ], append);
+    } catch (error) {
+      if (stored) throw this.eventProjection.fenceAfterAppend(agentId, projectId, stored, error);
+      throw error;
+    }
+    // Preserve the primary event's commit before placing its audit metadata.
+    // Existing bounded recovery reuses that event rather than appending twice.
     const message = communicationMessageProjection(agentId, stored);
     if (communicationEventId && message) {
-      this.appendCommunicationProjection(projectId, {
-        eventId: communicationEventId,
-        surface: "direct_agent_audit",
-        projectionKey: agentId,
-        projectedAt: stored.ts,
-        message,
-      });
+      try {
+        this.appendCommunicationProjection(projectId, {
+          eventId: communicationEventId,
+          surface: "direct_agent_audit",
+          projectionKey: agentId,
+          projectedAt: stored.ts,
+          message,
+        });
+      } catch (error) {
+        this.progress.invalidate();
+        throw error;
+      }
     }
     return stored;
+  }
+
+  recoverEventTail(agentId: string, projectId: string, offset: number): void {
+    if (this.projectIdOf(agentId) !== projectId) throw new Error("event recovery owner mismatch");
+    this.client.transaction(() => {
+      for (const stored of this.eventProjection.replayTail(agentId, projectId, offset)) {
+        const event = stored.event;
+        const eventId = event.type === "communication_projection" || event.type === "user_message"
+          ? event.communicationEventId : undefined;
+        const message = communicationMessageProjection(agentId, stored);
+        if (eventId && message) this.appendCommunicationProjection(projectId, {
+          eventId, surface: "direct_agent_audit", projectionKey: agentId, projectedAt: stored.ts, message,
+        });
+      }
+    })();
   }
 
   readEvents(agentId: string): StoredLogEvent[] {
@@ -95,6 +130,10 @@ export class AgentEventSessionAuthority {
 
   readEventsSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
     return this.eventProjection.readSince(agentId, sinceSeq, limit);
+  }
+
+  latestVoiceReply(agentId: string, messageId: string, runId: string): import("@ponderosa/core").VoiceReplySnapshot | undefined {
+    return this.eventProjection.latestVoiceReply(agentId, messageId, runId);
   }
 
   lastSeqOf(agentId: string): number {
@@ -210,6 +249,13 @@ export class AgentEventSessionAuthority {
       FROM continuation_handoffs handoff
       JOIN runs source_run ON source_run.id = handoff.source_execution_id
       WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
+        -- A canonical reconstruction retires this entire uncertain generation.
+        -- Its model-authored continuation is historical, including on later turns.
+        AND NOT EXISTS (SELECT 1 FROM provider_context_recovery_requests recovery
+          JOIN scheduler_runs original ON original.id=handoff.source_execution_id
+          WHERE recovery.agent_id=handoff.agent_id AND recovery.provider_session_id=original.provider_session_id
+            AND json_extract(recovery.progress_json,'$.reconstructionRolloverId') IS NOT NULL)
+
         AND (
           source_run.status = 'completed'
           OR EXISTS (

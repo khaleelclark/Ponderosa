@@ -1,3 +1,4 @@
+import type {ReplyStreamCorrelation} from "../voice-reply.js";
 import type { EngineId } from "../adapter.js";
 import type {
   CommunicationActor,
@@ -7,21 +8,35 @@ import type {
 } from "../communication.js";
 import type {
   CoordinationRequestState,
-  CoordinationRequestUpdateKind,
+  CoordinationStoredRequestUpdateKind,
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
-import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
+import type { HistoryWindowDto, ProviderBlockedWorkDto, QueuedAdmissionBlockerDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
 import type { OutcomeCause } from "../outcome-cause.js";
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
+/** A canonical Chat removal can finish before its physical cleanup. */
+export interface ConversationDeletionResponseDto {
+  deleted: boolean;
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  deletionPending?: boolean;
+  retryable?: boolean;
+  replayed?: boolean;
+}
+
 /** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
   id: string;
   projectId: string;
+  /** Present only for a Chat owned by this Branch installation. */
+  branchId?: string;
+  /** Temporary workflow context; absent for persistent Branch Chats. */
+  executionId?: string;
   title: string;
   /** Chat-owned execution context. Legacy projectId only locates stored history. */
   workingDirectory?: string;
@@ -103,6 +118,12 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
+  /** Exact bounded authored communication text before display-only scope tags. */
+  authoredText?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -172,8 +193,21 @@ export interface MessageDeliveryReceiptDto {
   /** Exact provider execution reached by a recovery activation, when distinct. */
   recoveryExecutionId?: string;
   state: MessageDeliveryReceiptState;
+  /** Exact queued work held by a failed or uncertain settings handoff. */
+  settingsTransitionHold?: "retry_available" | "review_required";
+  /** This saved input is blocked by this Agent's exact uncertain retained session. */
+  contextRecoveryRequired?: { sourceRunId: string; recoveryId?: string };
+  /** Exact task whose Decision accounting cannot currently be verified. */
+  taskDecisionRepairHold?: true;
+  /** Exact unfinished task held by an unverified context rollover. */
+  contextRolloverHold?: "retry_available" | "review_required";
+  /** Stable exact continuation attempt for idempotent operator retry. */
+  contextRolloverAttemptId?: string;
   /** This exact activation is still waiting for its explicitly queued next Run. */
   queuedForNextRun?: true;
+  /** Every recipient of this operator message was explicitly removed from the
+   * next-Run queue before any provider submission. Canonical records remain. */
+  queueDeletionConfirmed?: true;
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */
   attemptCount: number;
@@ -191,6 +225,9 @@ export interface MessageDeliveryReceiptDto {
   /** Observed admission barrier, not provider acknowledgement or comprehension. */
   steeringWaitReason?: "context_refresh" | "prior_steering" | "revision_pending" |
     "provider_not_ready" | "provider_unsupported" | "preparation_retry" | "run_starting" | "scheduler_pending";
+  /** Current shared health/admission projection for an unstarted delivery;
+   * never evidence that this message reached an earlier Run. */
+  queueWaitReason?: QueuedAdmissionBlockerDto["kind"] | "current_run" | "provider_retry";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
   liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;
@@ -199,6 +236,19 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+  /** Current failure/recovery of this exact work's Run lineage, never the Agent's current selection. */
+  providerFailure?: {
+    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity" | "unavailable";
+    /** Exact canonical Activity error, already safe for the existing focused history route. */
+    activityId?: string;
+    providerId?: string;
+    model?: string;
+    resetAt?: string;
+    quotaLimit?: import("../provider-failure-summary.js").ProviderQuotaLimit;
+    recovery: "scheduled" | "retrying" | "action_required" | "stopped";
+    nextRetryAt?: string;
+    runId: string;
+  };
   /** Exact runtime selection attached to this delivery. */
   runtime?: {
     engine?: string;
@@ -244,6 +294,7 @@ export interface LetCurrentRunFinishResponse {
 
 export interface RetryMessageDeliveryRequest {
   idempotencyKey: string;
+  expectedRolloverAttemptId?: string;
 }
 
 export type RetryMessageDeliveryRejectionReason =
@@ -306,7 +357,7 @@ export interface CoordinationRequestSummaryDto {
   communicationEventId?: string;
   preview?: string;
   hasUpdates: boolean;
-  latestUpdateKind?: CoordinationRequestUpdateKind;
+  latestUpdateKind?: CoordinationStoredRequestUpdateKind;
   latestUpdateAt?: string;
   hasResult: boolean;
   updatedAt: string;
@@ -377,6 +428,54 @@ export interface AgentWorkTraceDto {
   updatedAt: string;
 }
 
+/** Local API origin, not an authenticated human identity. */
+export type ConversationTitleChangeDto = {
+  previousTitle: string;
+  title: string;
+  requestId?: string;
+} & (
+  | { origin: "operator_request"; actor: { kind: "operator_api" } }
+  | { origin: "automatic_title"; actor: { kind: "system" } }
+);
+
+/** Passive source evidence only: IDs and actors never authorize destination work. */
+export interface PortableChatTitleChangeDto {
+  sourceInstanceId: string;
+  eventId: number;
+  projectId: string;
+  conversationId: string;
+  createdAt: string;
+  change: ConversationTitleChangeDto;
+}
+
+export function portableChatTitleHistoryError(value: unknown): string | undefined {
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const fields = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).every(key => keys.includes(key));
+  const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 256;
+  if (!Array.isArray(value)) return "Chat title history must be an array";
+  const seen = new Set<string>();
+  for (const row of value) {
+    if (!object(row) || !fields(row,["sourceInstanceId","eventId","projectId","conversationId","createdAt","change"])
+      || !id(row.sourceInstanceId) || !id(row.projectId) || !id(row.conversationId) || !Number.isSafeInteger(row.eventId) || Number(row.eventId) < 1
+      || typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt)) || !object(row.change)) return "Invalid passive Chat title history record";
+    const c=row.change;
+    if (!fields(c,["previousTitle","title","actor","origin","requestId"]) || typeof c.previousTitle !== "string" || typeof c.title !== "string"
+      || !object(c.actor) || !fields(c.actor,["kind"]) || !(c.origin === "operator_request" && c.actor.kind === "operator_api" || c.origin === "automatic_title" && c.actor.kind === "system")
+      || c.requestId !== undefined && !id(c.requestId)) return "Invalid passive Chat title change";
+    const key=JSON.stringify([row.sourceInstanceId,row.projectId,row.conversationId,row.eventId]);
+    if(seen.has(key)) return "Duplicate passive Chat title history identity";seen.add(key);
+  }
+}
+
+export interface ConversationMutationDto {
+  id: number;
+  projectId: string;
+  conversationId: string;
+  createdAt: string;
+  /** Absent on old generic settings events: do not invent a Rename or actor. */
+  titleChange?: ConversationTitleChangeDto;
+}
+
 /** GET /api/projects/:id/agent-work response. This is a projection only. */
 export interface AgentWorkInspectorDto {
   projectId: string;
@@ -386,6 +485,7 @@ export interface AgentWorkInspectorDto {
   /** True when the bounded relationship expansion omitted older connected records. */
   truncated?: boolean;
   agents: Array<{ id: string; title: string }>;
+  chatChanges?: { items: ConversationMutationDto[]; truncated?: boolean };
   traces: AgentWorkTraceDto[];
   items: AgentWorkItemDto[];
 }
@@ -396,6 +496,13 @@ export interface AgentWorkItemDetailsDto {
   itemId: string;
   recordId: string;
   details: Array<{ label: string; value: string }>;
+  /** Operator-only, bounded projection of canonical message/Run associations. */
+  messageTrace?: {
+    inputs: Array<{ activationId: string; communicationEventId: string; sender: string; text: string; textTruncated?: true; recipient: string; createdAt?: string }>;
+    runIds: string[];
+    replies: Array<{ communicationEventId: string; messageId: string; runId: string; sender: string; text: string; textTruncated?: true; createdAt: string }>;
+    truncated?: true;
+  };
   /** Present only for Request records; loaded lazily from canonical updates. */
   requestLifecycle?: CoordinationRequestLifecycleDto;
 }
@@ -411,8 +518,11 @@ export interface CoordinationRequestArtifactDto {
 }
 
 export interface CoordinationRequestUpdateDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
   id: string;
-  kind: CoordinationRequestUpdateKind;
+  kind: CoordinationStoredRequestUpdateKind;
+  historicalOrigin?: {restorationId:string;sourceRequestId:string;sourceUpdateId:string;sourceKind:string;sourceVersion:number};
   actorKind: "agent" | "user" | "system" | "supervisor";
   actorId?: string;
   inReplyToUpdateId?: string;
@@ -431,6 +541,10 @@ export interface CoordinationRequestUpdateDto {
 /** Canonical, read-only lifecycle of one scoped coordination Request. */
 export interface CoordinationRequestLifecycleDto {
   request: {
+    /** Current canonical eligibility; the retry route remains authoritative. */
+    retryAvailable?: boolean;
+    /** The original peer Request is held before its settings handoff. */
+    settingsTransitionHold?: "retry_available" | "review_required";
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;
@@ -461,6 +575,9 @@ export interface ConversationDecisionEventDto {
 }
 
 export interface ConversationDetailDto {
+  /** Unresolved provider failures outside the paginated message window. */
+  providerFailureMessages?: ConversationMessageDto[];
+  providerFailuresHasMore?: true;
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   /** Bounded initial member page. Use the scoped members endpoint for more. */
@@ -558,6 +675,8 @@ export type CreateCollaborationMessageResponse =
   | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
+  /** Explicit call input; only one queued recipient, never inferred from prose. */
+  voiceReply?: true;
   text: string;
   recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
   /** Stable across retries; one user action creates one message and N deliveries. */
@@ -587,6 +706,10 @@ export interface MultiAgentDirectMessageResponse {
 }
 
 export interface QueuedConversationMessageDto {
+  /** Canonical accepted per-recipient attachment count, independent of history hydration. */
+  attachmentCount?: number;
+  /** Exact authored source; presentation correlation, never dispatch authority. */
+  communicationEventId?: string;
   deliveryId: string;
   messageId: string;
   conversationId: string;
@@ -608,6 +731,8 @@ export interface CancelQueuedMessageResponse {
   cancelled: boolean;
   replayed: boolean;
   status: "cancelled" | "delivery_started";
+  /** Current canonical evidence, including on an idempotent replay. */
+  message?: { conversationId: string; communicationEventId: string; deliveryReceipts: MessageDeliveryReceiptDto[] };
 }
 
 export interface EditQueuedMessageRequest {
@@ -637,6 +762,10 @@ export interface SteerQueuedMessageResponse {
 
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -712,6 +841,8 @@ export interface StartedMessageResponse {
 /** POST /api/agents/:id/messages response when another turn is still active. */
 export interface QueuedMessageResponse {
   queued: true;
+  /** Exact pending queue row when canonical intake can already project it. */
+  queuedMessage?: QueuedConversationMessageDto;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
   /** Stable queued-delivery identity used to follow this item until it starts. */
@@ -722,6 +853,7 @@ export interface QueuedMessageResponse {
 /** Canonical intake committed, but queue projections are still being repaired. */
 export interface RecoveringMessageResponse {
   queued: true;
+  queuedMessage?: QueuedConversationMessageDto;
   committed: true;
   recovering: true;
   position?: number;
@@ -773,7 +905,9 @@ type ImmediateAgentMessageRequest = AgentMessageRequestBase & (
       intent: "collaboration";
       /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
       recipientAgentIds: string[];
-      /** Urgent collaboration may steer; ordinary collaboration queues. */
+      /** Instructions and questions steer; progress and FYIs do not interrupt. */
+      messagePurpose?: "instruction" | "question" | "progress" | "fyi";
+      /** Priority only; use messagePurpose to choose whether collaboration interrupts. */
       urgency?: "ordinary" | "urgent";
     }
 ) & { delivery?: never; expiresAt?: never; taskDelivery?: "final" | "blocked" };
@@ -788,6 +922,7 @@ type NextRunAgentMessageRequest = Omit<
   expiresAt?: string;
   intent?: never;
   urgency?: never;
+  messagePurpose?: never;
   taskDelivery?: never;
 };
 
@@ -864,7 +999,7 @@ export type WorkspaceFileOwnerDto =
 
 // ─── Messages ───────────────────────────────────────────────────────────────────────
 
-export type AllChatSourceDto =
+export type InboxSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }
   | {
       kind: "agent";
@@ -875,7 +1010,9 @@ export type AllChatSourceDto =
     };
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
-export interface AllChatItemDto {
+export interface InboxItemDto {
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
   communicationEventId: string;
   messageId: string;
   communicationIntent: CommunicationIntent;
@@ -886,7 +1023,7 @@ export interface AllChatItemDto {
   /** Authored routing handles bound to their stable Direct recipients. */
   agentMentions?: AgentMentionBindingDto[];
   project: Pick<ProjectDto, "id" | "label">;
-  source: AllChatSourceDto;
+  source: InboxSourceDto;
   author: GlobalChatSearchAuthorDto;
   text: string;
   createdAt: string;
@@ -899,7 +1036,7 @@ export interface AllChatItemDto {
 }
 
 /** One canonical Decision event projected into the workspace-wide aggregate timeline. */
-export interface AllChatDecisionEventDto {
+export interface InboxDecisionEventDto {
   kind: "decision" | "decision_response";
   id: string;
   createdAt: string;
@@ -909,9 +1046,9 @@ export interface AllChatDecisionEventDto {
   source: { kind: "project"; conversationId: string; title: string };
 }
 
-/** GET /api/all-chat response. Canonical items are oldest-first for timeline prepend. */
-export interface AllChatPageDto {
-  items: AllChatItemDto[];
-  decisions?: AllChatDecisionEventDto[];
+/** GET /api/inbox response. Canonical items are oldest-first for timeline prepend. */
+export interface InboxPageDto {
+  items: InboxItemDto[];
+  decisions?: InboxDecisionEventDto[];
   history: HistoryWindowDto;
 }

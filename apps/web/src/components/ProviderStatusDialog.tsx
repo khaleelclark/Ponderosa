@@ -22,31 +22,31 @@ export function ProviderStatusDetails({
   return (
       <Stack spacing={1.5} sx={{ pt: 1 }}>
         <Box>
-          <Typography variant="subtitle1" fontWeight={750}>Network access</Typography>
+          <Typography variant="subtitle1" fontWeight={650}>Network Access</Typography>
           {networkSecurity ? <Alert severity={networkSecurity.warning ? "warning" : "success"} sx={{ mt: 1 }}>
-            <Typography variant="body2" fontWeight={700}>
-              {networkSecurity.mode === "trusted_tailnet" ? "Trusted Tailnet" : networkSecurity.mode === "reverse_proxy" ? "Reverse Proxy" : networkSecurity.mode === "authenticated" ? "Authenticated Listener" : "Loopback Only"}
+            <Typography variant="body2" fontWeight={600}>
+              User-managed Network
             </Typography>
             <Typography variant="body2">{networkSecurity.detail} Bound to {networkSecurity.bindHost}.</Typography>
-            {networkSecurity.warning ? <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>{networkSecurity.warning}</Typography> : null}
+            {networkSecurity.warning ? <Typography variant="body2" fontWeight={600} sx={{ mt: 0.5 }}>{networkSecurity.warning}</Typography> : null}
           </Alert> : networkSecurityLoading
             ? <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Checking network security posture…</Typography>
             : <Alert severity="error" sx={{ mt: 1 }}>{networkSecurityError ?? "Network security posture is unavailable."}</Alert>}
         </Box>
-        <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, and runtime access. Supported providers expose account limits in Provider usage; Provider Activity shows individual Run telemetry, not billing.</Typography>
+        <Typography variant="body2" color="text.secondary">Account limits: Provider usage · Run telemetry: Provider Activity</Typography>
         {engines.map((engine) => {
           const status = engineStatusPresentation(engine);
           const disabled = engine.enabled === false;
           const accessRejected = engine.authentication === "authenticated" && engine.reachability === "degraded" && engine.availabilityCategory === "authentication";
           return <Box key={engine.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-              <Typography variant="subtitle1" fontWeight={750} sx={{ flex: 1 }}>{engine.displayName}</Typography>
+              <Typography variant="subtitle1" fontWeight={650} sx={{ flex: 1 }}>{engine.displayName}</Typography>
               <Chip size="small" label={disabled ? "Disabled" : "Enabled"} color={disabled ? "default" : "success"} variant="outlined" />
-              <Chip size="small" label={accessRejected ? "Access rejected" : engine.authentication === "authenticated" ? "Sign-in information found" : engine.authentication === "checking" ? "Checking sign-in" : engine.authentication === "error" ? "Sign-in check failed" : "Sign-in needed"} color={accessRejected ? "warning" : engine.authentication === "authenticated" ? "success" : engine.authentication === "checking" ? "default" : "warning"} variant="outlined" />
+              <Chip size="small" label={accessRejected ? "Access Rejected" : engine.authentication === "authenticated" ? "Sign-In Information Found" : engine.authentication === "checking" ? "Checking Sign-In" : engine.authentication === "error" ? "Sign-In Check Failed" : "Sign-In Needed"} color={accessRejected ? "warning" : engine.authentication === "authenticated" ? "success" : engine.authentication === "checking" ? "default" : "warning"} variant="outlined" />
               <Chip size="small" label={status.label} color={status.color} />
             </Stack>
             <Typography variant="body2" sx={{ mt: 1 }}>{disabled ? "Provider access is inactive while disabled by the operator." : engine.availabilityDetail ?? (engine.intakeReady ? "Provider intake is ready." : "Provider intake is unavailable.")}</Typography>
-            {accessRejected ? <Alert severity="warning" sx={{ mt: 1 }}>Sign-in information was found, but the provider rejected the access check. Sign in again or test access before sending new work.</Alert> : engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
+            {accessRejected ? <Alert severity="warning" sx={{ mt: 1 }}>Sign-in found · provider rejected access · sign in again or test access before sending work</Alert> : engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
             {engine.authObservedAt ? <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Sign-in observed: {engine.authObservedAt}{engine.authSource ? ` · ${engine.authSource}` : ""}{engine.authReason ? ` · ${engine.authReason}` : ""}</Typography> : null}
             {engine.resourceAdmission ? <Box component="details" sx={{ mt: 1 }}>
               <Box component="summary" sx={{ cursor: "pointer" }}>{engine.resourceAdmission.state === "held" ? "Waiting for host resources" : engine.resourceAdmission.state === "disabled" ? "Host-resource protection disabled" : engine.resourceAdmission.protected ? "Host-resource protection active" : "Host-resource protection unavailable"}</Box>

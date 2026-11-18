@@ -22,6 +22,9 @@ registerHooks({
     }
   },
   load(url, context, next) {
+    // Behavior units execute browser source without applying styles; mounted
+    // browser checks remain responsible for the real CSS and layout.
+    if (url.startsWith(source) && url.endsWith('.css')) return { format: 'module', shortCircuit: true, source: 'export {};' };
     if (!url.startsWith(source) || !/\.tsx?$/.test(url)) return next(url, context);
     return { format: 'module', shortCircuit: true, source: ts.transpileModule(readFileSync(fileURLToPath(url), 'utf8'), {
       fileName: fileURLToPath(url),

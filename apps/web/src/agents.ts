@@ -117,13 +117,13 @@ export function agentStatusLabel(status: AgentStatus): string {
     case "waiting":
       return "Waiting";
     case "needs_decision":
-      return "Needs decision";
+      return "Needs Decision";
     case "completed":
       return "Completed";
     case "blocked":
       return "Blocked";
     case "compacting":
-      return "Refreshing context";
+      return "Refreshing Context";
     case "cancelled":
       return "Cancelled";
     case "failed":
@@ -159,18 +159,19 @@ export function agentStatusPresentation(
     agentNameForId?: (agentId: string) => string | undefined;
   } = {},
 ): AgentStatusPresentation {
-  if (!health) return { status: "unknown", label: "Unknown", accessibleLabel: "Agent status: Unknown", detail: "Canonical current Agent health is unavailable." };
+  if (!health) return { status: "unknown", label: "Unknown", accessibleLabel: "Agent Status: Unknown", detail: "Canonical current Agent health is unavailable." };
   const status = health.status;
   const displayStatus = agentDisplayStatus(health);
   const blocker = health && "admissionBlocker" in health ? health.admissionBlocker : undefined;
-  const coarseLabel = AGENT_DISPLAY_STATUS_LABELS[displayStatus];
+  const coarseLabel = health.reason==='context_recovery_required'?'Cannot Respond Yet'
+    : ['context_recovery_cleanup','context_recovery_running'].includes(health.reason??'')?'Connecting':AGENT_DISPLAY_STATUS_LABELS[displayStatus];
   const coarse = {
     status: displayStatus,
     label: coarseLabel,
-    accessibleLabel: `Agent status: ${coarseLabel}`,
+    accessibleLabel: `Agent Status: ${coarseLabel}`,
     detail: blocker && status === "blocked"
       ? `${coarseLabel}; queued for ${blocker.kind === "host_resource_pressure" ? "host resources" : `${blocker.providerId}: ${blocker.kind.replaceAll("_", " ")}`}. Last observation: ${blocker.observedAt ?? "unavailable"}.`
-      : `Agent status: ${coarseLabel}`,
+      : `Agent Status: ${coarseLabel}`,
   };
   const phase = health?.phase;
   if (
@@ -238,7 +239,7 @@ export function agentStatusPresentation(
       }).join(", ")}`
     : undefined;
   const detail = [
-    `Agent status: ${label}`,
+    `Agent Status: ${label}`,
     counterparties,
     identity,
     `${phase.dependencyCount} unresolved ${phase.dependencyCount === 1 ? "request" : "requests"}`,

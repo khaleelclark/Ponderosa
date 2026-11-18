@@ -8,12 +8,11 @@ const CANONICAL_ARTIFACT_REFERENCE = new RegExp(
 );
 const CANONICAL_ARTIFACT_ID_CHARACTER = /[A-Za-z0-9._:-]/u;
 
-function canonicalArtifactReferenceMatches(text: string): Array<{
+function* canonicalArtifactReferenceMatches(text: string): Generator<{
   reference: string;
   artifactId: string;
   index: number;
 }> {
-  const matches: Array<{ reference: string; artifactId: string; index: number }> = [];
   const matcher = new RegExp(CANONICAL_ARTIFACT_REFERENCE.source, CANONICAL_ARTIFACT_REFERENCE.flags);
   for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
     const reference = match[0];
@@ -28,9 +27,8 @@ function canonicalArtifactReferenceMatches(text: string): Array<{
       }
       continue;
     }
-    matches.push({ reference, artifactId, index });
+    yield { reference, artifactId, index };
   }
-  return matches;
 }
 
 export function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
@@ -58,9 +56,12 @@ export function collectReachableArtifactIds(value: unknown, found = new Set<stri
 /** Offsets are UTF-16 indices into a bounded window, including enough context
  * on each side to recognize a reference split across a history chunk. */
 export function artifactIdsIntersectingTextRange(text: string, start: number, end: number): string[] {
-  return canonicalArtifactReferenceMatches(text)
-    .filter(match => match.index < end && match.index + match.reference.length > start)
-    .map(match => match.artifactId);
+  const ids: string[] = [];
+  for (const match of canonicalArtifactReferenceMatches(text)) {
+    if (match.index >= end) break;
+    if (match.index + match.reference.length > start) ids.push(match.artifactId);
+  }
+  return ids;
 }
 
 function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): string | undefined {
@@ -96,7 +97,9 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
   }
 
   const roots = [...nodes].filter(([, node]) => node.managerRef === undefined).map(([ref]) => ref);
-  if (roots.length !== 1 || roots[0] !== portablePackage.rootRef) {
+  const declared=portablePackage.rootRefs??[portablePackage.rootRef];
+  if(!Array.isArray(declared)||declared.length===0||declared.some(ref=>typeof ref!=='string')||new Set(declared).size!==declared.length||declared[0]!==portablePackage.rootRef||declared.length!==roots.length||roots.some(ref=>!declared.includes(ref)))return 'Grouped rootRefs must exactly identify independent reporting roots';
+  if (portablePackage.rootRefs===undefined&&(roots.length !== 1 || roots[0] !== portablePackage.rootRef)) {
     return "Agent package rootRef must identify the unique organization root";
   }
   const children = new Map<string, string[]>();
@@ -107,7 +110,7 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
     children.set(node.managerRef, siblings);
   }
   const reachable = new Set<string>();
-  const pending = [portablePackage.rootRef];
+  const pending = [...declared];
   while (pending.length) {
     const ref = pending.pop()!;
     if (reachable.has(ref)) return "every imported Agent must be reachable exactly once from rootRef";

@@ -64,13 +64,15 @@ import {
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
   shouldConsumeComposerKey,
+  shouldConsumeComposerQueueKey,
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
 import { isIOSDevice } from "../../browserPlatform";
 
-// iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
+// iPadOS can identify as a Mac; font sizing still follows its existing policy.
 const isIOSComposer = isIOSDevice();
+const isMobileComposer = isIOSComposer || (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -163,6 +165,7 @@ export interface ComposerEditorHandle {
   placeCaretAfterLoneMention(): void;
   focus(): void;
   isFocused(): boolean;
+  isComposing(): boolean;
   getCanonicalText(): string;
   getSelectionOffsets(): ComposerSelectionOffsets;
   setSelectionOffsets(start: number, end: number): void;
@@ -433,6 +436,18 @@ function $isComposerProjectFileNode(
   return node instanceof ComposerProjectFileNode;
 }
 
+function $removeComposerNodeAndRestoreSelection(node: LexicalNode): void {
+  const parent = node.getParent();
+  const index = node.getIndexWithinParent();
+  node.remove();
+  if (parent) {
+    const selection = $createRangeSelection();
+    selection.anchor.set(parent.getKey(), index, "element");
+    selection.focus.set(parent.getKey(), index, "element");
+    $setSelection(selection);
+  }
+}
+
 function ComposerProjectFileToken({
   nodeKey,
   filename,
@@ -447,15 +462,7 @@ function ComposerProjectFileToken({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerProjectFileNode(node)) return;
-      const parent = node.getParent();
-      const index = node.getIndexWithinParent();
-      node.remove();
-      if (parent) {
-        const selection = $createRangeSelection();
-        selection.anchor.set(parent.getKey(), index, "element");
-        selection.focus.set(parent.getKey(), index, "element");
-        $setSelection(selection);
-      }
+      $removeComposerNodeAndRestoreSelection(node);
     });
     requestAnimationFrame(() => editor.focus());
   }, [editor, mutationLocked, nodeKey]);
@@ -572,15 +579,7 @@ function ComposerMentionToken({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerMentionNode(node)) return;
-      const parent = node.getParent();
-      const index = node.getIndexWithinParent();
-      node.remove();
-      if (parent) {
-        const selection = $createRangeSelection();
-        selection.anchor.set(parent.getKey(), index, "element");
-        selection.focus.set(parent.getKey(), index, "element");
-        $setSelection(selection);
-      }
+      $removeComposerNodeAndRestoreSelection(node);
     });
     requestAnimationFrame(() => editor.focus());
   }, [editor, mutationLocked, nodeKey, removeStructuralDestination, structural]);
@@ -593,10 +592,10 @@ function ComposerMentionToken({
       contentEditable={false}
       role="group"
       aria-label={kind === "special"
-        ? `${title} tag`
+        ? `${title} Tag`
         : valid
-          ? `Agent mention ${title}`
-          : `Unavailable Agent mention ${title}`}
+          ? `Agent Mention ${title}`
+          : `Unavailable Agent Mention ${title}`}
       sx={{
         display: "inline-flex",
         alignItems: "center",
@@ -605,7 +604,7 @@ function ComposerMentionToken({
         pl: 0,
         pr: 0,
         py: 0,
-        height: 22,
+        height: "1.375rem",
         borderRadius: "8px",
         bgcolor: valid ? "action.selected" : "error.dark",
         color: valid ? "primary.main" : "error.contrastText",
@@ -614,7 +613,7 @@ function ComposerMentionToken({
           : undefined,
         fontSize: "inherit",
         fontWeight: 700,
-        lineHeight: "22px",
+        lineHeight: "1.375rem",
         verticalAlign: "top",
         whiteSpace: "nowrap",
       }}
@@ -943,9 +942,14 @@ function EditorBridge({
     }, COMMAND_PRIORITY_HIGH);
   }, [editor]);
   useEffect(() => editor.registerCommand(KEY_ENTER_COMMAND, event => {
-    if (!event || disabled || editor.isComposing() ||
+    if (!event || editor.isComposing() ||
         shouldIgnoreComposerKey({ isComposing: event.isComposing, keyCode: event.keyCode })) return false;
-    if (isIOSComposer || (event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches)) return false;
+    if (shouldConsumeComposerQueueKey(event)) {
+      event.preventDefault();
+      return true;
+    }
+    if (disabled) return false;
+    if (isMobileComposer || (event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches)) return false;
     // Lexical's native listener runs before React's bubbled keydown. Suppress
     // its default paragraph mutation; React owns desktop Send/menu/Shift+Return.
     // A blocked Send must not create an invisible second canonical paragraph.
@@ -1008,6 +1012,9 @@ function EditorBridge({
       if (!editor.getRootElement()?.contains(document.activeElement)) return;
       if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
       editor.update(() => {
+        // Native input may reach the DOM before Lexical imports it. Preserve
+        // that caret instead of selecting the stale chip-only model's end.
+        if (editor.getRootElement()?.textContent !== $getRoot().getTextContent()) return;
         const selection = $getSelection();
         if (selection && (!$isRangeSelection(selection) || !selection.isCollapsed())) return;
         const paragraph = $getRoot().getFirstChild();
@@ -1024,7 +1031,9 @@ function EditorBridge({
     },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
-    getCanonicalText: () => canonicalRef.current,
+    isComposing: () => editor.isComposing(),
+    // Native input can be queued before the update-listener cache catches up.
+    getCanonicalText: () => editor.read("pending", $canonicalText),
     getSelectionOffsets: () =>
       editor.getEditorState().read(() => $selectionOffsets()),
     setSelectionOffsets: (start, end) => {
@@ -1392,6 +1401,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   mentionDescriptors: ComposerMentionDescriptor[];
   mentionBindings: AgentMentionBindingDto[];
   canSend: boolean;
+  canQueue?: boolean;
   onTextChange(value: string, caret: number): void;
   onFiles(files: File[]): void;
   onPastedText(value: string): void;
@@ -1401,6 +1411,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
   onSend(): void;
+  onQueue?(): void;
 }>(function ComposerEditor({
   text,
   disabled,
@@ -1419,6 +1430,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   mentionDescriptors,
   mentionBindings,
   canSend,
+  canQueue = false,
   onTextChange,
   onFiles,
   onPastedText,
@@ -1428,6 +1440,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   onApplySuggestion,
   onClearRequiredRecipient,
   onSend,
+  onQueue,
 }, ref): JSX.Element {
   const bridgeRef = useRef<ComposerEditorHandle | null>(null);
   const assignBridgeRef = useCallback((handle: ComposerEditorHandle | null) => {
@@ -1472,7 +1485,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
-      shouldIgnoreComposerKey({
+      bridgeRef.current?.isComposing() || shouldIgnoreComposerKey({
         isComposing: event.nativeEvent.isComposing,
         keyCode: event.nativeEvent.keyCode,
       })
@@ -1480,16 +1493,21 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       event.stopPropagation();
       return;
     }
+    if (shouldConsumeComposerQueueKey({ ...event, isComposing: event.nativeEvent.isComposing })) {
+      event.preventDefault();
+      if (!disabled && !locked && canQueue && !event.repeat && !event.metaKey && !event.altKey) onQueue?.();
+      return;
+    }
     if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
       // A desktop continuation can finish hydrating after native focus. Do not
       // let the first printable key reuse its pre-chip selection.
       bridgeRef.current?.placeCaretAfterLoneMention();
     }
-    if (event.key === "Enter" && (isIOSComposer || (
+    if (event.key === "Enter" && (isMobileComposer || (
       event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
     ))) {
       if (menuOpen) onSuppressMenu();
-      // Lexical owns mobile Shift+Return. iOS also uses plain Return for a newline.
+      // Lexical owns mobile newlines, including soft-keyboard beforeinput.
       return;
     }
     if (
@@ -1570,6 +1588,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     }
     const sendKey = {
       key: event.key,
+      ctrlKey: event.ctrlKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
       repeat: event.repeat,
@@ -1594,9 +1613,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         }}
         sx={{
           position: "relative",
+          display: "grid",
           minWidth: 0,
           "& .composer-editor-input": {
-            minHeight: 22,
+            gridArea: "1 / 1",
+            minWidth: 0,
+            minHeight: "1.375rem",
             maxHeight: 110,
             overflowY: "auto",
             px: 0.25,
@@ -1606,8 +1628,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             color: "text.primary",
             fontFamily: "inherit",
             // Avoid iOS focus zoom without disabling user-controlled pinch zoom.
-            fontSize: isIOSComposer ? 16 : 15,
-            lineHeight: "22px",
+            fontSize: isIOSComposer ? "1rem" : "0.9375rem",
+            lineHeight: "1.375rem",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
             WebkitUserSelect: "text",
@@ -1649,12 +1671,16 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             <Typography
               component="span"
               sx={{
-                position: "absolute",
-                top: 6,
-                left: 2,
-                color: { xs: "text.secondary", md: "text.disabled" },
-                fontSize: isIOSComposer ? 16 : 15,
-                lineHeight: "22px",
+                // Share the editor's cell so wrapped hints reserve their full height.
+                gridArea: "1 / 1",
+                minWidth: 0,
+                px: 0.25,
+                pt: 0.75,
+                pb: 0.5,
+                overflowWrap: "anywhere",
+                color: "text.secondary",
+                fontSize: isIOSComposer ? "1rem" : "0.9375rem",
+                lineHeight: "1.375rem",
                 pointerEvents: "none",
               }}
             >

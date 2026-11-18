@@ -74,20 +74,24 @@ export interface ProjectJson {
   defaultEffort?: string;
   lastConversationId?: string;
   instructions?: string;
+  /** Internal final working-root bind; original managed creation remains provenance only. */
+  importedRootBinding?: ({planId:string;creationOperationId?:never}|{planId?:never;creationOperationId:string}) & {memberIds?:string[];previousPath:string;path:string;managedWorkspaceName?:string;state:'binding'|'completed';updatedAt:string;sharedAgents:Array<{id:string;workingCopyId:string}>;recoveryError?:{code:string;message:string;at:string};parent:NonNullable<AgentDto['workingCopy']['importedParent']>};
   /** Durable identity for an HTTP create retry. Missing on pre-idempotency Projects. */
   creationIdempotencyKey?: string;
   creationPayloadHash?: string;
 }
 
 export interface ManagedArtifactAccess {
-  ownerKind: "project" | "communication" | "request_update";
+  ownerKind: "project" | "communication" | "request_update" | "operator_chat" | "working_file_part";
   ownerId: string;
   audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
   senderAgentId?: string;
 }
 
+export type ManagedProjectArtifact = ArtifactDto & {projectId: string; originAgentId?: string; transportPart?: import("./working-file-transport.js").WorkingFileTransportPart};
+
 export type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
+  | { type: "created"; artifact: ManagedProjectArtifact; access?: ManagedArtifactAccess }
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 
@@ -97,6 +101,7 @@ export interface AgentJson {
   /** Canonical owner Chat. Missing only from immutable deleted-Agent tombstones. */
   conversationId?: string;
   title: string;
+  role?: string;
   handle: string;
   activeEngine: string;
   model?: string;
@@ -133,6 +138,8 @@ export type PresetEvent = {
 export interface ConversationJson {
   id: string;
   projectId: string;
+  branchId?: string;
+  executionId?: string;
   title: string;
   workingDirectory?: string;
   managedWorkspaceName?: string;
@@ -180,6 +187,7 @@ export interface MessageDispatchRecord {
 export interface AgentDeletionReceipt {
   id: string;
   projectId: string;
+  productScope:'dev'|'branches'|'mixed'|'unknown';
   previewHash: string;
   rootAgentIds: string[];
   deletedAgentIds: string[];
@@ -193,6 +201,7 @@ export interface AgentDeletionReceipt {
 
 export interface ProjectDeletionReceipt {
   projectId: string;
+  productScope:'dev'|'branches'|'mixed'|'unknown';
   tombstoneName: string;
   ownershipToken?: string;
   removalStarted?: boolean;
@@ -209,6 +218,7 @@ export interface ProjectDeletionReceipt {
 export interface ConversationDeletionReceipt {
   conversationId: string;
   projectId: string;
+  branchId?: string;
   tombstoneName?: string;
   ownershipToken?: string;
   removalStarted: boolean;

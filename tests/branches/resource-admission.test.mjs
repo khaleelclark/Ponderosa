@@ -1,0 +1,254 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {AgentStore,BranchStore,CoordinationV3Store,verifyRetainedProviderExitEvidence,hasRetainedTemporaryChatScope} from '@ponderosa/agents';
+import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
+import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
+import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
+import {retainedRuntimeResources} from '../../apps/server/dist/product-scope.js';
+import {MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_FOREIGN_HOLD} from '../../apps/server/dist/local-memory-authority.js';
+import {withFixture,until} from '../shared/fixture.mjs';
+
+function deployTemplate(branches,root,key,failure={action:'stop'}){
+ const owner=branches.create('Temporary work',key),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
+ const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Temporary worker',engine:'codex',managementPermissions:permissions},{ref:'child',title:'Temporary child',managerRef:'worker',engine:'codex',managementPermissions:permissions}]};
+ return branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:key+'-deploy',definition:{schema:'ponderosa.branch.v1',name:'Temporary work',trigger:{kind:'manual'},entry:'team',templates:{team:template},steps:[{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Complete the canonical Request'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,maxEphemeralAgents:2,failure}},bindings:{agents:{},directories:{workspace:root},engines:{codex:'codex'}}});
+}
+
+test('retiring Branch runtime cannot retain resources linked to unfinished plans',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const branchOwner=branches.create('Retained work','retained-pending-plan');
+  const project=store.createProject({label:'Retained Chat',hostPath:f.root,defaultEngine:'codex',chatOwned:true,branchId:branchOwner.id});
+  const chat=store.getConversation(project.lastConversationId);
+  const worker=store.createAgent(project.id,{conversationId:chat.id,title:'Retained worker',engine:'codex'}).id;
+  f.plans.set(worker,[{hold:true}]);
+  const branch=branches.deploy({chatId:'',branchId:branchOwner.id,expectedVersionId:'',idempotencyKey:'retained-pending-plan-deploy',definition:{schema:'ponderosa.branch.v1',name:'Retained work',trigger:{kind:'manual'},entry:'work',steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Complete the canonical Request'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{worker},directories:{workspace:f.root},engines:{codex:'codex'}}});
+  const execution=branches.accept(branch.id,'held-input','Wait for controlled release');
+  assert.ok(store.sqlite.prepare('SELECT 1 FROM branch_resource_references WHERE execution_id=? AND chat_id=?').get(execution.id,chat.id),'accepted execution references the persistent Branch Chat');
+  await until(()=>f.sessions.get(worker),'controlled retained-runtime provider');
+  const run=await until(()=>store.sqlite.prepare("SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL").get(worker),'controlled fenced Run');
+  const plan='retained-pending-plan',now=new Date().toISOString();
+  store.sqlite.prepare("INSERT INTO branch_installation_plans(id,branch_id,package_json,bindings_json,preview_json,state,created_at) VALUES(?,?,'{}','{}','{}','completed',?)").run(plan,branch.id,now);
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'retiring')").run(branch.id,plan,chat.id);
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state,staging_plan_id) VALUES(?,?,'chat','worker',?,'active',?)").run(branch.id,plan,worker,plan);
+  const owner={conversationId:chat.id,agentId:worker,runId:run.id,fencingToken:run.fencing_token};
+  const retained=()=>retainedRuntimeResources(store,owner);
+  assert.ok(retained().has(worker),'completed plan retains exact live runtime access');
+  assert.equal(retainedRuntimeResources(store,{...owner,fencingToken:run.fencing_token+1}).size,0,'a stale fencing token cannot retain access');
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying' WHERE id=?").run(plan);
+  assert.equal(retained().size,0,'active resource in unfinished plan is not retained');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET state='retiring' WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.equal(retained().size,0,'retiring resource in unfinished plan is not retained');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id='missing-plan' WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.equal(retained().size,0,'missing plan is not publication proof');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=? WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(plan,branch.id,plan);
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='completed' WHERE id=?").run(plan);
+  assert.ok(retained().has(worker),'retiring resource from completed plan remains available to its exact live Run');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=NULL WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.ok(retained().has(worker),'ordinary retirement without a pending plan remains available');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('historical retry context cleanup survives reopen without deleting the current generation or user folders',{timeout:15000},async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-historical-context-'));let store,branches,resources,fail=true,passed=false;const seen=[];
+ const open=()=>{
+  store=new AgentStore(root);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  resources=new BranchResourceService(branches,store,async()=>{throw Error('Historical catch-up must not delete Agents')},async()=>{throw Error('No provisioning allowed')},async id=>{
+   seen.push(id);const receipt=store.markConversationDeletionPending(id);
+   if(fail){fail=false;throw Error('Controlled interrupted Chat deletion')}
+   store.commitConversationDeletion(id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(id);
+  });
+ };open();
+ t.after(async()=>{await resources.stop();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained fixture: ${root}`)});
+ const branch=deployTemplate(branches,root,'historical-retry'),execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];
+ const create=(label,owner)=>{const project=store.createProject({label,hostPath:root,defaultEngine:'codex',chatOwned:true,...owner});return store.getConversation(project.lastConversationId)};
+ const owner={branchId:branch.id,executionId:execution.id},old=create('Old generation',owner);branches.bindResourceChat(provision.stepExecutionId,old.id);
+ // Reproduce the old release's persisted pointer reset, retaining its context.
+ store.sqlite.prepare("UPDATE branch_resources SET chat_id=NULL,generation=generation+1,creation_key=creation_key||':retry' WHERE step_execution_id=?").run(provision.stepExecutionId);
+ const current=create('Current generation',owner);branches.bindResourceChat(provision.stepExecutionId,current.id);const unrelated=create('Unrelated Chat');
+ writeFileSync(path.join(root,'keep-source.txt'),'user source');
+ await resources.tick(false);assert.deepEqual(seen,[old.id]);assert.ok(store.getConversation(old.id,{includeDeleting:true}));assert.ok(store.getConversation(current.id));assert.ok(store.getConversation(unrelated.id));
+ const safeError=store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(old.id).error;
+ assert.match(safeError,/Controlled interrupted Chat deletion/);assert.match(safeError,/historical Workflow Chat/);
+ await resources.stop();store.close();open();await resources.tick(false);
+ assert.deepEqual(seen,[old.id,old.id]);assert.equal(store.getConversation(old.id),undefined);assert.equal(store.getConversationDeletionReceipt(old.id).serverCleanupCompleted,true);
+ assert.equal(store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(old.id),undefined);
+ assert.ok(store.getConversation(current.id));assert.ok(store.getConversation(unrelated.id));assert.equal(readFileSync(path.join(root,'keep-source.txt'),'utf8'),'user source');
+ assert.equal(store.sqlite.prepare('SELECT count(*) n FROM branch_ephemeral_contexts WHERE step_execution_id=?').get(provision.stepExecutionId).n,2);passed=true;
+});
+
+for(const interruption of ['shutdown','cancellation','cleanup_failure','retired_cleanup'])test(`${interruption} during temporary Chat creation cannot start a new Agent import`,{timeout:15000},async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-resource-current-')),store=new AgentStore(root),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ let release,entered,imports=0,deletions=0,passed=false;
+ const ready=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const createChat=async(input,key,owner)=>{
+  entered();await gate;
+  const project=store.createProject({...input,...owner,chatOwned:true,hostPath:root},{idempotencyKey:key,payloadHash:'reviewed resource'});
+  return store.getConversation(project.lastConversationId);
+ };
+ const resources=new BranchResourceService(branches,store,async ids=>{assert.deepEqual(ids,[])},createChat,async id=>{
+  if(++deletions===1&&['cleanup_failure','retired_cleanup'].includes(interruption))throw Error('Controlled Chat cleanup failure');
+  const receipt=store.commitConversationDeletion(id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(id);
+ });
+ resources.setImporter(async()=>{imports++;throw Error('Unexpected Agent import after interruption')});
+ t.after(async()=>{release();let clean=false;try{await resources.stop();clean=true}finally{store.close();if(passed&&clean)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained fixture: ${root}`)}});
+ const owner=branches.create('Temporary work','owner'),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
+ const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
+ const branch=branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition:{schema:'ponderosa.branch.v1',name:'Temporary work',trigger:{kind:'manual'},entry:'team',templates:{team:template},steps:[{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Review the input'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:root},engines:{codex:'codex'}}});
+ const execution=branches.accept(branch.id,'input','Review');branches.advance();
+ const pending=resources.tick(true);
+ try{
+  await ready;
+  if(interruption==='shutdown')resources.requestStop();else branches.cancel(execution.id);
+ }finally{release();await pending}
+ assert.equal(imports,0);
+ assert.equal(store.sqlite.prepare('SELECT count(*) n FROM agents').get().n,0);
+ assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0);
+ let resource=store.sqlite.prepare('SELECT * FROM branch_resources').get();assert.ok(resource.chat_id);
+ if(['cleanup_failure','retired_cleanup'].includes(interruption)){
+  const id=resource.chat_id;assert.equal(resource.state,'reserved');
+  assert.equal(resource.error,'Workflow cleanup failed. Controlled Chat cleanup failure Cleanup step: cleaning up a temporary Workflow resource.');
+  assert.ok(resource.error.includes('Controlled Chat cleanup failure'),'cleanup cause remains visible');
+  assert.ok(store.getConversation(id));
+  // Model the previously released implementation, which retired the resource
+  // after deleting Agents but omitted its Chat. Maintenance must catch it up.
+  if(interruption==='retired_cleanup')branches.resourceRetired(resource.step_execution_id);
+  await resources.tick(false);resource=store.sqlite.prepare('SELECT * FROM branch_resources').get();assert.equal(resource.chat_id,id);
+ }
+ const chat=store.getConversation(resource.chat_id);
+ if(interruption==='shutdown'){assert.equal(chat.branchId,branch.id);assert.equal(chat.executionId,execution.id)}
+ else{assert.equal(chat,undefined);assert.equal(store.getConversationDeletionReceipt(resource.chat_id).storageCleanupCompleted,true)}
+ assert.equal(resource.state,interruption==='shutdown'?'reserved':'retired');
+ if(interruption!=='shutdown')assert.equal(branches.execution(execution.id).state,'canceled');
+ passed=true;
+});
+
+for(const interruption of ['shutdown','deadline'])test(`${interruption} aborts a pending template import without releasing its tracked work early`,{timeout:15000},async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-import-cancel-')),store=new AgentStore(root),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ let entered,signal,passed=false;const ready=new Promise(resolve=>{entered=resolve});
+ const resources=new BranchResourceService(branches,store,async()=>{},async(input,key,owner)=>{
+  const project=store.createProject({...input,...owner,chatOwned:true,hostPath:root},{idempotencyKey:key,payloadHash:'cancel fixture'});return store.getConversation(project.lastConversationId);
+ },async()=>{});
+ resources.setImporter(async(_input,_hooks,abortSignal)=>{signal=abortSignal;entered();await new Promise((_,reject)=>{abortSignal.addEventListener('abort',()=>reject(abortSignal.reason),{once:true})})});
+ t.after(async()=>{await resources.stop();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained fixture: ${root}`)});
+ const branch=deployTemplate(branches,root,'cancel-import');branches.accept(branch.id,'input','Review');branches.advance();
+ if(interruption==='deadline')t.mock.timers.enable({apis:['setTimeout']});
+ const pending=resources.tick(true);await ready;assert.equal(resources.activeOperationCount(),1);
+ if(interruption==='shutdown')resources.requestStop();else t.mock.timers.tick(5*60*1000);
+ assert.equal(signal.aborted,true);await pending;assert.equal(resources.activeOperationCount(),0);
+ const row=store.sqlite.prepare('SELECT * FROM branch_resources').get();assert.equal(row.state,'reserved');assert.ok(store.getConversation(row.chat_id));assert.match(row.error,interruption==='shutdown'?/shutdown/:/deadline/);passed=true;
+});
+
+test('fresh-context retry deletes the previous generation Chat before resetting and completing its replacement',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const original=store.updateAgentCreationOperation.bind(store);let injected=false;
+  store.updateAgentCreationOperation=(id,patch)=>{
+   const operation=original(id,patch);
+   if(!injected&&patch.status==='completed'&&operation.kind==='import'){
+    injected=true;f.plans.set(operation.agentIds[0],[{run:async session=>{const result=await session.tool('ponderosa_update_request',{kind:'failed',text:'Controlled first-generation failure'});assert.equal(result.success,true,result.text)}}]);
+   }
+   return operation;
+  };
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),branch=deployTemplate(branches,f.root,'fresh-retry',{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}),execution=branches.accept(branch.id,'input','Retry safely');
+  const resource=await until(()=>{const row=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(execution.id);return row?.state==='retired'&&row.generation===1&&row},'replacement resource retirement');
+  assert.equal(injected,true);assert.equal(branches.execution(execution.id).state,'completed');
+  const contexts=store.sqlite.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? ORDER BY generation').all(resource.step_execution_id);assert.equal(contexts.length,2);assert.notEqual(contexts[0].chat_id,contexts[1].chat_id);
+  for(const context of contexts){assert.equal(store.getConversation(context.chat_id),undefined);const receipt=store.getConversationDeletionReceipt(context.chat_id);assert.equal(receipt.storageCleanupCompleted,true);assert.equal(receipt.serverCleanupCompleted,true)}
+  const prior=JSON.parse(store.sqlite.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(execution.id,`resource-generation-exit:${resource.step_execution_id}:0`).result_json);
+  assert.equal(prior.state,'sealed');assert.equal(prior.envelope.providerExitEvidence.schema,'provider-exit-evidence.v2');
+  assert.equal(prior.envelope.providerExitEvidence.neverStarted.length,1);assert.equal(prior.envelope.providerExitEvidence.runs.length,1);
+  verifyRetainedProviderExitEvidence(store.sqlite,prior.envelope.providerExitEvidence);
+  const retiredChat=contexts[0].chat_id,retiredReceipt=store.getConversationDeletionReceipt(retiredChat);
+  const retiredMembers=JSON.parse(contexts[0].agent_ids_json);
+  const proof={chatId:retiredChat,projectId:retiredReceipt.projectId,branchId:branch.id,agentId:retiredMembers[0]};
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,proof),true);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,projectId:'foreign-project'}),false);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,branchId:'foreign-branch'}),false);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,agentId:'foreign-agent'}),false);
+  for(const kind of ['receipt','receipt-branch','tombstone','retirement','seal']){
+   assert.throws(()=>store.sqlite.transaction(()=>{
+    if(kind==='receipt')store.sqlite.prepare('DELETE FROM conversation_deletion_receipts WHERE conversation_id=?').run(retiredChat);
+    else if(kind==='receipt-branch')store.sqlite.prepare("UPDATE conversation_deletion_receipts SET branch_id='foreign' WHERE conversation_id=?").run(retiredChat);
+    else if(kind==='tombstone')store.sqlite.prepare('DELETE FROM agent_deletion_tombstones WHERE agent_id=?').run(proof.agentId);
+    else store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(execution.id,`resource-generation-${kind==='seal'?'exit':'retired'}:${resource.step_execution_id}:0`);
+    assert.equal(hasRetainedTemporaryChatScope(store.sqlite,proof),false);
+    throw Error('rollback temporary scope adversary');
+   })(),/rollback temporary scope adversary/);
+  }
+  // Retirement audit capture requires the exact historical seal/link, even after replacement retires.
+  const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,execution.id,selectBranchUnit(store.sqlite,execution.id)))();
+  assert.ok(capture());
+  for(const kind of ['retirement','seal','nonterminal']){
+   assert.throws(()=>store.sqlite.transaction(()=>{
+    if(kind==='nonterminal')store.sqlite.prepare("UPDATE coordination_requests SET state='open' WHERE id=(SELECT request_id FROM branch_attempts WHERE step_execution_id=? AND number=1)").run(resource.step_execution_id);
+    else store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(execution.id,`resource-generation-${kind==='seal'?'exit':'retired'}:${resource.step_execution_id}:0`);
+    assert.throws(capture,/owned Chat scope/);
+    throw Error('rollback historical audit adversary');
+   })(),/rollback historical audit adversary/);
+  }
+ },{storeFactory:root=>(store=new AgentStore(root))});
+});
+
+test('completed template workflows retire their exact Chats through tracked deletion and preserve working files across reopen',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const branch=deployTemplate(branches,f.root,'cleanup-owner');
+  const normal=await f.createChat('Unrelated Chat'),sentinel=path.join(f.root,'keep-working-file.txt');writeFileSync(sentinel,'user source');
+  const chats=[];
+  for(let index=0;index<2;index++){
+   const execution=branches.accept(branch.id,'cleanup-'+index,'Review');
+   const resource=await until(()=>{const row=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(execution.id);return row?.state==='retired'&&row},'temporary resource retirement');
+   assert.equal(branches.execution(execution.id).state,'completed');assert.ok(resource.chat_id);chats.push(resource.chat_id);
+   const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,execution.id,selectBranchUnit(store.sqlite,execution.id)))();
+   assert.ok(verifyBranchHostCut(capture(),execution.id));
+   for(const [sql,args] of [
+    ["UPDATE conversation_deletion_receipts SET canonical_deletion_completed=0 WHERE conversation_id=?",[resource.chat_id]],
+    ["UPDATE conversation_deletion_receipts SET project_id='foreign' WHERE conversation_id=?",[resource.chat_id]],
+    ["UPDATE branch_ephemeral_contexts SET agent_ids_json='[]' WHERE chat_id=?",[resource.chat_id]],
+    ["UPDATE branch_resources SET state='active' WHERE step_execution_id=?",[resource.step_execution_id]],
+   ]){
+    const rollback=Error('rollback adversarial deletion proof');
+    assert.throws(()=>store.sqlite.transaction(()=>{store.sqlite.prepare(sql).run(...args);assert.throws(capture,/owned Chat scope/);throw rollback})(),error=>error===rollback);
+   }
+
+   assert.equal(store.getConversation(resource.chat_id),undefined);
+   const receipt=store.getConversationDeletionReceipt(resource.chat_id);assert.equal(receipt.canonicalDeletionCompleted,true);assert.equal(receipt.storageCleanupCompleted,true);assert.equal(receipt.serverCleanupCompleted,true);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM agents WHERE deleted_at IS NULL AND conversation_id=?').get(resource.chat_id).n,0);
+  }
+  assert.notEqual(chats[0],chats[1]);assert.ok(store.getConversation(normal.id));assert.equal(readFileSync(sentinel,'utf8'),'user source');
+  await f.reopen();for(const id of chats)assert.equal(store.getConversation(id),undefined);
+  assert.ok(store.getConversation(normal.id));assert.equal(readFileSync(sentinel,'utf8'),'user source');
+ },{storeFactory:root=>(store=new AgentStore(root))});
+});
+
+
+for(const holdReason of [MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_FOREIGN_HOLD])test('temporary resource cleanup retains a memory hold without retrying after restart: '+holdReason,{timeout:15000},async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-memory-held-'));let store,branches,resources,passed=false,calls=0;
+ const open=()=>{
+  store=new AgentStore(root);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  resources=new BranchResourceService(branches,store,async()=>{},async()=>{throw Error('Unexpected creation')},async()=>{calls++;throw Error(holdReason)});
+ };open();
+ t.after(async()=>{await resources.stop();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained fixture: '+root)});
+ const branch=deployTemplate(branches,root,'memory-held'),execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];
+ const project=store.createProject({label:'Temporary',hostPath:root,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:execution.id});
+ const chat=store.getConversation(project.lastConversationId);branches.bindResourceChat(provision.stepExecutionId,chat.id);
+ // A live reserved resource cannot be retired directly. Cancel the owning
+ // execution so the real resource cleanup path becomes eligible.
+ branches.cancel(execution.id);
+ await branches.waitResourceCheckpoint(provision.stepExecutionId);
+ const recordedHold=()=>{
+  const resource=store.sqlite.prepare('SELECT error FROM branch_resources WHERE step_execution_id=?').get(provision.stepExecutionId);
+  const retirement=store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(chat.id);
+  return retirement?.error??resource?.error;
+ };
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),holdReason);
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),holdReason);
+ await resources.stop();store.close();open();await resources.tick(false);
+ assert.equal(calls,1);assert.equal(recordedHold(),holdReason);assert.ok(store.getConversation(chat.id));passed=true;
+});

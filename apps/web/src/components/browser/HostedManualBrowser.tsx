@@ -69,7 +69,7 @@ export function HostedManualBrowser({ projectId, sessionId, epoch, responsive = 
           for (const character of "chrome://inspect/#remote-debugging") connection.sendKey(character.codePointAt(0)!);
           connection.sendKey(0xff0d, "Enter");
         }, 200);
-      }}>Connection setup</Button> : <Typography variant="caption" sx={{ alignSelf: "center" }}>{readOnly ? "Agent has control" : "You have control"}</Typography>}
+      }}>Connection Setup</Button> : <Typography variant="caption" sx={{ alignSelf: "center" }}>{readOnly ? "Agent has control" : "You have control"}</Typography>}
       <BrowserKeyboard portalTarget={keyboardTarget} disabled={readOnly || status !== "connected"} onText={text => {
         for (const character of text) {
           const point = character.codePointAt(0)!;
@@ -79,11 +79,11 @@ export function HostedManualBrowser({ projectId, sessionId, epoch, responsive = 
         const keys: Record<string, number> = { Backspace: 0xff08, Delete: 0xffff, Enter: 0xff0d, Tab: 0xff09, Escape: 0xff1b, ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54 };
         if (keys[key]) remote.current?.sendKey(keys[key]);
       }} />
-      <Button size="small" onClick={() => setFit(value => !value)}>{fit ? "Actual size" : "Fit browser"}</Button>
+      <Button size="small" onClick={() => setFit(value => !value)}>{fit ? "Actual Size" : "Fit Browser"}</Button>
     </Stack>
     {status === "connecting" ? <Typography role="status" variant="caption" sx={{ px: 1.5 }}>Connecting to your browser…</Typography> : null}
     {resizeError ? <Typography role="status" variant="caption" sx={{ px: 1.5 }}>Could not resize the browser. The existing view is still available.</Typography> : null}
-    {status === "disconnected" ? <Alert severity="warning" action={<Button onClick={() => setAttempt(value => value + 1)}>Reconnect view</Button>}>The view disconnected. Your browser remains open; input is not retried.</Alert> : null}
-    <Box ref={container} aria-label="Manual Chrome browser" sx={{ flex: 1, minHeight: 0, mb: "31px", overflow: "hidden", bgcolor: "#171b18", "& > div": { alignItems: "flex-start !important" }, "& canvas": { outline: "none" } }} />
+    {status === "disconnected" ? <Alert severity="warning" action={<Button onClick={() => setAttempt(value => value + 1)}>Reconnect View</Button>}>The view disconnected. Your browser remains open; input is not retried.</Alert> : null}
+    <Box ref={container} aria-label="Manual Chrome Browser" sx={{ flex: 1, minHeight: 0, mb: "31px", overflow: "hidden", bgcolor: "#171b18", "& > div": { alignItems: "flex-start !important" }, "& canvas": { outline: "none" } }} />
   </Stack>;
 }

@@ -3,7 +3,7 @@ import test from 'node:test';
 import '../shared/web-typescript-loader.mjs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver, InfiniteQueryObserver } from '@tanstack/react-query';
 
 const { HomeView } = await import('../../apps/web/src/components/HomeView.tsx');
 const { queryKeys } = await import('../../apps/web/src/queryKeys.ts');
@@ -23,23 +23,23 @@ test('Home retains cached cards, discloses affected refresh failures, and clears
   fail(true);
   const failed = render();
   assert.match(failed, /Cached outcome/);
-  assert.match(failed, /Could not refresh recent outcomes/);
-  assert.match(failed, /aria-label="Retry refresh of recent outcomes"/);
+  assert.match(failed, /Recent Outcomes Unavailable/); assert.match(failed, /HTTP 503/);
+  assert.match(failed, /aria-label="Retry Recent Outcomes"/);
   assert.match(failed, /Home refresh failed/);
-  assert.doesNotMatch(failed, /Home summary loaded|Could not refresh active Agents/);
+  assert.doesNotMatch(failed, /Home summary loaded|Active Agents Unavailable/);
   assert.match(failed, /Nothing currently needs your attention/);
   fail(true, { fetchStatus: 'fetching' });
-  const busyButton = render().match(/<button[^>]*aria-label="Retry refresh of recent outcomes"[^>]*>/)?.[0];
+  const busyButton = render().match(/<button[^>]*aria-label="Retry Recent Outcomes"[^>]*>/)?.[0];
   assert.ok(busyButton); assert.match(busyButton, /aria-busy="true"/);
   assert.doesNotMatch(busyButton, /disabled=/, 'Retry must remain usable during automatic refresh retries');
   set(true, [outcome('Recovered outcome')]);
   client.getQueryCache().find({ queryKey: key(true) }).setState({ fetchStatus: 'idle' });
   const recovered = render();
   assert.match(recovered, /Recovered outcome/); assert.match(recovered, /Home summary loaded/);
-  assert.doesNotMatch(recovered, /Cached outcome|Could not refresh recent outcomes|Retry refresh of recent outcomes/);
+  assert.doesNotMatch(recovered, /Cached outcome|Recent Outcomes: HTTP 503|Retry Recent Outcomes/);
   fail(false);
   const activeFailed = render();
-  assert.match(activeFailed, /Could not refresh active Agents/); assert.match(activeFailed, /Retry refresh of active Agents/);
+  assert.match(activeFailed, /Active Agents Unavailable/); assert.match(activeFailed, /Retry Active Agents/);
   assert.match(activeFailed, /Recovered outcome/);
   assert.doesNotMatch(activeFailed, /No Agents are active right now/);
   client.clear();
@@ -50,7 +50,7 @@ test('Home distinguishes initial failure and valid empty results from cached ref
   const render = () => renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(HomeView, props)));
   for (const outcomes of [false, true]) client.getQueryCache().build(client, { queryKey: key(outcomes) }).setState({ status: 'error', error: new Error('HTTP 503') });
   const failed = render();
-  assert.match(failed, /Could not load active Agents/); assert.match(failed, /Could not load recent outcomes/);
+  assert.match(failed, /Active Agents Could Not Be Loaded/); assert.equal((failed.match(/Could Not Be Loaded/g)??[]).length,1,'One contained unavailable state');
   assert.doesNotMatch(failed, /Home summary loaded|Could not refresh|No Agents are active right now/);
   for (const outcomes of [false, true]) client.setQueryData(key(outcomes), { pages: [{ items: [], history: {}, activeCount: 0 }], pageParams: [undefined] });
   const empty = render();
@@ -77,4 +77,45 @@ test('directory Retry joins in-flight refresh work and keeps pagination failures
   client.getQueryCache().find({ queryKey: key(true) }).setState({ status: 'error', error: new Error('Next page failed'), fetchMeta: { fetchMore: { direction: 'forward' } } });
   render();
   assert.equal(request.isPaginationError, true); assert.equal(request.isRefreshError, false);
+});
+
+
+test('physical phase reads abort on query cancellation and recovery starts distinct canonical HTTP', async t => {
+  const { useAgentHealth } = await import('../../apps/web/src/hooks/queries.ts');
+  const { capturePhaseQueryBoundaries, reconcilePhaseQueriesAfterBoundary } = await import('../../apps/web/src/phaseEvidenceReconciliation.ts');
+  for (const kind of ['health', 'directory']) await t.test(kind, async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+    const originalFetch = globalThis.fetch, requests = [];
+    globalThis.fetch = (_url, init) => new Promise((resolve, reject) => {
+      const request = { signal: init?.signal, resolve: value => resolve(new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })) };
+      requests.push(request);
+      request.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    });
+    const queryKey = kind === 'health' ? queryKeys.agents.health('physical-synthetic') : queryKeys.workspaceDirectory.list('agent', '', 'physical-synthetic');
+    function Probe() { if (kind === 'health') useAgentHealth('physical-synthetic'); else useWorkspaceDirectory('agent', { projectId: 'physical-synthetic' }); return null; }
+    renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(Probe)));
+    const canonical = client.getQueryCache().find({ queryKey, exact: true }); assert.ok(canonical, 'real query hook owns the tested scope');
+    const marker = () => kind === 'health' ? canonical.state.data.marker : canonical.state.data.pages[0].marker;
+    const retained = { marker: 'retained', agents: [], items: [], starredItems: [], history: {} };
+    client.setQueryData(queryKey, kind === 'health' ? retained : { pages: [retained], pageParams: [undefined] });
+    const Observer = kind === 'health' ? QueryObserver : InfiniteQueryObserver;
+    const observer = new Observer(client, { ...canonical.options, staleTime: Infinity, refetchOnMount: false });
+    const unsubscribe = observer.subscribe(() => {});
+    const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+    try {
+      const old = client.refetchQueries({ queryKey, exact: true }); await settle();
+      assert.equal(requests.length, 1);
+      const query = client.getQueryCache().find({ queryKey, exact: true }), boundary = capturePhaseQueryBoundaries([query]);
+      await client.cancelQueries({ queryKey, exact: true }); await old;
+      assert.equal(requests[0].signal?.aborted, true, 'TanStack cancellation must reach the physical fetch, including the background-read cache boundary');
+      const verified = reconcilePhaseQueriesAfterBoundary(client, [query], boundary, () => true); await settle();
+      assert.equal(requests.length, 2, 'post-boundary recovery must issue distinct physical HTTP rather than wrap a coalesced old read');
+      requests[0].resolve({ marker: 'old' }); await settle();
+      assert.equal(marker(), 'retained', 'a late old HTTP completion cannot update canonical query data');
+      requests[1].resolve({ marker: 'new', agents: [], items: [], starredItems: [], history: {} });
+      assert.equal(await verified, true); assert.equal(marker(), 'new');
+    } finally {
+      unsubscribe(); client.clear(); requests.forEach(request => request.resolve({ marker: 'cleanup', agents: [], items: [], history: {} })); globalThis.fetch = originalFetch;
+    }
+  });
 });

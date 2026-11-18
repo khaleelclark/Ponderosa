@@ -1,3 +1,5 @@
+import { selectNativeCommand } from "../native-command-selection.js";
+import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -33,14 +35,6 @@ export type QueuedEditRevisionOutboxPayload = {
   conversationId: string;
   revision: CommunicationRevisionEvent;
   artifact?: PreparedCommunicationArtifact;
-};
-
-export type QueuedMessageChangeOutboxPayload = {
-  activationId: string;
-  projectId: string;
-  agentId: string;
-  conversationId: string;
-  action: "cancelled";
 };
 
 export function applyQueuedMessageChangeOutbox(
@@ -84,6 +78,8 @@ type RuntimeArtifactInput = NonNullable<
 >[number];
 
 export interface QueuedMessageRouteDependencies {
+  deliveryReceiptsForCommunications: CoordinationV3Store["deliveryReceiptsForCommunications"];
+  authoritativeCommunicationDocument: ReturnType<typeof createCommunicationDocumentAuthority>["authoritativeCommunicationDocument"];
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -163,6 +159,7 @@ export function registerQueuedMessageRoutes(
   dependencies: QueuedMessageRouteDependencies,
 ): void {
   const {
+    deliveryReceiptsForCommunications,
     store,
     coordinationV3,
     workspace,
@@ -180,6 +177,15 @@ export function registerQueuedMessageRoutes(
     publishMessageDeliveryChanged,
     notifyScheduler,
   } = dependencies;
+  const cancellationResponse = (result: CancelQueuedMessageResponse, activation: {projectId:string;payload:unknown}): CancelQueuedMessageResponse => {
+    if (!result.cancelled) return result;
+    const payload = activation.payload as {communication?:CommunicationEvent;dispatch?:{conversationId?:string}};
+    const communication = payload.communication;
+    const conversationId = communication?.conversationId ?? payload.dispatch?.conversationId;
+    if (!communication?.eventId || !conversationId) return result;
+    return {...result,message:{conversationId,communicationEventId:communication.eventId,
+      deliveryReceipts:deliveryReceiptsForCommunications(activation.projectId,[communication.eventId]).get(communication.eventId) ?? []}};
+  };
   app.post<{
     Params: { id: string };
     Body: ActiveMessageDeliveryReceiptsRequest;
@@ -213,7 +219,7 @@ export function registerQueuedMessageRoutes(
       return runtime?.projectId === conversation.projectId &&
         payload?.communication?.conversationId === conversation.id;
     });
-    const receipts = coordinationV3.deliveryReceiptsForCommunications(
+    const receipts = deliveryReceiptsForCommunications(
       conversation.projectId,
       communicationEventIds,
     );
@@ -252,7 +258,7 @@ export function registerQueuedMessageRoutes(
         projectId: activation.projectId,
         idempotencyKey,
       });
-      if (replay) return replay satisfies CancelQueuedMessageResponse;
+      if (replay) return cancellationResponse(replay, activation);
     } catch (error) {
       if (error instanceof CoordinationIdempotencyConflictError) {
         return reply.code(409).send({ error: error.message });
@@ -279,7 +285,7 @@ export function registerQueuedMessageRoutes(
     }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     bestEffort(notifyScheduler);
-    return result satisfies CancelQueuedMessageResponse;
+    return cancellationResponse(result, activation);
   });
 
   app.get<{ Params: { id: string } }>("/api/agents/:id/queued-messages", async (request, reply) => {
@@ -297,6 +303,8 @@ export function registerQueuedMessageRoutes(
       position += 1;
       return [{
         deliveryId: activation.id,
+        communicationEventId: communication.eventId,
+        attachmentCount: (payload?.dispatch as {attachments?:unknown[]}|undefined)?.attachments?.length??0,
         messageId: communication.eventId,
         conversationId: payload?.dispatch?.sourceConversationId ?? payload?.dispatch?.conversationId ?? communication.conversationId ?? agent.conversationId ?? "",
         targetAgentId: agent.id,
@@ -333,7 +341,7 @@ export function registerQueuedMessageRoutes(
         projectId: activation.projectId,
         idempotencyKey,
       });
-      if (replay) return replay satisfies CancelQueuedMessageResponse;
+      if (replay) return cancellationResponse(replay, activation);
     } catch (error) {
       if (error instanceof CoordinationIdempotencyConflictError) {
         return reply.code(409).send({ error: error.message });
@@ -358,7 +366,7 @@ export function registerQueuedMessageRoutes(
     }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     bestEffort(notifyScheduler);
-    return result satisfies CancelQueuedMessageResponse;
+    return cancellationResponse(result, activation);
   });
 
   app.patch<{
@@ -532,6 +540,20 @@ export function registerQueuedMessageRoutes(
         (activation.state !== "pending" && activation.state !== "retry_pending")) {
       return reply.code(404).send({ error: "queued message not found" });
     }
+    try {
+      const native = selectNativeCommand({
+        projectId: agent.projectId, agentId: agent.id, conversationId: agent.conversationId,
+        communicationIds: [payload.communication.eventId],
+        read: id => store.getCommunicationEvent(agent.projectId, id),
+        documentText: event => {
+          const found = event.document && dependencies.authoritativeCommunicationDocument(agent.projectId, event.document.id);
+          return found && found.event.eventId === event.eventId ? found.document.content : undefined;
+        },
+      });
+      if (native) return reply.code(409).send({ error: "Native actions require a new scheduler-owned turn and cannot be steered" });
+    } catch (error) {
+      return reply.code(422).send({ error: error instanceof Error ? error.message : "Invalid canonical native command" });
+    }
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
     const conversation = conversationId ? store.getConversation(conversationId) : undefined;
     if (projectDeletionInProgress(agent.projectId) || agentDeletionInProgress(agent.id) ||
@@ -594,22 +616,60 @@ export function registerQueuedMessageRoutes(
     } satisfies LetCurrentRunFinishResponse);
   });
 
+  // Explicit human review of an unconfirmed interruption. The previous
+  // delivery and its external effects stay unknown; this is a new authorized
+  // continuation of the same task, not an automatic delivery retry.
+  app.get<{Params:{projectId:string;activationId:string}}>(
+    "/api/projects/:projectId/message-deliveries/:activationId/reviewed-continuation", async (request,reply) => {
+      const {projectId,activationId}=request.params;
+      try {
+        const receipt=coordinationV3.recordedReviewedSteering(projectId,activationId);
+        return receipt ? {status:"continuation_recorded",receipt}
+          : {status:"review_required",review:coordinationV3.previewReviewedSteering(projectId,activationId)};
+      } catch (error) {
+        try {
+          if (coordinationV3.reviewedSteeringSourceRetirementNeeded(projectId,activationId))
+            return {status:"source_retirement_required",originalOutcome:"unknown"};
+        } catch { /* Preserve the original eligibility failure. */ }
+        return reply.code(409).send({error:error instanceof Error ? error.message : "The original task cannot yet be reviewed."});
+      }
+    });
+
+  app.post<{Params:{projectId:string;activationId:string};Body:{reviewSha256:string;effectsReviewed:boolean;reviewNote?:string;idempotencyKey:string}}>(
+    "/api/projects/:projectId/message-deliveries/:activationId/reviewed-continuation", async (request,reply) => {
+      const body=request.body;
+      if(!body || typeof body!=="object" || Array.isArray(body) ||
+        Object.keys(body).some(key=>!["reviewSha256","effectsReviewed","reviewNote","idempotencyKey"].includes(key)) ||
+        typeof body.reviewSha256!=="string" || typeof body.idempotencyKey!=="string" ||
+        body.effectsReviewed!==true || (body.reviewNote!==undefined && typeof body.reviewNote!=="string"))
+        return reply.code(400).send({error:"Review the original task and uncertain effects before continuing."});
+      try {
+        const receipt=coordinationV3.continueReviewedSteering({...request.params,...body});
+        bestEffort(notifyScheduler);
+        bestEffort(()=>publishMessageDeliveryChanged(receipt.agentId));
+        return reply.code(202).send({status:"continuation_recorded",receipt});
+      } catch(error) {
+        return reply.code(409).send({error:error instanceof Error ? error.message : "The reviewed continuation remains held."});
+      }
+    });
+
   app.post<{
     Params: { projectId: string; activationId: string };
     Body: RetryMessageDeliveryRequest;
   }>("/api/projects/:projectId/message-deliveries/:activationId/retry", async (request, reply) => {
     const projectId = request.params.projectId?.trim() ?? "";
     const activationId = request.params.activationId?.trim() ?? "";
-    const parsed = exactStringBody(request.body, ["idempotencyKey"]);
+    const parsed = exactStringBody(request.body, ["idempotencyKey", "expectedRolloverAttemptId"]);
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
+    const expectedRolloverAttemptId = parsed.value.expectedRolloverAttemptId?.trim() || undefined;
     if (!projectId) return reply.code(400).send({ error: "projectId is required" });
     if (!activationId) return reply.code(400).send({ error: "activationId is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     }
     try {
-      const replay = coordinationV3.replayRetryMessageDelivery({ projectId, activationId, idempotencyKey });
+      const replay = coordinationV3.replayRetryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (replay) return reply.code(replay.accepted ? 202 : replay.rejectionReason === "not_found" ? 404 : 409)
         .send(replay satisfies RetryMessageDeliveryResponse);
     } catch (error) {
@@ -647,11 +707,17 @@ export function registerQueuedMessageRoutes(
             currentConversation.projectId !== projectId))) {
         return reply.code(409).send({ error: "message delivery participants are no longer available" });
       }
-      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey });
+      const recoveryBoundary=coordinationV3.contextRecovery.active(agent.id)??store.uncertainProviderContextRecoveryBoundary(agent.id);
+      const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(activationId,agent.id,projectId) as {scope_key:string}|undefined;
+      if(recoveryBoundary && scope?.scope_key===recoveryBoundary.scopeKey && ["pending","retry_pending"].includes(activation.state)) {
+        return reply.code(409).send({code:"context_recovery_required",error:"The earlier session was interrupted. Your message is saved. Recover the Agent before continuing.",retryable:false});
+      }
+      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (!result.accepted || !result.targetAgentId) {
         const status = result.rejectionReason === "not_found" ? 404 : 409;
         return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);
       }
+      // Keep the same incident until admission or recovery is verified.
       bestEffort(notifyScheduler);
       bestEffort(() => publishMessageDeliveryChanged(result.targetAgentId!));
       return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);

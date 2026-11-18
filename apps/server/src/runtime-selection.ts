@@ -1,8 +1,10 @@
+import {localMemoryTools} from "./local-memory-catalog.js";
 import { createHash } from "node:crypto";
 import {
   PONDEROSA_RUNTIME_TOOLS,
-  REQUEST_UPDATE_TOOL_KINDS,
+  PONDEROSA_HISTORY_TOOL,
   type RuntimeDynamicToolSpec,
+  type RetainedNormalRuntimeContract,
   type Adapter,
   type ModelOption,
 } from "@ponderosa/core";
@@ -12,8 +14,27 @@ import {
   projectProviderModelOptions,
 } from "./provider-success-projection.js";
 
-export function providerDynamicTools(): RuntimeDynamicToolSpec[] {
-  return [...PONDEROSA_RUNTIME_TOOLS];
+export function providerDynamicTools(localMemoryEnabled=false): RuntimeDynamicToolSpec[] {
+  return [...PONDEROSA_RUNTIME_TOOLS,...(localMemoryEnabled?localMemoryTools:[])];
+}
+
+/** Historical definitions are evidence only; callers must verify the full saved digest. */
+export function retainedRuntimeTools(contract: RetainedNormalRuntimeContract | undefined): RuntimeDynamicToolSpec[] | undefined {
+  const tools=contract?.dynamicTools;
+  if(!Array.isArray(tools)||tools.some(tool=>!tool||typeof tool.name!=="string"||!tool.name.trim()||
+    typeof tool.description!=="string"||!tool.inputSchema||typeof tool.inputSchema!=="object"||Array.isArray(tool.inputSchema))||
+    new Set(tools.map(tool=>tool.name)).size!==tools.length)return undefined;
+  // Manifests use stableJson, while native contract hashes preserve JSON key order.
+  // Reconstruct order only; the admission/preparation full digest remains the proof.
+  const templates=new Map([...providerDynamicTools(true),PONDEROSA_HISTORY_TOOL].map(tool=>[tool.name,tool]));
+  const order=(value:unknown,template:unknown):unknown=>{
+    if(Array.isArray(value))return value.map((item,index)=>order(item,Array.isArray(template)?template[index]:undefined));
+    if(!value||typeof value!=="object")return value;
+    const record=value as Record<string,unknown>,shape=template&&typeof template==="object"&&!Array.isArray(template)?template as Record<string,unknown>:{};
+    const keys=[...Object.keys(shape).filter(key=>Object.hasOwn(record,key)),...Object.keys(record).filter(key=>!Object.hasOwn(shape,key))];
+    return Object.fromEntries(keys.map(key=>[key,order(record[key],shape[key])]));
+  };
+  return tools.map(tool=>order(tool,templates.get(tool.name)) as RuntimeDynamicToolSpec);
 }
 
 function communicationV3Prompt(defaultReply?: import("@ponderosa/core").CoordinationReplyAuthority): string[] {
@@ -21,21 +42,25 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
     defaultReply
       ? `This Run has one authorized default reply route (data): ${JSON.stringify(defaultReply)}. ponderosa_message({text}) uses it with stable idempotency. This convenience route does not create a reply obligation.`
       : 'This Run has no authorized default reply route. Do not call ponderosa_message({text}) alone. Explicit private user example: ponderosa_message({intent:"direct_to_user",text:"..."}). For an authorized peer use ponderosa_message({intent:"collaboration",recipientAgentIds:["<stable Agent ID>"],text:"..."}).',
-    "Immediate recipientAgentIds always requires explicit intent collaboration. Correlated results belong on ponderosa_update_request, not a convenience message.",
-    "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",
-    "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
-    "Passive one-way information: ponderosa_message({delivery:\"next_run\",text,recipientAgentIds}). It creates no chat message, Activation, Run, Request, Join, reply obligation, or acknowledgement. Omit delivery for immediate communication; use coordinate whenever you need a result or lifecycle.",
-    "Never promise later work unless a capability response in this Run confirms a durable wake source; otherwise finish now or state what the user must do next.",
-    "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
-    `Request kind values: ${REQUEST_UPDATE_TOOL_KINDS.join(", ")}. Use waiting_dependency, not waiting.`,
-    "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
-    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission. This is the only user-question path in Ponderosa: never call a provider-native AskUserQuestion/request_user_input tool, which cannot reach the user's Ponderosa Chat.",
-    "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
-    "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
-    "Do not poll or sleep while waiting for another Agent, Request, Join, or background state. A short, bounded delay explicitly requested by the operator is allowed when the delay is itself part of the task. End the turn after creating a Join when no independent work remains.",
-    "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
-    "Discover live stable teammate IDs with ponderosa_team_directory({}).",
-    "To expose a host-created file in Project files or attach it in the browser, call ponderosa_import_file({path}) first, then pass the returned artifact ID to ponderosa_browser_upload. Browser upload never accepts host paths.",
+  ];
+}
+
+function communicationV3Instructions(): string[] {
+  return [
+    "Ponderosa Chat/global facts live in Ponderosa's own memory store; other memory services are separate. For Ponderosa memory lookups, use ponderosa_local_memory_search (Claude: mcp__ponderosa__local_memory_search) when advertised; discover that exact tool if deferred. One search with source omitted covers the currently authorized Chat/global scopes together.",
+    "Send concise actionable asks/owned results, changed facts, exact decisions/blockers and evidence references. Include needed context without repeating shared instructions, whole reports or boilerplate; keep full evidence in referenced artifacts. Preserve objective, acceptance criteria and handoff state.",
+    "After work, ponderosa_reply_stream authorizes one final item on the default/selected Communication/document route or exact attached Request. Finish other routes first; publication.kind=request_update reports correlated results. On rejection publish ordinarily; never duplicate.",
+    "For explicitly marked voice Direct Messages, ponderosa_voice_reply may authorize a short acknowledgement before continuing work; only its matched native receipt permits provisional speech, never final delivery. After work call without acknowledgement before the final answer. Use ponderosa_message if unavailable/rejected.",
+    "Immediate recipientAgentIds requires intent collaboration; correlated results use ponderosa_update_request. For capability discovery load Ponderosa message specifically, never generic or provider-native SendMessage: only ponderosa_message creates the canonical reply.",
+    "Delegate via ponderosa_coordinate({recipientAgentId,text}) or delegations fan-out: one aggregate Join, each_result wakes, parent workflow preserved.",
+    "ponderosa_message({delivery:\"next_run\",text,recipientAgentIds}) sends passive one-way information: omit intent; no chat message, Activation, Run, Request, Join, reply obligation or acknowledgement. Omit delivery for immediate communication; coordinate for results/lifecycle.",
+    "Finish the whole human objective, respecting later steering and work/verification order. Batch completion is progress. Wait only on real dependencies with a durable wake; create an actionable blocking Decision for a human answer. Never promise later work without a confirmed durable wake.",
+    "ponderosa_update_request({text}) completes the sole attached Request with a canonical handoff; {question} asks its original requester, preserving update identity. Use schema kind values: waiting_dependency, never waiting.",
+    "Ask the user via ponderosa_decision({question}); options add choices, mode:approval requests permission. Supported provider-native AskUserQuestion/request_user_input callbacks also reach the human; never ask twice. Questions grant no permissions.",
+    "For advanced/ambiguous cases provide explicit message intent, request IDs, lifetimes, Join modes, update kinds and idempotency keys. Terminal Request results are final handoffs; no duplicate message/acknowledgment afterward.",
+    "Never poll/sleep for another Agent, Request, Join or background state. A short bounded operator-requested delay is allowed as the task. End the turn after creating a Join if no independent work remains.",
+    "Create visible workers/reviewers/Agents only via ponderosa_create_managed_agent; disabled provider-native/internal subagents never satisfy Ponderosa Agent/team requests. Discover stable teammate IDs via ponderosa_team_directory({}).",
+    "Expose/attach a host-created file through ponderosa_import_file({path}) first; pass its returned artifact ID to ponderosa_browser_upload. Upload never accepts host paths.",
   ];
 }
 
@@ -64,7 +89,7 @@ export function providerToolContractHash(
 export function communicationV3SessionPrompt(): string[] {
   return [
     "Use only the current Run's host-provided reply route and active capability. Prior turns do not confer a reply route or delivery authority.",
-    ...communicationV3Prompt().slice(1),
+    ...communicationV3Instructions(),
   ];
 }
 
@@ -87,6 +112,33 @@ export function providerSessionContractHash(
     effort: effort?.trim() || null,
     workingCopyId: workingCopyId.trim(),
   })).digest("hex");
+}
+
+/** Preserve a retained pre-selector-removal digest only when its entire contract
+ * still matches, including observed native auth. New sessions omit the selector. */
+export function providerRuntimeSessionContractHash(
+  input: {
+    runtimeSessionContractHash: string;
+    speed?: string;
+    billingMode?: "subscription" | "api";
+    systemPromptHash: string;
+    scopeKey?: string;
+  },
+  retainedHash?: string,
+): string {
+  const hash = (expectedBillingMode?: "subscription" | "api") =>
+    createHash("sha256").update(JSON.stringify({
+      runtimeSessionContractHash: input.runtimeSessionContractHash,
+      speed: input.speed,
+      ...(expectedBillingMode ? { expectedBillingMode } : {}),
+      ...(input.billingMode ? { billingMode: input.billingMode } : {}),
+      systemPromptHash: input.systemPromptHash,
+      scopeKey: input.scopeKey,
+    })).digest("hex");
+  const current = hash();
+  if (!input.billingMode || !retainedHash) return current;
+  const previous = hash(input.billingMode);
+  return retainedHash === previous ? previous : current;
 }
 
 function runtimeModelOptions(adapter: Adapter, additionalModels?: ModelOption[]): ModelOption[] {
@@ -214,3 +266,16 @@ export {
   normalizedRuntimeSelection,
   concreteRuntimeSelection,
 };
+
+export class RetainedNativeAuthenticationError extends Error {}
+
+/** Retained packets without native-mode evidence stay immutable and held. */
+export function assertRetainedNativeAuthentication(
+  contract: import("@ponderosa/core").RetainedNormalRuntimeContract,
+  observed: { state: "known" | "unknown"; authenticated?: boolean; billingMode?: "subscription" | "api"; diagnosticFailure?: unknown },
+): void {
+  if (!contract.observedBillingMode || observed.state !== "known" || !observed.authenticated ||
+      observed.diagnosticFailure || observed.billingMode !== contract.observedBillingMode) {
+    throw new RetainedNativeAuthenticationError("Retained native authentication is missing, stale, unknown or incompatible. Session and unfinished work remain held; recheck native sign-in. Historical packets without observed-mode evidence cannot authorize this operation.");
+  }
+}

@@ -290,8 +290,8 @@ function mcpPresentation(
     usableCount: usable.length,
     toolCountLabel:
       inventoried.length === configured.length
-        ? `${discoveredTools} tools`
-        : `${discoveredTools} tools · inventory ${inventoried.length}/${configured.length}`,
+        ? `${discoveredTools} Tools`
+        : `${discoveredTools} Tools · Inventory ${inventoried.length}/${configured.length}`,
     summary:
       configured
         .map(server =>
@@ -375,7 +375,7 @@ function agentRelationshipPresentation(
     organizationalParent,
     lineageAgent: spawningAgent ?? organizationalParent,
     lineageAgentId: agent.spawnedByAgentId ?? agent.managerAgentId,
-    lineageLabel: agent.spawnedByAgentId ? "Created by" : "Delegated under",
+    lineageLabel: agent.spawnedByAgentId ? "Created By" : "Delegated Under",
     delegatedAgentCount: delegatedAgentIds.size,
   };
 }

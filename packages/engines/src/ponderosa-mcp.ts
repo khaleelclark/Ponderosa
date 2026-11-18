@@ -32,6 +32,27 @@ function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+// Some MCP clients can encode scalar JSON values as strings. Normalize only canonical, bounded representations; host-side
+// schema, capability, scope and ownership checks remain authoritative.
+function normalizeMemoryMcpArguments(value: unknown): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid Local Memory arguments.");
+  const args = { ...value } as Record<string, unknown>;
+  if (Object.hasOwn(args, "top_k")) {
+    const top = args.top_k;
+    if (typeof top === "string" && /^(?:[1-9]|1[0-9]|20)$/.test(top)) args.top_k = Number(top);
+    if (typeof args.top_k !== "number" || !Number.isSafeInteger(args.top_k) || args.top_k < 1 || args.top_k > 20)
+      throw new Error("Invalid Local Memory result bound.");
+  }
+  if (Object.hasOwn(args, "include_history")) {
+    if (args.include_history === "true") args.include_history = true;
+    else if (args.include_history === "false") args.include_history = false;
+    if (typeof args.include_history !== "boolean") throw new Error("Invalid Local Memory history flag.");
+  }
+  return args;
+}
+
 const sessionMcpTools = decodeSessionTools(process.env.PONDEROSA_AGENT_TOOL_DEFINITIONS).map(tool => ({
   name: tool.name.replace(/^ponderosa_/, ""), description: tool.description, inputSchema: tool.inputSchema,
 }));
@@ -73,6 +94,15 @@ async function handle(request: RpcRequest): Promise<void> {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable for this Run." }] } });
       return;
     }
+    const localMemoryOperation=typeof params?.name==="string"&&params.name.startsWith("local_memory_")?params.name.slice("local_memory_".length):undefined;
+    let memoryArguments: Record<string, unknown> | undefined;
+    if (localMemoryOperation) {
+      try { memoryArguments = normalizeMemoryMcpArguments(params?.arguments); }
+      catch (error) {
+        send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Invalid Local Memory arguments." }] } });
+        return;
+      }
+    }
     const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
       ? params.name.slice("browser_".length)
       : undefined;
@@ -80,7 +110,8 @@ async function handle(request: RpcRequest): Promise<void> {
     const args = params?.arguments && typeof params.arguments === "object"
       ? params.arguments as { agentId?: unknown }
       : {};
-    const targetUrl = params?.name === "create_managed_agent"
+    const workspaceOperation=params.name.startsWith('workspace_')?params.name.slice('workspace_'.length):params.name==='assistant_check'?'check':undefined;
+    const targetUrl = workspaceOperation ? messageUrl?.replace(/\/api\/agent-messages$/, '/api/agent-workspace') : localMemoryOperation ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-local-memory") : params?.name === "reply_stream" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-reply-stream") : params?.name === "voice_reply" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-voice-reply") : params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
         ? coordinateUrl
@@ -107,8 +138,9 @@ async function handle(request: RpcRequest): Promise<void> {
     try {
       const response = await fetch(targetUrl, {
         method: isDirectory ? "GET" : "POST",
-        headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        ...(!isDirectory ? { body: JSON.stringify(browserOperation
+        headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json",
+          ...((params.name === "voice_reply" || params.name === "reply_stream") ? { "x-ponderosa-voice-operation-id": String(request.id) } : {}) },
+        ...(!isDirectory ? { body: JSON.stringify(workspaceOperation ? {...(params.arguments&&typeof params.arguments==='object'?params.arguments:{}),operation:workspaceOperation} : localMemoryOperation ? {...memoryArguments,operation:localMemoryOperation} : browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
           : params?.name === "import_file"
             ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), toolCallId: String(request.id) }

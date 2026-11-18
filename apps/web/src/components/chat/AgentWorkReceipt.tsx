@@ -1,6 +1,6 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { Box, Button, Stack } from "@mui/material";
+import { Box, Button, Stack, Typography } from "@mui/material";
 import type {
   AgentRunDto,
   ResponseFileActivityDto,
@@ -33,9 +33,9 @@ function receiptTitle(
   agentName: string,
   run: AgentRunDto | undefined,
 ): string {
-  if (!run) return "Unscoped work";
+  if (!run) return "Unscoped Work";
   if (run.status === "running" || run.status === "compacting") {
-    return `${agentName} is working`;
+    return `${agentName} Is Working`;
   }
   if (
     run.status === "failed" ||
@@ -44,23 +44,33 @@ function receiptTitle(
     run.status === "stalled" ||
     run.status === "blocked"
   ) {
-    return `${agentName}'s work stopped`;
+    return `${agentName}'s Work Stopped`;
   }
   const duration = workDuration(run);
   return duration
-    ? `${agentName} worked for ${duration}`
-    : `${agentName} finished working`;
+    ? `${agentName} Worked For ${duration}`
+    : `${agentName} Finished Working`;
 }
 
-function receiptStatus(run: AgentRunDto): {
+function receiptStatus(run: AgentRunDto, paused: boolean): {
   label: string;
   status: ReturnType<typeof semanticAgentStatus>;
+  detail?: string;
+  accessibleLabel?: string;
 } | undefined {
   if (run.status === "failed") return { label: "Failed", status: "failed" };
+  if (paused && run.status === "cancelled") {
+    return {
+      label: "Paused",
+      status: "waiting",
+      detail: "Run status: cancelled",
+      accessibleLabel: "Paused. Run status: cancelled",
+    };
+  }
   if (run.status === "cancelled") return { label: "Cancelled", status: "failed" };
   if (run.status === "interrupted") return { label: "Interrupted", status: "blocked" };
   if (run.status === "stalled" || run.status === "blocked") {
-    return { label: "Needs attention", status: semanticAgentStatus(run.status) };
+    return { label: "Needs Attention", status: semanticAgentStatus(run.status) };
   }
   return undefined;
 }
@@ -69,32 +79,36 @@ export function AgentWorkReceipt({
   agentName,
   run,
   active = false,
+  paused = false,
   entries,
   projectId,
   projectRoot,
   onOpenFile,
   focusId,
   inline = false,
+  assistantMessages = false,
 }: {
   agentName: string;
   run?: AgentRunDto;
   active?: boolean;
+  paused?: boolean;
   entries: ActivityStreamEntry[];
   projectId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
   focusId?: string;
   inline?: boolean;
-}): JSX.Element {
+  assistantMessages?: boolean;
+}): JSX.Element | null {
   const containsFocus =
     run?.id === focusId || entries.some(entry => entry.id === focusId);
-  const [expanded, setExpanded] = useState(containsFocus || active);
+  const [expanded, setExpanded] = useState(containsFocus || (!assistantMessages && active));
   useEffect(() => {
-    if (containsFocus || active) setExpanded(true);
-  }, [active, containsFocus]);
+    if (containsFocus || (!assistantMessages && active)) setExpanded(true);
+  }, [active, containsFocus, assistantMessages]);
   const visibleEntries = useMemo(
-    () => receiptActivityEntries(entries, run?.status),
-    [entries, run?.status],
+    () => receiptActivityEntries(entries, run?.status, assistantMessages),
+    [entries, run?.status, assistantMessages],
   );
   const displayEntries = useMemo(
     () => groupConsecutiveActions(visibleEntries),
@@ -102,16 +116,17 @@ export function AgentWorkReceipt({
   );
   const hasVisibleActivity = displayEntries.length > 0;
   const activityCount = visibleEntries.length;
-  const status = run ? receiptStatus(run) : undefined;
+  const status = run ? receiptStatus(run, paused) : undefined;
   const activitySummary = activityCount === 1
     ? "1 activity"
     : `${activityCount} activities`;
 
+  if(assistantMessages && !hasVisibleActivity) return null;
   return (
     <Box
       id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}
-      component={inline ? "section" : "article"}
-      aria-label={run ? `${agentName} work details` : "Unscoped work details"}
+      component="article"
+      aria-label={run ? `${agentName} Work Details` : "Unscoped Work Details"}
       tabIndex={run?.id === focusId ? -1 : undefined}
       sx={{
         width: inline ? "100%" : "min(1120px, 100%)",
@@ -154,7 +169,7 @@ export function AgentWorkReceipt({
                   fontWeight: 700,
                 }}
               >
-                {receiptTitle(agentName, run)}
+                {paused ? `${agentName}'s work is paused` : receiptTitle(agentName, run)}
               </Box>
               <Box
                 component="span"
@@ -193,7 +208,7 @@ export function AgentWorkReceipt({
                   fontWeight: 700,
                 }}
               >
-                {receiptTitle(agentName, run)}
+                {paused ? `${agentName}'s work is paused` : receiptTitle(agentName, run)}
               </Box>
               <Box
                 component="span"
@@ -212,9 +227,14 @@ export function AgentWorkReceipt({
             <SemanticStatus
               status={status.status}
               label={status.label}
+              detail={status.detail}
+              accessibleLabel={status.accessibleLabel}
             />
           ) : null}
         </Stack>
+        {paused ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.5 }}>
+          Work is paused.
+        </Typography> : null}
         {expanded && hasVisibleActivity ? (
           <Box
             sx={{

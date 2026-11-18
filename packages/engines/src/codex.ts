@@ -1,5 +1,5 @@
 // The Codex adapter (SPEC §5). Drives the already-authenticated `codex` CLI as a
-// subscription-backed engine (AGENTS.md invariant 1 — NEVER an API key). Spawns
+// native harness in its configured subscription or API-key/token mode. Spawns
 // `codex exec --json` / `codex exec resume`, streams JSONL, and maps it to
 // AgentEvents. The spawn/exec-vs-resume mechanics are invisible outside this file.
 //
@@ -67,11 +67,14 @@ const DEFAULT_MODELS: ModelOption[] = [{ id: "", label: "Codex default" }];
 export { renderSeedPrompt } from "./seed-history.js";
 
 export class CodexAdapter implements Adapter {
+  readonly nativeTurnActions = ["plan", "review", "structured", "goal-resume", "goal-create"] as const;
   readonly id = "codex";
+  readonly contextRecoverySupport = Object.freeze({ status: "managed_compaction" as const, crashReconciliation: "hold_without_native_query" as const });
+  readonly supportsVoiceReplyStream = true;
   readonly displayName = "Codex";
   readonly providerUsageCommand = {
     name: "status",
-    description: "Show Codex subscription limits",
+    description: "Show Codex usage",
   };
   readonly modelSpecificEfforts = true;
   readonly trustedSystemPromptChannel = "developer" as const;
@@ -195,6 +198,7 @@ export class CodexAdapter implements Adapter {
   }
 
   seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
+    if (opts.expectedBillingMode) return this.billingModeRun(opts);
     const prompt = renderSeedPrompt(opts.history, opts.prompt);
     const args = [
       "exec",
@@ -207,6 +211,7 @@ export class CodexAdapter implements Adapter {
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
+    if (opts.expectedBillingMode) return this.billingModeRun(opts);
     const args = [
       "exec",
       "resume",
@@ -217,6 +222,23 @@ export class CodexAdapter implements Adapter {
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
+  }
+
+  /** Selected-mode one-shot callers use the same account-observed native
+   * transport as retained sessions; no second CLI status probe or credential store. */
+  private async *billingModeRun(opts: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> {
+    const session = await this.openSession({ ...opts,
+      history: "history" in opts ? opts.history : [],
+      ...("resumeSessionId" in opts ? {resumeSessionId:opts.resumeSessionId} : {}),
+      onRuntimeRootExit: () => opts.onRuntimeRootExit(),
+    });
+    try {
+      await session.startTurn({prompt:opts.prompt,kind:"user_message",model:opts.model,effort:opts.effort,speed:opts.speed});
+      for await (const event of session.events) {
+        yield event;
+        if(event.type === "turn_done" || event.type === "error") return;
+      }
+    } finally { await session.close(); }
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */

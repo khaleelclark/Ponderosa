@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./canonical-json": {
+      "types": "./dist/coordination-v3-canonical-json.d.ts",
+      "default": "./dist/coordination-v3-canonical-json.js"
     }
   },
   "scripts": {

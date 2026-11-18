@@ -42,13 +42,13 @@ export function artifactDisplayLabel(
     case "generated_file":
       return displayPath;
     case "screenshot":
-      return "Browser screenshot";
+      return "Browser Screenshot";
     case "test_report":
-      return "Test report";
+      return "Test Report";
     case "pr_summary":
-      return "Pull request summary";
+      return "Pull Request Summary";
     case "log":
-      return "Command output";
+      return "Command Output";
   }
 }
 

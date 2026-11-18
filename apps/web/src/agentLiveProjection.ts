@@ -1,4 +1,4 @@
-import type { AgentDetailDto, AgentTelemetryStream } from "@ponderosa/core";
+import type { AgentDetailDto, AgentTelemetryStream, RunOutputDto } from "@ponderosa/core";
 
 function recent<T>(items: T[], limit: number, compare: (left: T, right: T) => number): T[] {
   if (items.length <= limit) return items;
@@ -25,4 +25,20 @@ export function boundLiveAgentTelemetry(detail: AgentDetailDto): AgentDetailDto 
     artifacts: recent(detail.artifacts, limitFor(detail, "artifacts"), (a, b) =>
       a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
   };
+}
+
+/** A concurrent canonical snapshot can already contain a queued SSE delta. */
+export function appendLiveRunText(output:RunOutputDto[],input:{agentId:string;executionId:string;kind:RunOutputDto['kind'];seq:number;createdAt:string;delta:string}):RunOutputDto[] {
+  if(output.some(entry=>entry.executionId===input.executionId&&entry.kind===input.kind&&entry.sourceSeqEnd>=input.seq))return output;
+  const existing=[...output].reverse().find(entry=>!entry.completed&&entry.executionId===input.executionId&&entry.kind===input.kind);
+  const next:RunOutputDto=existing?{...existing,text:existing.text+input.delta,sourceSeqEnd:input.seq}:{
+    id:`${input.agentId}:runOutput:${input.seq}`,agentId:input.agentId,executionId:input.executionId,kind:input.kind,text:input.delta,
+    completed:false,seq:input.seq,sourceSeqStart:input.seq,sourceSeqEnd:input.seq,createdAt:input.createdAt,
+  };
+  const closed=output.map(entry=>entry.completed||entry.id===existing?.id?entry:{...entry,completed:true});
+  return existing?closed.map(entry=>entry.id===existing.id?next:entry):[...closed,next];
+}
+
+export function closeLiveRunText(output:RunOutputDto[],executionId:string):RunOutputDto[] {
+  return output.map(entry=>entry.executionId===executionId&&!entry.completed?{...entry,completed:true}:entry);
 }

@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { CommunicationAttachmentDto, CommunicationEvent, CommunicationProjection } from "@ponderosa/core";
 import { ensureSecureDirectory, listSecureDirectory, readSecureFile, secureDirectoryIdentity, writeSecureFileAtomic } from "@ponderosa/native-host";
@@ -57,6 +58,7 @@ export function retainChatAttachment(input: {
   projectId: string; conversationId: string; eventId: string;
   attachment: CommunicationAttachmentDto; repairSource?: string;
 }): void {
+  touchSourceMutation();
   const { dataDir, projectId, conversationId, eventId, attachment } = input;
   if (!attachment.agentId || !attachment.sha256 || !attachment.size) throw new Error("Sent attachment has no verifiable identity");
   const relative = directory(projectId, conversationId);

@@ -1,3 +1,4 @@
+import { codexNativeCommands } from "./codex-native-actions.js";
 import { execFile as nodeExecFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
@@ -7,6 +8,20 @@ import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
 const execFile = promisify(nodeExecFile);
+
+// Diagnostic details share a bounded allowance across all services. Counts remain exact.
+function toolDetails(candidates:Iterable<{name:string;description?:string}>,budget:{bytes:number}):Array<{name:string;description?:string}>{
+  const tools:Array<{name:string;description?:string}>=[],unsafe=/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+  for(const candidate of candidates){
+    if(!candidate.name||candidate.name.length>512||unsafe.test(candidate.name))continue;
+    const description=candidate.description&&!unsafe.test(candidate.description)?candidate.description.slice(0,512).replace(/[\uD800-\uDBFF]$/u,''):undefined;
+    const tool={name:candidate.name,...(description?{description:description+(description.length<candidate.description!.length?'…':'')}:{})};
+    const bytes=Buffer.byteLength(JSON.stringify(tool),'utf8')+96;
+    if(bytes>budget.bytes)break;
+    budget.bytes-=bytes;tools.push(tool);
+  }
+  return tools;
+}
 
 export function composerCapabilities(
   commands: EngineCommand[],
@@ -304,6 +319,7 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     ...(compactUnavailable ? { unavailableReason: compactUnavailable } : {}),
     invocation: "runtime",
   });
+  for (const command of codexNativeCommands(Boolean(input.sessionId))) commands.set(command.name, command);
   commands.set("status", {
     name: "status",
     description: "Show Codex session configuration, context usage, and subscription limits",
@@ -314,19 +330,21 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     invocation: "runtime",
   });
 
+  const toolBudget={bytes:64*1024};
   const mcpByName = new Map((input.configuredMcps ?? []).map((server) => [server.name, { ...server }]));
   for (const candidate of array(record(input.mcpStatuses)?.data)) {
     const status = record(candidate);
     const name = string(status?.name);
     if (!name) continue;
-    const toolCount = Object.keys(record(status?.tools) ?? {}).length;
+    const inventory=Object.entries(record(status?.tools)??{}),toolCount=inventory.length;
+    const tools = toolDetails(inventory.map(([name,tool])=>({name,...(string(record(tool)?.description)?{description:string(record(tool)?.description)!}:{})})),toolBudget);
     mcpByName.set(name, {
       name,
       configured: true,
       initialization: "initialized",
       usable: true,
       toolsDiscovered: true,
-      toolCount,
+      toolCount, tools,
       health: "unknown",
     });
   }
@@ -384,11 +402,11 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     const advertisedSource: EngineCommand["source"] = declaredSource === "plugin" || pluginName
       ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "provider-advertised";
     if (advertisedSource === "provider-advertised" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
-    const adapterImplemented = name === "usage" && advertisedSource === "provider-advertised";
+    const adapterImplemented = (name === "usage" || name === "compact") && advertisedSource === "provider-advertised";
     commands.set(name, {
       name,
       description: adapterImplemented
-        ? "Show Claude subscription usage"
+        ? name === "compact" ? "Compact retained Claude context with verified native receipts" : "Show Claude usage"
         : string(advertised?.description) ?? "Claude-advertised command",
       source: adapterImplemented ? "adapter-implemented" : advertisedSource,
       acceptsArguments: adapterImplemented ? false : advertised?.accepts_arguments !== false,
@@ -399,15 +417,20 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     });
   }
 
-  const toolNames = array(raw.tools).flatMap((candidate) => typeof candidate === "string"
-    ? [candidate] : string(record(candidate)?.name) ? [string(record(candidate)?.name)!] : []);
+  const toolBudget={bytes:64*1024};
   const mcpServers = array(raw.mcp_servers).flatMap((candidate) => {
     const server = record(candidate);
     const name = string(server?.name);
     if (!name) return [];
     const providerStatus = string(server?.status)?.toLowerCase();
     const normalizedToolPrefix = `mcp__${name.replace(/[^\p{L}\p{N}_-]/gu, "_")}__`;
-    const toolCount = toolNames.filter((tool) => tool.startsWith(`mcp__${name}__`) || tool.startsWith(normalizedToolPrefix)).length;
+    const tools = array(raw.tools).flatMap(candidate => {
+      const tool = typeof candidate === "string" ? {name:candidate} : record(candidate);
+      const toolName = string(tool?.name);
+      return toolName && (toolName.startsWith(`mcp__${name}__`) || toolName.startsWith(normalizedToolPrefix))
+        ? [{name:toolName,...(string(tool?.description) ? {description:string(tool?.description)!} : {})}] : [];
+    });
+    const toolCount = tools.length;
     const failed = providerStatus === "failed" || providerStatus === "disconnected" || providerStatus === "error";
     const initialized = providerStatus === "connected" || providerStatus === "ready" || toolCount > 0;
     return [{
@@ -416,7 +439,7 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
       initialization: failed ? "failed" as const : initialized ? "initialized" as const : "not_initialized" as const,
       usable: !failed && initialized,
       toolsDiscovered: true,
-      toolCount,
+      toolCount, tools:toolDetails(tools,toolBudget),
       health: server?.health === "healthy" ? "healthy" as const : server?.health === "unhealthy" ? "unhealthy" as const : "unknown" as const,
       ...(string(server?.error) ? { detail: string(server?.error)! } : {}),
     }];

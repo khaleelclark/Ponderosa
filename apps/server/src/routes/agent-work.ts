@@ -9,23 +9,44 @@ import type {
   AgentWorkItemDto,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
+import { redactProviderDiagnostic } from "../provider-failure-event.js";
+import {redactKnownDiagnosticValues} from "../working-copy-diagnostic.js";
 import { sendInspectorJson } from "../inspector-response.js";
 
 export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds"
+      "sqlite" | "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent" | "getConversation"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
-      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails"
+      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails" | "requestRetryStatus" | "settingsTransitionRequestHold"
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
-      "listDecisionPage" | "getDecision" | "decisionsForRuns"
+      "listDecisionPage" | "getDecision" | "decisionsForRuns" | "listConversationChanges"
     >,
   ) {}
+
+  private failureDetails(projectId: string, recordId: string): AgentWorkItemDto["details"] {
+    const failure = this.store.sqlite.prepare(`
+      SELECT event.payload_json FROM scheduler_runs scheduler
+      JOIN provider_inputs input ON input.scheduler_run_id = scheduler.id
+      JOIN (SELECT * FROM events WHERE agent_id = (
+        SELECT agent_id FROM scheduler_runs WHERE project_id = ? AND id = ?
+      ) ORDER BY seq DESC LIMIT 128) event ON event.agent_id = scheduler.agent_id
+      LEFT JOIN activity_projection activity ON activity.agent_id = event.agent_id AND activity.seq = event.seq
+      WHERE scheduler.project_id = ? AND scheduler.id = ? AND event.type = 'error'
+        AND COALESCE(activity.execution_id, json_extract(event.payload_json, '$.executionId')) = input.execution_id
+      ORDER BY event.seq DESC LIMIT 1
+    `).get(projectId, recordId, projectId, recordId) as { payload_json: string } | undefined;
+    if (!failure) return [];
+    const message: unknown = JSON.parse(failure.payload_json).message;
+    return typeof message === "string"
+      ? [{ label: "Provider failure detail", value: redactProviderDiagnostic(message).slice(0, 4000) }]
+      : [];
+  }
 
   inspect(input: {
     projectId: string;
@@ -33,6 +54,8 @@ export class AgentWorkProjection {
     agentId?: string;
     focusId?: string;
     limit?: number;
+    /** Host-only: enabled by the operator inspector route, never by Agent tools. */
+    includeChatChanges?: true;
   }): AgentWorkInspectorDto {
     const projectAgents = this.store.listAgents(input.projectId);
     const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
@@ -55,14 +78,19 @@ export class AgentWorkProjection {
         item.title = item.providerRecovery
           ? `${agentName(item.agentIds[0])} is provider-blocked`
           : ["pending", "retry_pending"].includes(item.state)
-          ? `${agentName(item.agentIds[0])} has a queued wake-up`
+          ? `${agentName(item.agentIds[0])} has queued work input`
           : ["leased", "attached"].includes(item.state)
-            ? `${agentName(item.agentIds[0])}'s wake-up is being attached`
+            ? `${agentName(item.agentIds[0])}'s work input is being assigned to a Run`
             : item.state === "consumed"
-              ? `${agentName(item.agentIds[0])}'s wake-up was consumed`
-              : `${agentName(item.agentIds[0])}'s wake-up ended ${item.state.replaceAll("_", " ")}`;
+              ? `${agentName(item.agentIds[0])}'s work input was assigned to a Run`
+              : `${agentName(item.agentIds[0])}'s work input ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "run") {
         item.title = `${agentName(item.agentIds[0])} Run`;
+        const details = this.failureDetails(input.projectId, item.recordId);
+        if (details?.length) item.details = [
+          ...(this.coordination.agentWorkItemDetails({ ...input, kind: "run", recordId: item.recordId }) ?? []),
+          ...details,
+        ];
       }
     }
 
@@ -375,6 +403,16 @@ export class AgentWorkProjection {
       || left.id.localeCompare(right.id));
     const selectedItems = items.filter((item) => selectedItemIds.has(item.id));
     const responseTruncated = selectedTraces.length < traces.length;
+    const scopedAgent = input.includeChatChanges && input.agentId ? this.store.getAgent(input.agentId) : undefined;
+    const chatId = input.includeChatChanges ? input.conversationId ?? scopedAgent?.conversationId : undefined;
+    const chat = chatId ? this.store.getConversation(chatId) : undefined;
+    const chatChanges = chat && chat.projectId === input.projectId
+      && (!input.agentId || scopedAgent?.projectId === input.projectId && scopedAgent.conversationId === chat.id)
+      ? this.workspace.listConversationChanges({ projectId: input.projectId, conversationId: chat.id, limit: Math.min(input.limit ?? 50, 100) }) : undefined;
+    if (chatChanges) chatChanges.items = chatChanges.items.map(change => ({ ...change,
+      ...(change.titleChange ? { titleChange: { ...change.titleChange,
+        previousTitle: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(change.titleChange.previousTitle))), title: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(change.titleChange.title))),
+      } } : {}) }));
     return {
       projectId: input.projectId,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -384,6 +422,7 @@ export class AgentWorkProjection {
         ? { truncated: true }
         : {}),
       agents: projectAgents.map((agent) => ({ id: agent.id, title: agent.title })),
+      ...(chatChanges ? { chatChanges } : {}),
       traces: selectedTraces,
       items: selectedItems,
     };
@@ -394,6 +433,8 @@ export class AgentWorkProjection {
     conversationId?: string;
     kind: AgentWorkItemDto["kind"];
     recordId: string;
+    /** Host-only: never enabled by an Agent inspector call. */
+    includeMessageTrace?: true;
   }): AgentWorkItemDetailsDto | undefined {
     const focused = this.coordination.agentWorkItems({
       projectId: input.projectId,
@@ -429,6 +470,7 @@ export class AgentWorkProjection {
         ...input,
         kind: input.kind as Exclude<AgentWorkItemDto["kind"], "decision">,
       });
+      if (input.kind === "run" && details) details = [...details, ...(this.failureDetails(input.projectId, input.recordId) ?? [])];
       if (input.kind === "request") {
         const lifecycle = this.coordination.requestLifecycleDetails({
           projectId: input.projectId,
@@ -438,8 +480,21 @@ export class AgentWorkProjection {
           recordId: input.recordId,
         });
         if (lifecycle) {
+          const settingsHold=this.coordination.settingsTransitionRequestHold({projectId:input.projectId,requestId:input.recordId});
           requestLifecycle = {
             ...lifecycle,
+            request: { ...lifecycle.request,
+              ...(settingsHold ? {settingsTransitionHold:settingsHold.retryable &&
+                (!lifecycle.request.requesterAgentId || this.store.getAgent(lifecycle.request.requesterAgentId)) &&
+                this.store.getAgent(lifecycle.request.recipientAgentId)
+                ? "retry_available" as const : "review_required" as const} : {}),
+              retryAvailable: Boolean(
+              ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(lifecycle.request.state)
+              && !this.coordination.requestRetryStatus(input.recordId).successorRequestId
+              && lifecycle.request.requesterAgentId
+              && this.store.getAgent(lifecycle.request.requesterAgentId)
+              && this.store.getAgent(lifecycle.request.recipientAgentId)
+            ) },
             updates: lifecycle.updates.map((update) => ({
               ...update,
               artifacts: update.artifacts.map((artifact) => {
@@ -475,9 +530,87 @@ export class AgentWorkProjection {
         itemId: `${input.kind}:${input.recordId}`,
         recordId: input.recordId,
         details,
+        ...(input.includeMessageTrace ? { messageTrace: this.messageTrace(input, input) } : {}),
         ...(requestLifecycle ? { requestLifecycle } : {}),
       }
       : undefined;
+  }
+
+  private messageTrace(input: {projectId: string; conversationId?: string}, item: Pick<AgentWorkItemDto, "kind" | "recordId">): AgentWorkItemDetailsDto["messageTrace"] {
+    if (item.kind !== "activation" && item.kind !== "run") return;
+    const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : null;
+    const visibleAgent = (id: string) => this.store.getAgent(id)?.projectId === input.projectId && !this.store.agentCreationPending(id);
+    if (item.kind === "activation") {
+      const target = this.store.sqlite.prepare("SELECT agent_id FROM agent_activations WHERE id = ? AND project_id = ? AND (? IS NULL OR scope_key = ?)")
+        .get(item.recordId, input.projectId, scopeKey, scopeKey) as {agent_id: string} | undefined;
+      if (!target || !visibleAgent(target.agent_id)) return;
+    }
+    // ponytail: one explicit Details read, at most 128 associations/publications;
+    // larger histories remain canonical and need explicit paging, not eager Chat work.
+    const limit = 128;
+    const runRows = this.store.sqlite.prepare(`
+      SELECT DISTINCT scheduler.id, scheduler.agent_id, scheduler.started_at, scheduler.created_at,
+        scheduler.terminal_at, provider.execution_id
+      FROM scheduler_runs scheduler
+      LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
+      WHERE scheduler.project_id = ? AND (? IS NULL OR scheduler.scope_key = ?) AND ${item.kind === "run"
+        ? "(scheduler.id = ? OR provider.execution_id = ?)"
+        : "EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.run_id = scheduler.id AND attached.activation_id = ?)"}
+      ORDER BY scheduler.created_at, scheduler.id LIMIT 129
+    `).all(input.projectId, scopeKey, scopeKey, item.recordId, ...(item.kind === "run" ? [item.recordId] : [])) as Array<{
+      id: string; agent_id: string; started_at: string | null; created_at: string; terminal_at: string | null; execution_id: string | null;
+    }>;
+    if (runRows.some(run => !visibleAgent(run.agent_id)) || item.kind === "run" && runRows.length === 0) return;
+    const runIds = [...new Set(runRows.slice(0, limit).flatMap(run => [run.id, ...(run.execution_id ? [run.execution_id] : [])]))];
+    const activationIds = new Set(item.kind === "activation" ? [item.recordId] : []);
+    for (const run of runRows.slice(0, limit)) {
+      const rows = this.store.sqlite.prepare("SELECT activation_id FROM scheduler_run_activations WHERE run_id = ? ORDER BY activation_id LIMIT 129").all(run.id) as Array<{activation_id: string}>;
+      for (const row of rows) activationIds.add(row.activation_id);
+    }
+    const safe = (text: string) => redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(text)));
+    const excerpt = (text: string) => ({text: safe(text).slice(0, 4000), ...(safe(text).length > 4000 ? {textTruncated: true as const} : {})});
+    const inputs: NonNullable<AgentWorkItemDetailsDto["messageTrace"]>["inputs"] = [];
+    for (const activationId of [...activationIds].slice(0, limit)) {
+      const fields = this.coordination.agentWorkItemDetails({...input, kind: "activation", recordId: activationId});
+      if (fields?.find(field => field.label === "Kind")?.value !== "human_message") continue;
+      let payload: unknown;
+      try { payload = JSON.parse(fields.find(field => field.label === "Payload")?.value ?? "null"); } catch { continue; }
+      const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+      const communication = object(object(payload)?.communication), sender = object(communication?.sender);
+      if (!communication || !sender || typeof communication.eventId !== "string" || typeof communication.text !== "string") continue;
+      const intake = this.store.sqlite.prepare(`SELECT activation.agent_id FROM runtime_communication_activation_intake intake
+        JOIN agent_activations activation ON activation.id = intake.activation_id
+        JOIN runtime_communications delivery ON delivery.id = intake.communication_id AND delivery.project_id = activation.project_id
+        WHERE intake.activation_id = ? AND (delivery.id = ? OR json_extract(delivery.payload_json, '$.communication.eventId') = ?) AND activation.project_id = ?
+          AND intake.agent_id = activation.agent_id`).get(activationId, communication.eventId, communication.eventId, input.projectId) as {agent_id: string} | undefined;
+      if (!intake) continue;
+      const senderLabel = sender.kind === "user" ? sender.userId === "local-operator" ? "You (local operator)" : "User"
+        : sender.kind === "agent" ? "Agent" : sender.kind === "system" ? "Ponderosa (system)" : "Not recorded";
+      inputs.push({activationId, communicationEventId: communication.eventId, sender: senderLabel,
+        ...(typeof communication.createdAt === "string" && Number.isFinite(Date.parse(communication.createdAt)) ? {createdAt: communication.createdAt} : {}),
+        recipient: safe(this.store.getAgent(intake.agent_id)?.title ?? "Deleted Agent"), ...excerpt(communication.text)});
+    }
+    const replies: NonNullable<AgentWorkItemDetailsDto["messageTrace"]>["replies"] = [];
+    let truncated = runRows.length > limit || activationIds.size > limit;
+    for (const run of runRows.slice(0, limit)) {
+      const remaining = limit - replies.length;
+      const rows = this.store.sqlite.prepare(`SELECT DISTINCT communication.id, communication.created_at,
+        message.id AS message_id, message.text, json_extract(communication.sender_json, '$.executionId') AS run_id
+        FROM runtime_communications communication JOIN messages message ON message.communication_event_id = communication.id
+          AND message.agent_id = ? AND message.role = 'assistant'
+        WHERE communication.project_id = ? AND communication.intent IN ('broadcast', 'user_dm')
+          AND json_extract(communication.sender_json, '$.agentId') = ?
+          AND json_extract(communication.sender_json, '$.executionId') IN (?, ?)
+          AND communication.created_at >= ? AND communication.created_at <= ?
+        ORDER BY communication.created_at, communication.id LIMIT ?
+      `).all(run.agent_id, input.projectId, run.agent_id, run.execution_id, run.id, run.started_at ?? run.created_at,
+        run.terminal_at ?? new Date().toISOString(), remaining + 1) as Array<{id: string; created_at: string; message_id: string; text: string; run_id: string}>;
+      for (const row of rows.slice(0, remaining)) replies.push({communicationEventId: row.id, messageId: row.message_id,
+        runId: row.run_id, sender: safe(this.store.getAgent(run.agent_id)?.title ?? "Deleted Agent"), createdAt: row.created_at, ...excerpt(row.text)});
+      if (rows.length > remaining) truncated = true;
+      if (replies.length === limit) { truncated = true; break; }
+    }
+    return {inputs, runIds, replies, ...(truncated ? {truncated: true} : {})};
   }
 }
 
@@ -522,6 +655,7 @@ export function registerAgentWorkRoutes(
     }
     const result = projection.inspect({
       projectId: project.id,
+      includeChatChanges: true,
       ...(request.query.conversationId
         ? { conversationId: request.query.conversationId }
         : {}),
@@ -556,6 +690,7 @@ export function registerAgentWorkRoutes(
     }
     const result = projection.itemDetails({
       projectId: project.id,
+      includeMessageTrace: true,
       ...(request.query.conversationId
         ? { conversationId: request.query.conversationId }
         : {}),

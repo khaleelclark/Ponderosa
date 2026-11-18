@@ -1,3 +1,4 @@
+import { touchSourceMutation, withSourceMutation } from "./source-capture-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -245,7 +246,7 @@ export function publishManagedArtifactContentInWorker(
 /** Publish bounded immutable bytes without running native hashing, writes, or
  * durability waits on the server event loop. Aborted workers may leave only an
  * uncatalogued immutable leaf, which startup repair is authorized to reclaim. */
-export function publishManagedArtifactContentAsync(
+function publishManagedArtifactContentAsyncUntracked(
   dataDir: string,
   projectId: string,
   artifactId: string,
@@ -456,7 +457,7 @@ function publishManagedArtifactChunkAsync(
 /** Publish an immutable group in bounded worker concurrency. A failure aborts
  * and observes every outstanding worker before returning; installed leaves
  * remain uncatalogued for identity-bound orphan repair. */
-export async function publishManagedArtifactContentsAsync(
+async function publishManagedArtifactContentsAsyncUntracked(
   dataDir: string,
   projectId: string,
   inputs: readonly ManagedArtifactBatchInput[],
@@ -535,7 +536,7 @@ export async function publishManagedArtifactContentsAsync(
  * fsynced its parent directory. Repeating the same identity is idempotent;
  * conflicting bytes fail closed.
  */
-export function publishManagedArtifactContent(
+function publishManagedArtifactContentUntracked(
   dataDir: string,
   projectId: string,
   artifactId: string,
@@ -566,7 +567,7 @@ export function publishManagedArtifactContent(
 
 /** Publish immutable blobs through the native cross-platform authority before
  * catalog metadata can point at them. Each leaf is independently durable. */
-export async function publishManagedArtifactContents(
+async function publishManagedArtifactContentsUntracked(
   dataDir: string,
   projectId: string,
   inputs: readonly ManagedArtifactBatchInput[],
@@ -620,7 +621,7 @@ export async function publishManagedArtifactContents(
 
 /** Remove one uncatalogued publication only when its retained identity and
  * immutable contents still match the caller's completed publication. */
-export function removeManagedArtifactContent(
+function removeManagedArtifactContentUntracked(
   dataDir: string,
   projectId: string,
   artifactId: string,
@@ -657,7 +658,7 @@ export function removeManagedArtifactContent(
 /** Remove aged regular blobs not owned by any rebuilt durable reference. The
  * retained directory descriptor and in-process publication reservation close
  * both ancestor-swap and startup/concurrent-publication deletion windows. */
-export function repairManagedArtifactContent(
+function repairManagedArtifactContentUntracked(
   dataDir: string,
   projectId: string,
   referencedArtifactIds: ReadonlySet<string>,
@@ -812,4 +813,31 @@ export async function openManagedArtifactContent(
     createReadStream,
     close,
   };
+}
+
+export function publishManagedArtifactContentAsync(...args: Parameters<typeof publishManagedArtifactContentAsyncUntracked>): ReturnType<typeof publishManagedArtifactContentAsyncUntracked> {
+  return withSourceMutation(() => publishManagedArtifactContentAsyncUntracked(...args));
+}
+
+export function publishManagedArtifactContentsAsync(...args: Parameters<typeof publishManagedArtifactContentsAsyncUntracked>): ReturnType<typeof publishManagedArtifactContentsAsyncUntracked> {
+  return withSourceMutation(() => publishManagedArtifactContentsAsyncUntracked(...args));
+}
+
+export function publishManagedArtifactContents(...args: Parameters<typeof publishManagedArtifactContentsUntracked>): ReturnType<typeof publishManagedArtifactContentsUntracked> {
+  return withSourceMutation(() => publishManagedArtifactContentsUntracked(...args));
+}
+
+export function publishManagedArtifactContent(...args: Parameters<typeof publishManagedArtifactContentUntracked>): ReturnType<typeof publishManagedArtifactContentUntracked> {
+  touchSourceMutation();
+  return publishManagedArtifactContentUntracked(...args);
+}
+
+export function removeManagedArtifactContent(...args: Parameters<typeof removeManagedArtifactContentUntracked>): ReturnType<typeof removeManagedArtifactContentUntracked> {
+  touchSourceMutation();
+  return removeManagedArtifactContentUntracked(...args);
+}
+
+export function repairManagedArtifactContent(...args: Parameters<typeof repairManagedArtifactContentUntracked>): ReturnType<typeof repairManagedArtifactContentUntracked> {
+  touchSourceMutation();
+  return repairManagedArtifactContentUntracked(...args);
 }

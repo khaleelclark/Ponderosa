@@ -1,3 +1,5 @@
+import {requireGenerationExitOpen} from './branch-generation-exit-fence.js';
+import {requireDestinationAdmitted} from './coordination-v3-destination-staging.js';
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
@@ -18,6 +20,8 @@ export class CoordinationV3ActivationFactory {
   ) {}
 
   create(input: CreateActivationV3Input): string {
+    requireDestinationAdmitted(this.sqlite,input.agentId,input.scopeKey.startsWith("conversation:")?input.scopeKey.slice(13):undefined);
+    if(input.externalIntake)requireGenerationExitOpen(this.sqlite,input.agentId,input.scopeKey.startsWith("conversation:")?input.scopeKey.slice(13):undefined);
     const existing = this.sqlite.prepare(`
       SELECT id FROM agent_activations
       WHERE project_id = ? AND agent_id = ? AND dedupe_key = ?

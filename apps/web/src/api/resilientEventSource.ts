@@ -9,7 +9,7 @@ const STABLE_CONNECTION_MS = 10_000;
 
 interface ResilientEventSourceOptions {
   createSource(): EventSource;
-  configure(source: EventSource): void;
+  configure(source: EventSource, isCurrent: () => boolean): void;
   onOpen?(event: Event): void;
   onError?(event: Event): void;
   /** EventSource hides HTTP error headers. A bounded read-only probe can observe
@@ -38,6 +38,9 @@ export function createResilientEventSource(
   let silenceTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectDelay = initialDelay;
   let openedAt: number | undefined;
+  let probing = false;
+  const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
+  const offline = () => typeof navigator !== "undefined" && navigator.onLine === false;
 
   const clearSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
@@ -50,13 +53,14 @@ export function createResilientEventSource(
     options.onError?.(event);
     source = undefined;
     current.close();
-    void (options.probeRateLimit?.() ?? Promise.resolve())
+    probing = true;
+    void (!offline() ? options.probeRateLimit?.() ?? Promise.resolve() : Promise.resolve())
       .catch(() => undefined)
-      .then(() => scheduleReconnect());
+      .then(() => { probing = false; scheduleReconnect(); });
   };
 
   const scheduleReconnect = (): void => {
-    if (stopped || reconnectTimer) return;
+    if (stopped || source || probing || reconnectTimer || offline()) return;
     const delay = Math.max(reconnectDelay, options.reconnectCooldownMs?.() ?? 0);
     reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
     reconnectTimer = setTimeout(() => {
@@ -67,17 +71,18 @@ export function createResilientEventSource(
 
   const noteActivity = (current: EventSource): void => {
     if (stopped || source !== current) return;
+    clearSilenceTimer();
+    if (!visible()) return;
     // Opening headers (or the initial heartbeat) is not proof of recovery.
     // A repeatedly opened-and-closed stream must retain its bounded backoff.
     if (openedAt !== undefined && Date.now() - openedAt >= STABLE_CONNECTION_MS) {
       reconnectDelay = initialDelay;
     }
-    clearSilenceTimer();
     silenceTimer = setTimeout(() => disconnect(current, new Event("error")), maxSilence);
   };
 
   const connect = (): void => {
-    if (stopped) return;
+    if (stopped || source || offline()) return;
     if ((options.reconnectCooldownMs?.() ?? 0) > 0) {
       scheduleReconnect();
       return;
@@ -95,8 +100,24 @@ export function createResilientEventSource(
       options.onOpen?.(event);
     };
     nextSource.onerror = (event) => disconnect(nextSource, event);
-    options.configure(nextSource);
+    options.configure(nextSource, () => !stopped && source === nextSource);
   };
+
+  const resume = () => {
+    if (!visible()) { clearSilenceTimer(); openedAt = undefined; return; }
+    // Keep useful hidden streams running. On return, a new status/replay from
+    // the saved cursor validates transport continuity instead of trusting a
+    // socket that the OS may have suspended. The existing loop owns retries.
+    if (source) disconnect(source, new Event("error"));
+    else scheduleReconnect();
+  };
+  const wentOffline = () => { if (source) disconnect(source, new Event("error")); };
+  const wentOnline = () => scheduleReconnect();
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", resume);
+  if (typeof window !== "undefined") {
+    window.addEventListener("offline", wentOffline);
+    window.addEventListener("online", wentOnline);
+  }
 
   connect();
   return {
@@ -107,6 +128,11 @@ export function createResilientEventSource(
       reconnectTimer = undefined;
       source?.close();
       source = undefined;
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", resume);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("offline", wentOffline);
+        window.removeEventListener("online", wentOnline);
+      }
     },
   };
 }

@@ -37,6 +37,8 @@ export interface CoordinateV3Input {
   requests: Array<{
     requestId?: string;
     recipientAgentId: string;
+    /** Server-owned workflow jobs can request a separate queued Run. */
+    workflowQueue?: boolean;
     lifetime: RequestLifetime;
     communicationEventId?: string;
     payload?: unknown;
@@ -65,12 +67,15 @@ export interface CoordinateV3Result {
 }
 
 export interface UpdateRequestV3Input {
+  /** Host-only presentation metadata, excluded from semantic update identity. */
+  replyStream?: import("@ponderosa/core").ReplyStreamCorrelation;
   requestId: string;
   updateId: string;
   kind: CoordinationRequestUpdateKind;
   actor: Actor;
   /** Provider-authored updates may only target requests attached to this Run. */
   runAuthorization?: RunAuthorizationV3;
+  steeringInjectionId?: string;
   inReplyToUpdateId?: string;
   payload?: unknown;
   /** Durable structured classification for a provider-derived system update. */
@@ -111,7 +116,8 @@ export interface CoordinationRequestDeliveryView {
     | "delivery_failed"
     | "delivery_uncertain"
     | "delivery_cancelled";
-  interruptsActiveRun: false;
+  interruptsActiveRun: boolean;
+  steeringWaitReason?: "provider_unsupported";
 }
 
 export interface SchedulerLease {

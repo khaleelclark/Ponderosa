@@ -1,3 +1,5 @@
+import {recordingMediaType} from './audio-container.js';
+import { withSourceMutation } from "@ponderosa/agents";
 import { admitDataDirectory } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "@ponderosa/native-host/fs";
@@ -34,6 +36,7 @@ import {
   type GeneratedArtifactImportReceipt,
   type RegisteredGeneratedArtifact,
   type RegisteredRuntimeArtifact,
+  type RuntimeAttachmentAssociation,
   type StoredAsset,
 } from "./asset-contracts.js";
 
@@ -82,6 +85,8 @@ function normalizeName(value: unknown): string {
 }
 
 function detectType(body: Buffer, name?: string): AssetDto["mediaType"] | undefined {
+  const recording = recordingMediaType(body);
+  if (recording) return recording;
   if (isHeicContainer(body)) return "image/heic";
   if (validAvif(body, 4096)) return "image/avif";
   if (["GIF87a", "GIF89a"].includes(body.subarray(0, 6).toString("latin1"))) return "image/gif";
@@ -129,6 +134,7 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
 }
 
 const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]>> = {
+  "audio/webm": [".webm"], "audio/ogg": [".ogg"], "audio/mp4": [".m4a", ".mp4"],
   "image/heic": [".heic", ".heif"],
   "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
   "image/gif": [".gif"], "image/avif": [".avif"],
@@ -147,6 +153,14 @@ function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boole
   const extension = path.extname(name).toLocaleLowerCase();
   if (mediaType === "application/octet-stream") return !STRICT_ASSET_EXTENSIONS.has(extension);
   return !extension || assetExtensionsForMediaType(mediaType).includes(extension);
+}
+
+// Existing opaque originals remain downloadable; stricter audio admission applies to new uploads.
+function storedExtensionMatches(name:string,mediaType:AssetDto['mediaType']):boolean {
+  return extensionMatches(name,mediaType)||mediaType==='application/octet-stream'&&['.webm','.ogg','.m4a','.mp4'].includes(path.extname(name).toLowerCase());
+}
+function storedMediaTypeMatches(body:Buffer,asset:Pick<AssetDto,'name'|'mediaType'>):boolean {
+  return detectType(body,asset.name)===asset.mediaType||asset.mediaType==='application/octet-stream'&&['.webm','.ogg','.m4a','.mp4'].includes(path.extname(asset.name).toLowerCase());
 }
 
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
@@ -376,7 +390,7 @@ function validateStoredAsset(value: unknown, projectId: string, agentId: string,
   if (asset.associatedAt !== undefined && (typeof asset.associatedAt !== "string" || !Number.isFinite(Date.parse(asset.associatedAt)))) return undefined;
   if ((asset.state === "associated") !== (asset.associatedAt !== undefined)) return undefined;
   if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType as AssetDto["mediaType"])) return undefined;
-  if (!extensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
+  if (!storedExtensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
   const preview = asset.previewFile !== undefined;
   const expected = assetUrls(agentId, id, preview, asset.conversationId);
   const expectedUrl = preview && !asset.conversationId
@@ -513,7 +527,7 @@ export class AssetStore {
 
   /** Chat-owned Broadcast media has the Chat UUID as its storage owner, but
    * no Agent record. Remove its bytes before releasing its durable quota. */
-  async purgeConversationAssets(projectId: string, conversationId: string): Promise<void> {
+  private async purgeConversationAssetsUntracked(projectId: string, conversationId: string): Promise<void> {
     if (!RUNTIME_UUID.test(conversationId)) throw new AssetError(400, "Chat attachment owner is invalid");
     const directory = this.dir(projectId, conversationId);
     const ownedLeaf = (leaf: string) =>
@@ -657,7 +671,7 @@ export class AssetStore {
       const relative = this.secureDirectory(projectId, agentId);
       const body = this.secureRead(relative, asset.originalFile, ASSET_LIMITS.maxFileBytes);
       if (!body || body.length !== asset.size || createHash("sha256").update(body).digest("hex") !== asset.sha256 ||
-          detectType(body, asset.name) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
+          !storedMediaTypeMatches(body, asset) || !storedExtensionMatches(asset.name, asset.mediaType) ||
           !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         const preview = this.secureRead(relative, asset.previewFile, MAX_PREVIEW_BYTES);
@@ -698,8 +712,8 @@ export class AssetStore {
       if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
       const contentHash = createHash("sha256").update(body).digest("hex");
-      if (contentHash !== asset.sha256 || detectType(body, asset.name) !== asset.mediaType ||
-          !extensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
+      if (contentHash !== asset.sha256 || !storedMediaTypeMatches(body, asset) ||
+          !storedExtensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         const previewInfo = fstatSync(previewFd);
@@ -1095,16 +1109,16 @@ export class AssetStore {
     return resolved;
   }
 
-  async recoverRuntimeCommunicationAssociations(
-    communicationExists: (communicationId: string, projectId: string) => boolean,
+  private async recoverRuntimeCommunicationAssociationsUntracked(
+    communicationExists: (communicationId: string, projectId: string, binding: RuntimeAttachmentAssociation) => boolean,
   ): Promise<{ associated: number; released: number; unavailable: number }> {
     let associated = 0;
     let released = 0;
     let unavailable = 0;
     const rows = this.authority.runtimeCommunicationAssociations();
     for (const row of rows) {
-      if (!communicationExists(row.communicationId, row.projectId)) {
-        this.authority.removeRuntimeCommunicationAssociations(row.communicationId);
+      if (!communicationExists(row.communicationId, row.projectId, row)) {
+        this.authority.removeRuntimeCommunicationAssociations(row.communicationId, row.attachmentId);
         released += 1;
         continue;
       }
@@ -1121,7 +1135,7 @@ export class AssetStore {
     return { associated, released, unavailable };
   }
 
-  async stage(input: {
+  private async stageUntracked(input: {
     projectId: string;
     agentId: string;
     conversationId?: string;
@@ -1278,7 +1292,7 @@ export class AssetStore {
     }
   }
 
-  async associate(projectId: string, agentId: string, ids: string[]): Promise<AssetDto[]> {
+  private async associateUntracked(projectId: string, agentId: string, ids: string[]): Promise<AssetDto[]> {
     const assets = await Promise.all(ids.map((id) => this.read(projectId, agentId, id)));
     if (assets.some((asset) => !asset)) throw new AssetError(404, "asset not found");
     const integrity = await Promise.all(ids.map((id) => this.content(projectId, agentId, id, false)));
@@ -1343,7 +1357,7 @@ export class AssetStore {
     } catch { return undefined; }
   }
 
-  async remove(projectId: string, agentId: string, id: string): Promise<boolean> {
+  private async removeUntracked(projectId: string, agentId: string, id: string): Promise<boolean> {
     const asset = await this.read(projectId, agentId, id);
     if (!asset || asset.state !== "staged") return false;
     const receipt = this.authority.beginDelete(id, projectId, agentId);
@@ -1351,7 +1365,7 @@ export class AssetStore {
     return true;
   }
 
-  async enqueueRemoval(projectId: string, agentId: string, id: string): Promise<boolean> {
+  private async enqueueRemovalUntracked(projectId: string, agentId: string, id: string): Promise<boolean> {
     if (this.authority.deletionRequested(id)) return true;
     const asset = await this.read(projectId, agentId, id);
     if (!asset || asset.state !== "staged") return false;
@@ -1408,7 +1422,7 @@ export class AssetStore {
     } finally { await openedDirectory.handle.close(); }
   }
 
-  async reconcile(
+  private async reconcileUntracked(
     projectId: string,
     agentId: string,
     associatedIds: Set<string>,
@@ -1518,6 +1532,34 @@ export class AssetStore {
           now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
     }
     return removed;
+  }
+
+  purgeConversationAssets(...args: Parameters<AssetStore["purgeConversationAssetsUntracked"]>): ReturnType<AssetStore["purgeConversationAssetsUntracked"]> {
+    return withSourceMutation(() => this.purgeConversationAssetsUntracked(...args));
+  }
+
+  recoverRuntimeCommunicationAssociations(...args: Parameters<AssetStore["recoverRuntimeCommunicationAssociationsUntracked"]>): ReturnType<AssetStore["recoverRuntimeCommunicationAssociationsUntracked"]> {
+    return withSourceMutation(() => this.recoverRuntimeCommunicationAssociationsUntracked(...args));
+  }
+
+  stage(...args: Parameters<AssetStore["stageUntracked"]>): ReturnType<AssetStore["stageUntracked"]> {
+    return withSourceMutation(() => this.stageUntracked(...args));
+  }
+
+  associate(...args: Parameters<AssetStore["associateUntracked"]>): ReturnType<AssetStore["associateUntracked"]> {
+    return withSourceMutation(() => this.associateUntracked(...args));
+  }
+
+  remove(...args: Parameters<AssetStore["removeUntracked"]>): ReturnType<AssetStore["removeUntracked"]> {
+    return withSourceMutation(() => this.removeUntracked(...args));
+  }
+
+  enqueueRemoval(...args: Parameters<AssetStore["enqueueRemovalUntracked"]>): ReturnType<AssetStore["enqueueRemovalUntracked"]> {
+    return withSourceMutation(() => this.enqueueRemovalUntracked(...args));
+  }
+
+  reconcile(...args: Parameters<AssetStore["reconcileUntracked"]>): ReturnType<AssetStore["reconcileUntracked"]> {
+    return withSourceMutation(() => this.reconcileUntracked(...args));
   }
 
 }

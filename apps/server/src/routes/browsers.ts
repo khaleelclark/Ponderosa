@@ -1,5 +1,11 @@
+import {browserRouteUsesOwnerHandle} from "../browser-owner-route.js";
 import { browserOwnerId, browserOwnerFromId, chatBrowserOwnerId } from "@ponderosa/core";
 import type {
+  BrowserOperatorConsoleRequest,
+  BrowserOperatorObservationContext,
+  BrowserOperatorRecordingStartRequest,
+  BrowserOperatorRecordingStopRequest,
+  BrowserOperatorRecordingResult,
   CreateBrowserProfileRequest,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
@@ -76,7 +82,7 @@ export function registerBrowserRoutes(
   // Agent/Run paths retain their namespace locator and exact Run validation.
   app.addHook("preHandler", async (request, reply) => {
     const route = request.routeOptions.url;
-    if (!/^\/api\/projects\/:projectId\/(?:browser(?:[/-]|$)|local-browser(?:[/-]|$)|saved-browser-access(?:[/-]|$)|agents\/:agentId\/browser-(?:location|preference)$)/u.test(route ?? "")) return;
+    if (!browserRouteUsesOwnerHandle(route)) return;
     const params = request.params as { projectId: string; agentId?: string };
     try {
       const queryChat = (request.query as { conversationId?: string }).conversationId;
@@ -900,6 +906,40 @@ export function registerBrowserRoutes(
     const route = projectScoped ? projectBrowserRoute : browserRoute;
     const manager = projectScoped ? projectBrowserSessions : browserSessions;
     const scope = (params: BrowserRouteParams) => projectScoped ? projectBrowserScope(params.projectId) : operatorBrowserScope(params);
+    // Operator routes reuse exact canonical ownership and global origin checks; no Agent capability or grant is inferred.
+    app.post<{Params: BrowserRouteParams; Body: BrowserOperatorConsoleRequest}>(`${route}/observations/console`, async (request, reply) => {
+      reply.header("cache-control", "private, no-store");
+      if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
+      try {
+        return await manager.operatorConsole(scope(request.params), request.body, request.body?.query);
+      } catch (error) { return browserRouteError(reply, error); }
+    });
+    app.post<{Params: BrowserRouteParams; Body: BrowserOperatorObservationContext}>(`${route}/observations/recording/status`, async (request, reply) => {
+      reply.header("cache-control", "private, no-store");
+      if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
+      try {
+        const browserScope = scope(request.params);
+        const state = await manager.operatorRecordingStatus(browserScope, request.body);
+        return {...state, ...(state.artifact ? {artifact: {...state.artifact, downloadUrl: `/api/projects/${encodeURIComponent(state.artifact.destination?.projectId ?? browserScope.projectId)}/artifacts/${encodeURIComponent(state.artifact.artifactId)}/download`}} : {})};
+      } catch (error) { return browserRouteError(reply, error); }
+    });
+    app.post<{Params: BrowserRouteParams; Body: BrowserOperatorRecordingStartRequest}>(`${route}/observations/recording/start`, async (request, reply) => {
+      reply.header("cache-control", "private, no-store");
+      if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
+      try {
+        return await manager.operatorRecordingStart(scope(request.params), request.body, request.body?.pageId);
+      } catch (error) { return browserRouteError(reply, error); }
+    });
+    app.post<{Params: BrowserRouteParams; Body: BrowserOperatorRecordingStopRequest}>(`${route}/observations/recording/stop`, async (request, reply) => {
+      reply.header("cache-control", "private, no-store");
+      if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
+      try {
+        const browserScope = scope(request.params);
+        const artifact = await manager.operatorRecordingStop(browserScope, request.body, request.body?.recordingId);
+        const result: BrowserOperatorRecordingResult = {...artifact, downloadUrl: `/api/projects/${encodeURIComponent(artifact.destination?.projectId ?? browserScope.projectId)}/artifacts/${encodeURIComponent(artifact.artifactId)}/download`};
+        return result;
+      } catch (error) { return browserRouteError(reply, error); }
+    });
     app.post<{ Params: BrowserRouteParams; Body: { expectedControlEpoch: number } }>(`${route}/pages`, async (request, reply) => {
       if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
       if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) return reply.code(400).send({ error: "expectedControlEpoch is required" });

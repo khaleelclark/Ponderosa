@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readProviderExitEvidence, stableJson } from "@ponderosa/agents";
 import type Database from "better-sqlite3";
-import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
+import type { ProviderProcessRegistration, ProviderProcessExitReceipt, RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
 import { recoveredRuntimeProcessHandle } from "@ponderosa/engines";
 
 export interface ProviderProcessScope {
@@ -8,6 +9,8 @@ export interface ProviderProcessScope {
   projectId?: string;
   agentId?: string;
   runId?: string;
+  /** Exact spawn/turn fence; never inferred from a later cancellation. */
+  runFence?: number;
 }
 
 interface ProviderProcessRow {
@@ -27,22 +30,26 @@ interface ProviderProcessRow {
 export class ProviderProcessAuthority {
   // Windows Jobs retain their live handle here; kill-on-close supplies restart
   // containment. POSIX continues to use restart-recoverable SQLite identities.
-  private readonly nativeHandles = new Map<object, { handle: RuntimeProcessHandle; scope: ProviderProcessScope }>();
+  private readonly nativeHandles = new Map<object, { id:string; handle: RuntimeProcessHandle; scope: ProviderProcessScope }>();
   constructor(
     private readonly sqlite: Database.Database,
     readonly workerId: string,
   ) {}
 
-  register(handle: RuntimeProcessHandle, scope: ProviderProcessScope, ownerIdentity?: object): void {
+  register(handle: RuntimeProcessHandle, scope: ProviderProcessScope, ownerIdentity?: object): string | undefined {
     if (process.platform === "win32") {
-      for (const [key, {handle: owned}] of this.nativeHandles) if (!owned.isAlive()) this.nativeHandles.delete(key);
+      for (const [key, owned] of this.nativeHandles) if (!owned.handle.isAlive()) { this.observeExit(owned.id,"os-not-alive"); this.nativeHandles.delete(key); }
       // Readiness and returned Session facades can wrap the same native Job.
       // Only the existing code-owned runtime lifetime may rebind that handle;
       // Agent identity alone never proves that two processes are the same.
       const key = ownerIdentity ?? handle;
-      const retained = this.nativeHandles.get(key)?.handle ?? handle;
-      this.nativeHandles.set(key, { handle: retained, scope: { ...scope } });
-      return;
+      const prior=this.nativeHandles.get(key);
+      const retained = prior?.handle ?? handle;
+      const id=prior?.id??randomUUID();
+      this.nativeHandles.set(key, { id, handle: retained, scope: { ...scope } });
+      try { this.registerEvidence(id,{kind:"native-job",lifetimeId:id},scope); }
+      catch(error) { void retained.close().catch(()=>undefined); throw error; }
+      return id;
     }
     const identity = handle.processIdentity;
     if (!identity) {
@@ -70,6 +77,9 @@ export class ProviderProcessAuthority {
         scope.projectId ?? null, scope.agentId ?? null, scope.runId ?? null,
         identity.pid, identity.pgid, identity.birthMarker, identity.scope ? JSON.stringify(identity.scope) : null, new Date().toISOString(),
       );
+      const row=this.sqlite.prepare("SELECT id FROM provider_process_authority WHERE worker_id=? AND pid=? AND birth_marker=?").get(this.workerId,identity.pid,identity.birthMarker) as {id:string};
+      this.registerEvidence(row.id,{kind:"posix",identity},scope);
+      return row.id;
     } catch (error) {
       // Admission cannot continue without durable restart authority. Begin
       // teardown immediately; the caller's in-memory authority retains the
@@ -104,13 +114,19 @@ export class ProviderProcessAuthority {
     return this.terminateScope(this.rows("project_id = ?", [projectId]), scope => scope.projectId === projectId, reason);
   }
 
+  /** Observe exited handles, without termination. The owner drains first and re-reads at seal. */
+  readExitEvidence(input:Parameters<typeof readProviderExitEvidence>[1]):ReturnType<typeof readProviderExitEvidence> {
+    this.pruneExited();
+    return readProviderExitEvidence(this.sqlite,input);
+  }
+
   pruneExited(): number {
     let removed = 0;
-    for (const [key, { handle }] of this.nativeHandles) if (!handle.isAlive()) { this.nativeHandles.delete(key); removed += 1; }
+    for (const [key, { id,handle }] of this.nativeHandles) if (!handle.isAlive()) { this.observeExit(id,"os-not-alive"); this.nativeHandles.delete(key); removed += 1; }
     for (const row of this.rows()) {
       const handle = this.recover(row);
       if (handle.isAlive()) continue;
-      removed += this.deleteRow(row.id);
+      removed += this.observeExit(row.id,"os-not-alive");
     }
     return removed;
   }
@@ -141,9 +157,10 @@ export class ProviderProcessAuthority {
   private async terminateScope(rows: readonly ProviderProcessRow[], matches: (scope: ProviderProcessScope) => boolean, reason: string): Promise<number> {
     const results = await Promise.allSettled([
       this.terminateRows(rows, reason),
-      ...[...this.nativeHandles].filter(([, {scope}]) => matches(scope)).map(async ([key, {handle}]) => {
+      ...[...this.nativeHandles].filter(([, {scope}]) => matches(scope)).map(async ([key, {id,handle}]) => {
         await handle.close();
         if (handle.isAlive()) throw new Error(`${reason} did not observe native workload exit`);
+        this.observeExit(id,"close-confirmed");
         this.nativeHandles.delete(key);
         return 1;
       }),
@@ -184,7 +201,8 @@ export class ProviderProcessAuthority {
       try {
         const handle = this.recover(row);
         await handle.close();
-        this.deleteRow(row.id);
+        if(handle.isAlive())throw new Error("Provider process still alive after close");
+        this.observeExit(row.id,"close-confirmed");
         terminated += 1;
       } catch (error) {
         failures.push(new Error(
@@ -196,7 +214,51 @@ export class ProviderProcessAuthority {
     return terminated;
   }
 
-  private deleteRow(id: string): number {
-    return this.sqlite.prepare("DELETE FROM provider_process_authority WHERE id = ?").run(id).changes;
+  private hash(value:unknown):string { return createHash("sha256").update(stableJson(value)).digest("hex"); }
+
+  private commit(kind:string,identity:string,value:unknown):void {
+    const bytes=stableJson(value),sha256=this.hash(value);
+    if(Buffer.byteLength(bytes)>4*1024*1024)throw Error("Provider evidence exceeds bound");
+    const prior=this.sqlite.prepare("SELECT receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind=? AND identity=?").get(kind,identity) as {receipt_json:string;receipt_sha256:string}|undefined;
+    if(prior){if(prior.receipt_json!==bytes||prior.receipt_sha256!==sha256)throw Error("Provider immutable receipt conflict");return;}
+    this.sqlite.prepare("INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)").run(kind,identity,bytes,bytes,sha256);
+  }
+
+  private registerEvidence(id:string,process:ProviderProcessRegistration['process'],scope:ProviderProcessScope):void {
+    if(this.sqlite.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-exit' AND identity=?").get(id))throw Error("Exited provider lifetime cannot be rebound");
+    const agent=scope.agentId?this.sqlite.prepare("SELECT project_id,conversation_id FROM agents WHERE id=?").get(scope.agentId) as {project_id:string;conversation_id:string|null}|undefined:undefined;
+    const run=scope.runId?this.sqlite.prepare("SELECT project_id,agent_id,fencing_token FROM scheduler_runs WHERE id=?").get(scope.runId) as {project_id:string;agent_id:string;fencing_token:number}|undefined:undefined;
+    // Low-level cleanup may retain an orphan identity. It cannot qualify capture:
+    // the reader requires surviving canonical scope and the actual spawn fence.
+    if(run&&(run.project_id!==scope.projectId||run.agent_id!==scope.agentId))throw Error("Provider registration Run scope mismatch");
+    if(agent&&agent.project_id!==scope.projectId)throw Error("Provider registration Agent scope mismatch");
+    if(scope.runFence!==undefined&&(!run||!Number.isSafeInteger(scope.runFence)||scope.runFence<1||scope.runFence>run.fencing_token))throw Error('Provider registration fence mismatch');
+    const value:ProviderProcessRegistration={schema:'provider-process-registration.v1',authorityId:id,workerId:this.workerId,process,purpose:scope.purpose,projectId:scope.projectId??null,agentId:scope.agentId??null,conversationId:agent?.conversation_id??null,runId:scope.runId??null,runFence:scope.runFence??null};
+    const prior=this.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id) as Array<{receipt_json:string}>;
+    if(prior.length>=4096&&!prior.some(row=>row.receipt_json===stableJson(value)))throw Error('Provider lifetime registration bound exceeded');
+    for(const row of prior){const old=JSON.parse(row.receipt_json) as ProviderProcessRegistration;
+      if(stableJson(old.process)!==stableJson(process)||old.workerId!==this.workerId||old.projectId!==value.projectId||old.agentId!==value.agentId||old.conversationId!==value.conversationId)throw Error('Provider lifetime ownership cannot change');
+    }
+    this.commit('provider-process-registration',`${id}:${this.hash(value)}`,value);
+  }
+
+  // Only callers holding the actual OS/native handle may reach this observation boundary.
+  // Archive and authority removal share one savepoint: failed persistence retains the hold.
+  private observeExit(id:string,observation:ProviderProcessExitReceipt['observation']):number {
+    return this.sqlite.transaction(()=>{
+      const prior=this.sqlite.prepare("SELECT receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-exit' AND identity=?").get(id) as {receipt_json:string;receipt_sha256:string}|undefined;
+      if(prior){const value=JSON.parse(prior.receipt_json) as ProviderProcessExitReceipt;
+        if(this.hash(value)!==prior.receipt_sha256||stableJson(value)!==prior.receipt_json||value.authorityId!==id||value.result!=='observed_exited')throw Error('Retained provider exit integrity failure');
+      }
+      if(!prior){
+        const rows=this.sqlite.prepare("SELECT identity,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id) as Array<{identity:string;receipt_json:string;receipt_sha256:string}>;
+        if(rows.length>4096)throw Error('Provider lifetime registration bound exceeded');
+        const registrations=rows.map(row=>{const registration=JSON.parse(row.receipt_json) as ProviderProcessRegistration;if(this.hash(registration)!==row.receipt_sha256||stableJson(registration)!==row.receipt_json)throw Error('Provider registration integrity failure');return {identity:row.identity,sha256:row.receipt_sha256,registration};});
+        // Legacy recovered rows may be drained, but empty coverage cannot qualify capture.
+        const receipt:ProviderProcessExitReceipt={schema:'provider-process-exit.v1',operationId:`provider-exit:${id}`,authorityId:id,result:'observed_exited',observation,observedAt:new Date().toISOString(),registrations};
+        this.commit('provider-process-exit',id,receipt);
+      }
+      return this.sqlite.prepare("DELETE FROM provider_process_authority WHERE id=?").run(id).changes;
+    })();
   }
 }

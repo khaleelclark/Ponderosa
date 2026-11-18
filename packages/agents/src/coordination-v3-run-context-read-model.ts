@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import { REQUEST_SOURCE_LINEAGE_CTE, currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 
 export class CoordinationV3RunContextReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -22,6 +22,7 @@ export class CoordinationV3RunContextReadModel {
         ON lineage.activation_id = attached.activation_id
       JOIN coordination_requests request ON request.id = lineage.request_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND ${currentRequestAttachmentSql("attached")}
         AND (
           lineage.source_kind IN ('request', 'request_update')
           OR (
@@ -36,6 +37,38 @@ export class CoordinationV3RunContextReadModel {
       ORDER BY request.created_at, request.id
     `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
     return rows.map((row) => row.id);
+  }
+
+  /** Exact original Request prompt on this run. Other lineage remains unchanged. */
+  requestSteeringAdmission(runId: string, agentId: string, requestId: string): "turn" | "steer" | "unconfirmed" | "unattached" {
+    const rows = this.sqlite.prepare(`
+      SELECT injection.kind, injection.state
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN agent_activations activation ON activation.id = attached.activation_id
+      JOIN activation_sources source ON source.activation_id = activation.id
+      JOIN coordination_requests request ON request.id = source.source_id
+      LEFT JOIN scheduler_prompt_injections injection ON injection.run_id = run.id
+        AND EXISTS (SELECT 1 FROM json_each(injection.activation_ids_json) member
+          WHERE member.value = activation.id)
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.id = ? AND activation.kind = 'coordination_request'
+        AND source.source_kind = 'request' AND ${currentRequestAttachmentSql("attached")}
+    `).all(runId, agentId, requestId) as Array<{kind: string | null; state: string | null}>;
+    if (rows.some(row => row.kind === null || row.kind === "turn")) return "turn";
+    if (rows.some(row => row.kind === "steer" && row.state === "acknowledged")) return "steer";
+    return rows.length ? "unconfirmed" : "unattached";
+  }
+
+  runHasSteeredPeerWork(runId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+      JOIN agent_activations activation ON activation.id = member.value
+      WHERE injection.run_id = ? AND injection.kind = 'steer' AND injection.state = 'acknowledged'
+        AND activation.kind IN ('coordination_request','ordinary_message','urgent_message')
+            AND activation.prompt_class <> 'human'
+      LIMIT 1
+    `).get(runId));
   }
 
   outboundAwaitingQuestionRequestIdsAttachedToRun(
@@ -80,6 +113,7 @@ export class CoordinationV3RunContextReadModel {
       JOIN coordination_requests request
         ON source.source_kind = 'request' AND request.id = source.source_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND ${currentRequestAttachmentSql("attached")}
         AND request.recipient_agent_id = ? AND activation.kind = 'coordination_request'
       LIMIT 1
     `).get(runId, agentId, agentId) as { matched: number } | undefined;

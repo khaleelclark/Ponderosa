@@ -1,15 +1,17 @@
 import { browserOwnerFromId, browserOwnerId, chatBrowserOwnerId } from "@ponderosa/core";
 import type { AgentEvent, BrowserSessionDto, ProjectBrowserSessionDto } from "@ponderosa/core";
-import { openManagedArtifactContent, AgentStore, type LogEvent, type StoredLogEvent } from "@ponderosa/agents";
+import { activeChatOwnerSql, openManagedArtifactContent, AgentStore, type LogEvent, type StoredLogEvent } from "@ponderosa/agents";
 import {
   BrowserSessionError,
   BrowserSessionManager,
   type BrowserScope,
+  type BrowserOperatorRecordingAuthority,
 } from "./browser-session-manager.js";
 import { playwrightBrowserDriverFactory, type BrowserDriverFactory } from "./chrome-cdp-driver.js";
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { BrowserProfileAuthority } from "./browser-profile-authority.js";
+import type {AssetStore} from "./assets.js";
 import { BrowserServiceClient } from "./browser-service.js";
 import { recoverBrowserResidue } from "./browser-session-residue.js";
 
@@ -18,6 +20,7 @@ interface BrowserAuthorityContext {
   browserServiceSocket?: string;
   driverFactory?: BrowserDriverFactory;
   store: AgentStore;
+  assets: Pick<AssetStore, "registerGeneratedArtifact">;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   publish(agentId: string, stored: StoredLogEvent): void;
   logWarn(meta: Record<string, unknown>, message: string): void;
@@ -46,6 +49,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserServiceSocket,
     driverFactory,
     store,
+    assets,
     activeRuns,
     publish,
     persistRuntimeEvent,
@@ -107,14 +111,26 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     return { artifact, content };
   };
 
+  const registerBrowserRecording = (agentId: string, event: LogEvent | AgentEvent) => {
+    if (event.type !== "generated_artifact") return;
+    const agent = store.getAgent(agentId);
+    const artifact = agent && store.getProjectArtifact(agent.projectId, event.artifactId);
+    if (!artifact || artifact.kind !== "generated_file" || !artifact.projectId || !artifact.originAgentId || !artifact.summary || !artifact.mediaType || artifact.size === undefined || !artifact.sha256) {
+      throw new BrowserSessionError("Recording publication has no complete managed catalog identity.", 409);
+    }
+    // Reverify managed bytes and register the immutable download authority, using the catalog's exact timestamp/provenance.
+    assets.registerGeneratedArtifact({...artifact, projectId: artifact.projectId, originAgentId: artifact.originAgentId,
+      kind: "generated_file", summary: artifact.summary, mediaType: artifact.mediaType, size: artifact.size, sha256: artifact.sha256});
+  };
+
   const browserSessions = new BrowserSessionManager(
     dataDir,
     browserFactory,
     (scope, event) => {
       const run = activeRuns.get(scope.agentId);
       if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("browser artifact lost exact Run authority before publication");
         }
         return;
       }
@@ -125,13 +141,14 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
       }
-      if (event.type === "browser_screenshot") {
+      if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
         return persistRuntimeEvent(scope.agentId, run, event).then((stored) => {
-          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+          if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
+          registerBrowserRecording(scope.agentId, event);
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: scope.agentId, runId: scope.runId },
-            "browser screenshot publication failed",
+            "browser artifact publication failed",
           );
           throw error;
         });
@@ -154,36 +171,58 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   const sharedFactory: BrowserDriverFactory = service
     ? (id, _console, spawned, event, launch) => service.driver(id, event, launch, false, spawned)
     : browserFactory;
+  const operatorRecordingAuthority: BrowserOperatorRecordingAuthority = {
+    destination(scope, requestedConversationId) {
+      const bound = scope.owner?.kind === "chat" ? scope.owner.conversationId : undefined;
+      if (bound && requestedConversationId !== undefined && requestedConversationId !== bound) throw new BrowserSessionError("Recording destination must be this browser's exact Chat.", 403);
+      const conversationId = bound ?? requestedConversationId;
+      if (typeof conversationId !== "string" || !conversationId) throw new BrowserSessionError("Choose an explicit destination Chat for this saved-browser recording.", 400, "recording_destination_required");
+      const chat = store.getConversation(conversationId);
+      if (!chat || chat.deletedAt || chat.executionId || (bound && chat.projectId !== scope.projectId) || !store.sqlite.prepare(
+        `SELECT 1 FROM conversations chat WHERE chat.id=? AND chat.project_id=? AND ${activeChatOwnerSql('chat')}`,
+      ).get(chat.id, chat.projectId)) throw new BrowserSessionError("The recording destination Chat is unavailable for operator publication.", 409);
+      return {projectId: chat.projectId, conversationId: chat.id};
+    },
+    publish(scope, destination, artifact) {
+      const current = this.destination(scope, destination.conversationId);
+      if (current.projectId !== destination.projectId) throw new BrowserSessionError("Recording destination ownership changed.", 409);
+      store.recordOperatorChatArtifact({id: artifact.id, projectId: current.projectId, agentId: current.conversationId,
+        origin: {kind: "operator", conversationId: current.conversationId}, kind: "document", path: artifact.path,
+        summary: "Browser recording (timestamped JPEG frames)", createdAt: artifact.createdAt, mediaType: "application/json",
+        size: artifact.size, sha256: artifact.sha256, visibility: "project", pinned: false});
+    },
+  };
   const projectBrowserSessions = new BrowserSessionManager(
     dataDir,
     sharedFactory,
     (scope, event) => {
       const grant = scope.owner ? projectBrowserGrants.get(browserOwnerId(scope.owner)) : undefined;
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("Project screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("Project browser artifact lost exact Run authority before publication");
         }
         return;
       }
       const run = activeRuns.get(grant.agentId);
       if (!run || run.runId !== grant.runId || store.getAgent(grant.agentId)?.conversationId !== run.conversationId ||
           (scope.owner?.kind === "chat" && run.conversationId !== scope.owner.conversationId)) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("Project screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("Project browser artifact lost exact Run authority before publication");
         }
         return;
       }
-      if (event.type === "browser_screenshot") {
+      if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
         return persistRuntimeEvent(
           grant.agentId,
           run,
           { ...event, executionId: grant.runId },
         ).then((stored) => {
-          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+          if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
+          registerBrowserRecording(grant.agentId, event);
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: grant.agentId, runId: grant.runId },
-            "Project browser screenshot publication failed",
+            "Project browser artifact publication failed",
           );
           throw error;
         });
@@ -203,9 +242,10 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserProfiles,
     browserAdmissionAllowed,
     Boolean(service),
+    operatorRecordingAuthority,
   );
 
-  function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
+  function browserScopeForRun(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">): BrowserScope | undefined {
     const agent = store.getAgent(agentId);
     if (!agent || !run.conversationId || agent.conversationId !== run.conversationId) return undefined;
     const chat = store.getConversation(run.conversationId);
@@ -271,7 +311,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   function closeRunBrowser(
     agentId: string,
-    run: ActiveRun,
+    run: Pick<ActiveRun, "runId" | "conversationId">,
     reason: string,
   ): Promise<void> {
     const retained = browserSessions.get(agentId);
@@ -283,7 +323,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     ]).then(() => undefined);
   }
 
-  function closeRunBrowserAfterRun(agentId: string, run: ActiveRun, reason: string): Promise<void> {
+  function closeRunBrowserAfterRun(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">, reason: string): Promise<void> {
     // Run settlement must not become an unhandled rejection when a browser
     // handoff fails. The managers retain the browser and its cleanup blocker;
     // shutdown still uses the rejecting closeRunBrowser so it cannot drain.

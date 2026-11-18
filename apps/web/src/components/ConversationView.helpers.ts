@@ -9,6 +9,7 @@ import type {
 } from "@ponderosa/core";
 import { uniqueBy } from "../collections";
 import { engineIsAvailable } from "../conversationEngine";
+import { messageHiddenByQueue } from "./messageDeliveryReceipts";
 
 /** Reserved response identity for a server-applied provider permission. */
 const AUTO_ALLOWED_DECISION_OPTION_ID = "auto_allowed";
@@ -47,8 +48,9 @@ export function reconcileQueuedMessages(
     // has not arrived, but never override known canonical sender metadata.
     if (message?.communicationSender && !(message.communicationSender.kind === "user" &&
         message.communicationSender.userId === "local-operator")) return false;
+    if (message && messageHiddenByQueue(message)) return false;
     const receipt = message?.deliveryReceipts?.find(value => value.activationId === queued.deliveryId);
-    return !receipt || receipt.queuedForNextRun || receipt.state === "queued";
+    return !receipt || receipt.queuedForNextRun;
   });
   const ids = new Set(current.map(message => message.deliveryId));
   return [...current, ...canonicalMessages.flatMap(message =>
@@ -88,16 +90,13 @@ function reconcileQueuedProjectMessages(
     timeline: timeline.filter(
       entry =>
         entry.kind !== "message" ||
-        (!queuedMessageIds.has(entry.message.id) &&
-          !(
-            entry.message.communicationEventId &&
-            queuedMessageIds.has(entry.message.communicationEventId)
-          )),
+        !messageHiddenByQueue(entry.message, queuedMessageIds),
     ),
   };
 }
 
 function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
+  if (decision.response?.answers?.length) return "Submitted question answers";
   if (
     decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
   ) {
@@ -105,7 +104,7 @@ function decisionChoice(decision: ConversationDecisionEventDto["decision"]): str
   }
   return decision.response?.optionId
     ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
-    : decision.response?.text;
+    : decision.response?.text ?? (decision.response?.attachments?.length ? "Attached evidence" : undefined);
 }
 
 function mergeDecisionEvents(
@@ -163,3 +162,24 @@ export {
   reconcileQueuedProjectMessages,
 };
 export type { MainTimelineEntry };
+
+
+export interface MainHistoryState {
+  messages: ConversationMessageDto[];
+  decisionEvents: ConversationDecisionEventDto[];
+  cursor?: string;
+  hasMore: boolean;
+}
+
+export function mergeMainHistoryPage(
+  page: { messages: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[]; history?: { cursor?: string; hasMore?: boolean } },
+  current: MainHistoryState | undefined,
+  live: { messages?: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[] } | undefined,
+): MainHistoryState {
+  return {
+    messages: mergeConversationMessages(page.messages, current?.messages ?? [], live?.messages ?? []),
+    decisionEvents: mergeDecisionEvents(page.decisionEvents ?? [], current?.decisionEvents ?? [], live?.decisionEvents ?? []),
+    cursor: page.history?.cursor,
+    hasMore: page.history?.hasMore ?? false,
+  };
+}

@@ -96,20 +96,20 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
     // the modal scrollbar, which changes width and cancels the next render too.
     return () => { cancelled = true; clearTimeout(timeout); task?.cancel(); extraction.abort(); };
   }, [document, pageNumber, width, error]);
-  return <Box ref={container} sx={{ minWidth: 0, p: 1 }} aria-label={`PDF preview: ${title}`}>
-    {error ? <Alert severity="error" action={<Button color="inherit" onClick={() => setAttempt(value => value + 1)}>Try again</Button>}>{error}</Alert> : null}
-    {document ? <Stack direction="row" spacing={1} role="group" aria-label="PDF page controls" tabIndex={-1} sx={{ alignItems: "center", justifyContent: "center", mb: 1 }}>
+  return <Box ref={container} sx={{ minWidth: 0, p: 1 }} aria-label={`PDF Preview: ${title}`}>
+    {error ? <Alert severity="error" action={<Button color="inherit" onClick={() => setAttempt(value => value + 1)}>Try Again</Button>}>{error}</Alert> : null}
+    {document ? <Stack direction="row" spacing={1} role="group" aria-label="PDF Page Controls" tabIndex={-1} sx={{ alignItems: "center", justifyContent: "center", mb: 1 }}>
       <Button disabled={pageNumber === 1 || Boolean(error)} onClick={event => {
         // WebKit drops focus to body when the clicked button becomes disabled.
         // Keep Escape inside the modal at the first/last page boundary.
         if (pageNumber === 2) event.currentTarget.parentElement?.focus({ preventScroll: true });
         setPageNumber(value => value - 1);
-      }}>Previous page</Button>
+      }}>Previous Page</Button>
       <Typography variant="caption">Page {pageNumber} of {document.numPages}</Typography>
       <Button disabled={pageNumber === document.numPages || Boolean(error)} onClick={event => {
         if (pageNumber === document.numPages - 1) event.currentTarget.parentElement?.focus({ preventScroll: true });
         setPageNumber(value => value + 1);
-      }}>Next page</Button>
+      }}>Next Page</Button>
     </Stack> : null}
     <Box id={textId}>
       {text === "unavailable" ? <Alert severity="warning">Text for this PDF page could not be extracted. Use Open or Download to read it in another viewer.</Alert>
@@ -119,7 +119,7 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
     </Box>
     <Box sx={{ position: "relative", minHeight: error ? 0 : 120 }}>
       {!error && rendering ? <Stack role="status" direction="row" spacing={1} sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", p: 2 }}><CircularProgress size={20}/><Typography>Loading PDF…</Typography></Stack> : null}
-      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, page ${pageNumber}`} aria-describedby={textId} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
+      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, Page ${pageNumber}`} aria-describedby={textId} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
     </Box>
   </Box>;
 }

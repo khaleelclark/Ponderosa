@@ -1,9 +1,10 @@
+import {activeChatProductSql,activeAgentProductSql} from './product-scope-sql.js';
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import type {
   AgentDto,
-  AllChatItemDto,
-  AllChatPageDto,
+  InboxItemDto,
+  InboxPageDto,
   CommunicationEvent,
   CommunicationProjection,
   GlobalChatSearchAuthorDto,
@@ -12,7 +13,7 @@ import type {
   ProjectDto,
   ProjectedCommunicationMessage,
 } from "@ponderosa/core";
-import { agentMentionHandleBase, deriveCommunicationBehavior } from "@ponderosa/core";
+import { deriveCommunicationBehavior } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { chatSearchMessages } from "./schema.js";
 import {
@@ -20,7 +21,7 @@ import {
   type GlobalChatSearchInput,
 } from "./store-chat-search-read-model.js";
 import type { ContextReadBoundary, ContextSourcePage } from "./store-types.js";
-import { userDmAgentIds } from "./store-communication.js";
+import { directMessageAgentBindings } from "./store-communication.js";
 import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 interface CommunicationIndexView {
@@ -103,7 +104,7 @@ export class AgentChatFeedProjection {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!chatKind || !message || !event || !this.communicationProjectionAllowed(projectId, projection)) {
       this.db.delete(chatSearchMessages).where(eq(chatSearchMessages.rowKey, rowKey)).run();
-      this.refreshAllChatFeedEvent(projectId, projection.eventId);
+      this.refreshInboxFeedEvent(projectId, projection.eventId);
       return;
     }
     const canonicalRole = event.sender.kind === "agent"
@@ -150,12 +151,12 @@ export class AgentChatFeedProjection {
         contextPolicy: behavior.contextPolicy,
       },
     }).run();
-    this.refreshAllChatFeedEvent(projectId, projection.eventId);
+    this.refreshInboxFeedEvent(projectId, projection.eventId);
   }
 
   /** Choose one active placement for a canonical communication. This work is
    * paid when a placement/lifecycle event changes, never on each Messages read. */
-  private refreshAllChatFeedEvent(projectId: string, eventId: string): void {
+  private refreshInboxFeedEvent(projectId: string, eventId: string): void {
     const row = this.client.prepare(`
       SELECT search.row_key AS rowKey, search.order_key AS orderKey
       FROM chat_search_messages search
@@ -190,12 +191,12 @@ export class AgentChatFeedProjection {
     `).run(projectId, eventId, row.rowKey, row.orderKey);
   }
 
-  refreshAllChatFeedProject(projectId: string): void {
+  refreshInboxFeedProject(projectId: string): void {
     const eventIds = this.client.prepare(`
       SELECT DISTINCT communication_event_id AS eventId
       FROM chat_search_messages WHERE project_id = ?
     `).all(projectId) as Array<{ eventId: string }>;
-    for (const { eventId } of eventIds) this.refreshAllChatFeedEvent(projectId, eventId);
+    for (const { eventId } of eventIds) this.refreshInboxFeedEvent(projectId, eventId);
   }
 
   /** Rebuild the disposable global Chat search index from canonical ledgers. */
@@ -322,14 +323,7 @@ export class AgentChatFeedProjection {
           ? communicationMentionBindings(message.text, communication, id => this.getAgent(id), agent?.conversationId ?? "")
           : [];
         const directMessageAgents = communication
-          ? userDmAgentIds(communication).map((directAgentId) => {
-              const directAgent = this.getAgent(directAgentId);
-              return {
-                id: directAgentId,
-                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
-                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
-              };
-            })
+          ? directMessageAgentBindings(communication, id => this.getAgent(id))
           : [];
         return [{
           id: message.messageId,
@@ -373,12 +367,13 @@ export class AgentChatFeedProjection {
    * text is rematerialized from the canonical Communication ledger so edits are
    * reflected without making SQLite authoritative.
    */
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+  getInboxPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): InboxPageDto {
     const limit = Math.max(1, Math.min(100, input.limit ?? 50));
+    const cursorScope=input.productScope?`workspace:${input.productScope}`:"workspace";
     const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "all-chat", "workspace")
+      ? this.decodeHistoryCursor(input.cursor, "inbox", cursorScope)
       : undefined;
-    type AllChatRow = {
+    type InboxRow = {
       rowKey: string;
       projectId: string;
       projectLabel: string;
@@ -414,6 +409,7 @@ export class AgentChatFeedProjection {
       LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
+        ${input.productScope?`AND ((conversation.id IS NOT NULL AND ${activeChatProductSql('conversation',input.productScope)}) OR (chat_agent.id IS NOT NULL AND ${activeAgentProductSql('chat_agent',input.productScope)}))`:''}
         AND (
           search.communication_intent IN ('broadcast', 'user_dm')
           OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
@@ -423,14 +419,14 @@ export class AgentChatFeedProjection {
       LIMIT ?
     `).all(...(boundary
       ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-      : [limit + 1])) as AllChatRow[];
+      : [limit + 1])) as InboxRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
     const agentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
       projectId,
       new Map(this.listAgents(projectId).map((agent) => [agent.id, agent] as const)),
     ]));
-    const items = selected.flatMap((row): AllChatItemDto[] => {
+    const items = selected.flatMap((row): InboxItemDto[] => {
       const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
         ? "conversation"
         : row.chatKind === "collaboration"
@@ -457,14 +453,7 @@ export class AgentChatFeedProjection {
       const directMessageAgent = targetAgentId
         ? agentByProject.get(row.projectId)?.get(targetAgentId)
         : undefined;
-      const directMessageAgents = userDmAgentIds(event).map((agentId) => {
-        const directAgent = agentByProject.get(row.projectId)?.get(agentId);
-        return {
-          id: agentId,
-          title: directAgent?.title ?? event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
-          handle: directAgent?.handle ?? event.identity?.recipientHandles?.[agentId] ?? agentMentionHandleBase(event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
-        };
-      });
+      const directMessageAgents = directMessageAgentBindings(event, agentId => agentByProject.get(row.projectId)?.get(agentId));
       const agentMentions = communicationMentionBindings(
         message.text,
         event,
@@ -480,7 +469,7 @@ export class AgentChatFeedProjection {
           : row.role === "system"
             ? { kind: "system", label: "System" }
             : { kind: "agent", label: "Agent" };
-      const source: AllChatItemDto["source"] = row.chatKind === "conversation"
+      const source: InboxItemDto["source"] = row.chatKind === "conversation"
         ? { kind: "project", conversationId: row.chatId, title: row.chatTitle }
         : row.chatKind === "collaboration"
           ? { kind: "team", conversationId: row.chatId, title: row.chatTitle }
@@ -518,7 +507,7 @@ export class AgentChatFeedProjection {
         hasMore,
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
-            stream: "all-chat", scope: "workspace", orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+            stream: "inbox", scope: cursorScope, orderKey: oldest.orderKey, rowKey: oldest.rowKey,
           }),
         } : {}),
       },

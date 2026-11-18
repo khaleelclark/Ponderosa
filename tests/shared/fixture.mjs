@@ -48,22 +48,30 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, socketIdleTimeoutMs, storeFactory, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
+export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan, webDist, supportsVoiceReplyStream = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
-  let closingFixture = false;
+  let closingFixture = false, productShutdownComplete = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
-  const providerProbes = [], knownProviderSessions = new Map();
+  const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
-    id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
+    id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer', supportsVoiceReplyStream,
+    ...(providerContextRecoverySupport ? { contextRecoverySupport: providerContextRecoverySupport } : {}),
     ...(modelValidator ? { validateModel: modelValidator } : {}),
     ...(modelCatalog ? { discoverModelCatalog: modelCatalog, modelSpecificEfforts: true } : {}),
     listModels: () => [{ id: modelCatalog ? '' : 'fixture', label: 'Fixture' }], listEfforts: () => [{ id: 'medium', label: 'Medium' }],
-    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async () => capabilities,
+    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async cwd => { capabilityDiscoveries.push({cwd}); return capabilityCatalog ? capabilityCatalog(cwd) : capabilities; },
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
+      onProviderOpen?.(options);
+      const nativeAdapter = nativeAdapterForOpen?.(options);
+      if (nativeAdapter) {
+        const session = await nativeAdapter.openSession(options);
+        sessions.set(options.agentId, session);
+        return session;
+      }
       const known = knownProviderSessions.get(options.agentId) ?? new Set();
       if (providerValidatesResumeBeforeTurn && options.resumeSessionId) {
         assert.ok(known.has(options.resumeSessionId), 'Verified fixture resume refused an unknown or foreign Agent generation');
@@ -114,18 +122,17 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           commands.push({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText });
           return providerCommandResult ? await providerCommandResult({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText }) : { message: 'Controlled command completed' };
         },
-
         contextUsage: () => providerContextUsage
           ? providerContextUsage({ agentId: options.agentId, sessionId: session.engineAgentId })
           : { usedTokens: 1000, windowTokens: 200000 },
-        steer: async input => { steers.push({ agentId: options.agentId, input }); return { status: 'accepted' }; },
-
+        steer: async input => { steers.push({ agentId: options.agentId, input }); return steeringResponse ? await steeringResponse({agentId:options.agentId,input}) : { status: 'accepted' }; },
         interrupt: async () => { events.push({ type: 'error', terminalStatus: 'interrupted', message: 'Controlled interruption' }); session.finish(); },
+        elicit: request => options.handleElicitation(request),
         tool: (name, args, id = randomUUID()) => options.handleDynamicToolCall({ id, name, arguments: args }),
         exitWithDetail: async detail => { record.rootExitDetail = detail; await session.close(); },
         finish: () => events.push({ type: 'turn_done', usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } }),
         async startTurn(input) {
-          const turnId = randomUUID(), plan = (plans.get(options.agentId) ?? []).shift() ?? {};
+          const turnId = randomUUID(), plan = (plans.get(options.agentId) ?? []).shift() ?? providerRunPlan?.({agentId:options.agentId,input}) ?? {};
           const turn = { agentId: options.agentId, sessionId: session.engineAgentId, turnId, input, history: options.history };
           turns.push(turn);
           setImmediate(async () => {
@@ -133,6 +140,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
             try {
               if (plan.emitSession !== false) events.push({ type: 'session', sessionId: session.engineAgentId });
               if (plan.output !== false) events.push({ type: 'text', delta: 'Ordinary fixture execution output' });
+              if (plan.onStart) await plan.onStart(session,input,turn);
               if (plan.hold) return;
               if (plan.run) await plan.run(session, input, turn);
               else {
@@ -148,6 +156,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           return { turnId };
         },
       };
+      onProviderSession?.(session,options);
       record.close = session.close;
       known.add(engineAgentId); knownProviderSessions.set(options.agentId, known);
       sessions.set(options.agentId, session); options.onRuntimeSpawned(session); return session;
@@ -161,16 +170,18 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     opening.then(() => openingSessions.delete(opening), () => openingSessions.delete(opening));
     return opening;
   };
-  const options = { dataDir, logger: false, allowedBrowseRoots: [root],
+  const registeredAdapter = nativeAdapterForEngine ? await nativeAdapterForEngine(root) : adapter;
+  const localMemory = localMemoryForRoot ? await localMemoryForRoot(root) : undefined;
+  const options = { ...(webDist ? {webDist} : {}), ...(localMemory ? {localMemory} : {}), ...(agentBaseUrl ? {agentBaseUrl} : {}), dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
     // Controlled inert providers use a fixed sample, independent of CI host pressure.
-    resourceAdmissionObservation: { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
-    engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
+    resourceAdmissionObservation: resourceAdmissionObservation ?? { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
+    engines: [{ adapter:registeredAdapter, isInstalled: () => providerInstalled?.(registeredAdapter.id) !== false, authStatus: async () => providerAuthStatus ? providerAuthStatus(adapter.id) : ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled native mode observation; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
         isInstalled: () => providerInstalled?.('claude') !== false,
-        authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled diagnostic; no provider account' }),
+        authStatus: async () => ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled diagnostic native mode; no provider account' }),
         availabilityProbe: async () => { providerProbes.push({ engineId: 'claude' }); return { available: true }; },
       }] : [])],
-    communicationV3: { pollMs: 10, maxConcurrentRuns: 4 } };
+    communicationV3: { pollMs: 10, maxConcurrentRuns: schedulerMaxConcurrentRuns } };
   let app;
   const open = async () => { closingFixture = false; app = createServer({ ...options, ...(storeFactory ? { store: storeFactory(dataDir) } : {}) }); if (socketIdleTimeoutMs !== undefined) app.server.setTimeout(socketIdleTimeoutMs); await app.ready(); };
   const close = async () => { if (app) {
@@ -183,14 +194,14 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   } };
   await open();
   const api = async (method, url, payload, headers = {}) => {
-    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers });
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers:{...(authToken?{authorization:`Bearer ${authToken}`} :{}),...headers} });
     let body; try { body = response.json(); } catch { body = response.body; }
     return { status: response.statusCode, body, headers: response.headers, rawBody: response.rawPayload };
   };
   const ok = response => { assert.ok(response.status >= 200 && response.status < 300, `HTTP ${response.status}: ${JSON.stringify(response.body).slice(0, 600)}`); return response.body; };
-  const detail = async id => ok(await api('GET', `/api/agents/${id}`));
-  const settled = async (id, previous = []) => until(async () => {
-    const d = await detail(id), fresh = d.runs.filter(r => !previous.includes(r.id));
+  const detail = async (id, prefix = '/api') => ok(await api('GET', `${prefix}/agents/${id}`));
+  const settled = async (id, previous = [], prefix = '/api') => until(async () => {
+    const d = await detail(id, prefix), fresh = d.runs.filter(r => !previous.includes(r.id));
     if (!fresh.length || fresh.some(r => ['running', 'preparing'].includes(r.status))) return false;
     if (failures.length) throw failures[0];
     assert.equal(fresh.some(r => r.status === 'failed'), false, JSON.stringify(fresh));
@@ -215,9 +226,16 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     plans.set(id, [{ hold: true }]); await send(id, 'Controlled held task');
     await until(() => turns.filter(t => t.agentId === id).length > count, 'held provider input'); return sessions.get(id);
   };
-  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes,
-    listen: () => app.listen({ host: '127.0.0.1', port: 0 }),
+  return { root, dataDir, get app(){return app;}, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
+    listen: (options = { host: '127.0.0.1', port: 0 }) => app.listen(options),
+    // Exercise product shutdown before fixture-owned child cleanup.
+    async shutdownProduct() { app.prepareForShutdown(); await app.close(); productShutdownComplete = true; },
+    async restartAfterProductShutdown() {
+      assert.equal(productShutdownComplete, true, 'Product shutdown has not completed');
+      app = undefined; productShutdownComplete = false; await open();
+    },
     async reopen() { await close(); await open(); },
+    async reopenWithoutMemory() { await close(); delete options.localMemory; await open(); },
     async dispose(remove = true) {
       await close();
       assert.equal(children.every(c => c.exited), true, 'Owned child exit was not observed');

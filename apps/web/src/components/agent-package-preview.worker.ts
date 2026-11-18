@@ -1,22 +1,12 @@
-import { AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
+import {nativeDataPreview} from './nativeDataPreview';
+import type { PortableAgentPreview } from "./agent-package-preview.types";
+import { AgentPackageJsonParser, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 interface PreviewRequest {
   id: number;
   blob: Blob;
 }
 
-interface PortableAgentPreview {
-  sourceLabel: string;
-  sourceProjectInstructions?: string;
-  mode: "template" | "full";
-  kind: "agent" | "organization";
-  agentCount: number;
-  artifactCount: number;
-  historyMessageCount: number;
-  agentTitles: string[];
-  sourceEngines: string[];
-  elevatedAgentRefs: string[];
-  invalidPermissionShape: boolean;
-}
+
 
 type PreviewResponse =
   | { id: number; phase: "Reading import" | "Validating" | "Preparing summary" }
@@ -33,9 +23,18 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
   try {
     if (blob.size > AGENT_PACKAGE_MAX_BYTES) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
     worker.postMessage({ id, phase: "Reading import" });
-    const source = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
+    const parser = new AgentPackageJsonParser(), decoder = new TextDecoder("utf-8", { fatal: true });
+    const reader = blob.stream().getReader();
+    try {
+      for (;;) {
+        const chunk = await reader.read(); if (chunk.done) break;
+        parser.write(decoder.decode(chunk.value, { stream: true }));
+      }
+      parser.write(decoder.decode());
+    } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+    finally { reader.releaseLock(); }
     worker.postMessage({ id, phase: "Validating" });
-    const value = JSON.parse(source) as Record<string, unknown>;
+    const value = parser.end() as Record<string, unknown>;
     if (
       value?.schema !== "ponderosa.agent-package.v1"
       || (value.mode !== "template" && value.mode !== "full")
@@ -43,13 +42,17 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
       || typeof value.sourceLabel !== "string"
       || !Array.isArray(value.agents)
       || value.agents.length < 1
-      || value.agents.length > 100
     ) {
       throw new Error("Choose or paste a ponderosa.agent-package.v1 document.");
+    }
+    if (value.agents.length > AGENT_PACKAGE_MAX_AGENTS) {
+      throw new Error(`Agent package contains ${value.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`);
     }
     worker.postMessage({ id, phase: "Preparing summary" });
     const sourceEngines = new Set<string>();
     const agentTitles: string[] = [];
+    const agentIdentities: Array<{ref:string;title:string}> = [];
+    const workingRoots=new Map<string,string[]>();
     const elevatedAgentRefs: string[] = [];
     let invalidPermissionShape = false;
     let artifactCount = 0;
@@ -62,7 +65,20 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
       if (typeof node.title !== "string") {
         throw new Error("Every Agent in the package needs a name.");
       }
+      if (node.initialInstructions !== undefined && (typeof node.initialInstructions !== "string" || !agentPackageTextIsWellFormed(node.initialInstructions))) {
+        throw new Error("Agent initial instructions must contain well-formed Unicode.");
+      }
+      for (const message of Array.isArray(node.history) ? node.history : []) {
+        if (!message || typeof message.text !== "string" || !agentPackageTextIsWellFormed(message.text)) {
+          throw new Error("Agent history text must contain well-formed Unicode.");
+        }
+      }
       agentTitles.push(node.title.trim().slice(0, 80) || "Imported Agent");
+      if(typeof node.ref==="string")agentIdentities.push({ref:node.ref,title:agentTitles[agentTitles.length-1]!});
+      if(node.workingRootRef!==undefined){
+        if(typeof node.workingRootRef!=='string'||!node.workingRootRef.trim())throw new Error('Invalid working folder reference.');
+        workingRoots.set(node.workingRootRef,[...(workingRoots.get(node.workingRootRef)??[]),node.title.trim().slice(0,80)||'Imported Agent']);
+      }
       if (typeof node.engine === "string" && node.engine.trim()) {
         sourceEngines.add(node.engine);
       }
@@ -93,6 +109,9 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        nativeData:await nativeDataPreview(value.agents),
+        hasWorkingFiles: value.agents.some(node=>Boolean(node.workingFolder)||(Array.isArray(node.workingFiles)&&node.workingFiles.length>0)),
+        hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,
         sourceLabel: value.sourceLabel.slice(0, 240),
         ...(value.mode === "full" && typeof value.sourceProjectInstructions === "string"
           ? { sourceProjectInstructions: value.sourceProjectInstructions } : {}),
@@ -102,6 +121,8 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
         artifactCount,
         historyMessageCount,
         agentTitles,
+        agentIdentities,
+        workingRoots:[...workingRoots].map(([ref,agents])=>({ref,agents})),
         sourceEngines: [...sourceEngines],
         elevatedAgentRefs,
         invalidPermissionShape,

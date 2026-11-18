@@ -1,0 +1,18 @@
+Chroma native binding source provenance — private candidate
+
+Package: chromadb-js-bindings-linux-x64-gnu@1.3.4
+Official npm metadata: https://registry.npmjs.org/chromadb-js-bindings-linux-x64-gnu/1.3.4
+The published npm package and its exact source package manifest declare MIT.
+The npm gitHead is 11f3c7435e71024aa0a2b53710a28d3289d922d1.
+Exact source manifest: https://raw.githubusercontent.com/chroma-core/chroma/11f3c7435e71024aa0a2b53710a28d3289d922d1/rust/js_bindings/npm/linux-x64-gnu/package.json
+
+The complete source-root LICENSE at that gitHead is reproduced separately,
+verbatim, as chromadb-js-bindings-1.3.4-upstream-LICENSE. It contains the
+Apache License, Version 2.0. Source: https://raw.githubusercontent.com/chroma-core/chroma/11f3c7435e71024aa0a2b53710a28d3289d922d1/LICENSE
+
+This records an unresolved upstream declaration discrepancy: npm declares MIT,
+while the actual source-root license text is Apache-2.0. The npm MIT declaration
+is retained; no MIT license or copyright text was recovered or fabricated.
+These exact source materials accompany private candidate construction. Their
+inclusion does not resolve the upstream discrepancy or establish legal or
+public-release clearance.

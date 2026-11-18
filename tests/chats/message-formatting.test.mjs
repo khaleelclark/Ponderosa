@@ -5,11 +5,25 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseRichMessageBlock, RICH_MESSAGE_FORMAT_INSTRUCTIONS } from '@ponderosa/core';
 const { ChatMessageBody, collapsedLongMessagePreview } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
-const render = (text, props = {}) => renderToStaticMarkup(React.createElement(ChatMessageBody, { text, collapseLongMessage: false, ...props }));
+const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
+const render = (text, props = {}) => renderToStaticMarkup(React.createElement(MutationNotificationProvider, null, React.createElement(ChatMessageBody, { text, collapseLongMessage: false, ...props })));
 const metric = { version: 1, type: 'metrics', items: [{ label: 'Physical RAM', value: '16', unit: 'GB' }] };
 const fence = (block, closer = '```') => '```ponderosa\n' + JSON.stringify(block) + '\n' + closer;
 const richCount = html => [...html.matchAll(/data-ponderosa-rich=/g)].length;
 const { chatMarkdownUrlTransform } = await import('../../apps/web/src/components/chat/chatMarkdownLink.ts');
+const { setStandaloneProductScope } = await import('../../apps/web/src/api/productScope.ts');
+
+test('Branches artifact links retain their current product route and download feedback', () => {
+  setStandaloneProductScope('branches');
+  try {
+    const href = '/api/branches/engine/projects/branch-project/artifacts/import_123/download';
+    for (const link of ['ponderosa://artifact/import_123', href]) {
+      const html = render(`[Download](${link})`, { projectId: 'branch-project' });
+      assert.ok(html.includes(`href="${href}"`));
+      assert.match(html, /download=""/);
+    }
+  } finally { setStandaloneProductScope(undefined); }
+});
 
 test('existing artifact Markdown links rerender as project-authorized downloads with their authored labels', () => {
   for (const id of ['import_2cde92a47c35500d7e7868c7889cc74ac7f59e957f00d70f', 'agent:run:1:0', 'a', 'a'.repeat(256)]) {
@@ -56,9 +70,9 @@ test('returned download URLs and existing HTTPS, workspace and project-file link
   assert.doesNotMatch(render(reference, { projectId: 'foreign' }), /<a\b/);
 });
 
-test('all five provider contract examples are accepted without rewriting values', () => {
+test('all six provider contract examples are accepted without rewriting values', () => {
   const examples = [...RICH_MESSAGE_FORMAT_INSTRUCTIONS.matchAll(/```ponderosa\n([^]*?)\n```/g)];
-  assert.equal(examples.length, 5);
+  assert.equal(examples.length, 6);
   for (const [, source] of examples) {
     assert.deepEqual(parseRichMessageBlock(source), JSON.parse(source));
     assert.equal(richCount(render('```ponderosa\n' + source + '\n```')), 1);
@@ -93,10 +107,10 @@ test('rich rendering requires a complete matching fence; fallback remains copyab
     fence({ ...metric, version: 2 }), fence(metric).replace('ponderosa', 'ponderosa extra'), '```ponderosa\n{\n```']) {
     const html = render(source);
     assert.equal(richCount(html), 0, source);
-    assert.match(html, /Copy code/);
+    assert.match(html, /Copy Code/);
   }
   assert.equal(richCount(render(Array(9).fill(fence(metric)).join('\n\n'))), 8);
-  assert.match(render(Array(9).fill(fence(metric)).join('\n\n')), /Copy code/);
+  assert.match(render(Array(9).fill(fence(metric)).join('\n\n')), /Copy Code/);
   assert.equal(richCount(render('> ' + fence(metric).replaceAll('\n', '\n> '))), 1);
 });
 
@@ -125,7 +139,7 @@ test('rich labels remain inert text and line values have a keyboard-accessible t
   assert.ok(!html.includes('<script>') && !html.includes('<img '));
   assert.match(html, /&lt;script&gt;Trend&lt;\/script&gt;/);
   assert.match(html, /role="region" tabindex="0"/);
-  assert.match(html, /aria-label="&lt;script&gt;Trend&lt;\/script&gt; data"/);
+  assert.match(html, /aria-label="&lt;script&gt;Trend&lt;\/script&gt; Data"/);
   assert.ok(!/\b(?:NaN|Infinity)\b/.test(html));
 });
 
@@ -136,4 +150,39 @@ test('collapsed previews never promote a cut or hidden rich fence', () => {
   const cut = 'x'.repeat(3150) + '\n\n' + fence({ ...metric, title: 'x'.repeat(100) }) + '\n' + 'tail'.repeat(1000);
   assert.equal(richCount(render(collapsedLongMessagePreview(cut))), 0);
   assert.equal(richCount(render(cut)), 1);
+});
+
+
+test('visualizations accept only a closed typed immutable identity, never embedded content or URLs',()=>{
+ const block={version:1,type:'visualization',title:'Fruit Sales Explorer',artifactId:'import_123'};
+ assert.deepEqual(parseRichMessageBlock(JSON.stringify(block)),block);
+ for(const value of [{...block,url:'https://elsewhere.invalid'}, {...block,html:'<script>parent.bad()</script>'},
+  {...block,artifactId:'../secret'}, {...block,artifactId:'https://elsewhere.invalid'}, {...block,artifactId:'x'.repeat(129)},
+  {...block,title:''}, {...block,version:2}, {...block,height:100000}])assert.equal(parseRichMessageBlock(JSON.stringify(value)),undefined);
+ const unbound=render(fence(block),{projectId:'project'});assert.match(unbound,/not attached to this published message/);assert.doesNotMatch(unbound,/<iframe/);
+ const partial=render(fence(block,''),{projectId:'project'});assert.match(partial,/Copy Code/);assert.doesNotMatch(partial,/<iframe/);
+ assert.match(RICH_MESSAGE_FORMAT_INSTRUCTIONS,/BOTH ponderosa_message.artifactIds/);assert.match(RICH_MESSAGE_FORMAT_INSTRUCTIONS,/--ponderosa-accent/);
+});
+
+
+test('long interactive messages keep complete stable controls instead of a truncated prose preview',()=>{
+ const panel=fence({version:1,type:'visualization',title:'Long Panel',artifactId:'import_123'});
+ for(const text of [panel+'\n\n'+'prose\n'.repeat(100),'prose\n'.repeat(100)+panel]){
+  const html=render(text,{collapseLongMessage:true});assert.equal(richCount(html),1);assert.doesNotMatch(html,/chat-message-content-collapsed|Show Full Message/);
+ }
+ assert.match(render('prose\n'.repeat(100),{collapseLongMessage:true}),/Show Full Message/,'Ordinary long prose still collapses');
+ assert.equal(richCount(render('prose\n'.repeat(100)+fence({version:1,type:'visualization',title:'Bad',artifactId:'../escape'}),{collapseLongMessage:true})),0,'Invalid or hidden fences retain ordinary text behavior');
+});
+
+
+test('inline visualization attachments are suppressed only by exact canonical managed bindings',async()=>{
+ const {attachmentsOutsideVisualizations}=await import('../../apps/web/src/components/chat/messageMarkdown.ts');
+ const block={version:1,type:'visualization',title:'Fruit Panel',artifactId:'managed-html'};
+ const html={id:'managed-html',agentId:'agent',name:'charts.html',mediaType:'text/html',size:100,artifactKind:'generated_file'},other={...html,id:'other-html',name:'other.html'},file={...html,id:'note',name:'notes.txt',mediaType:'text/plain'};
+ const source={text:fence(block),projectId:'project',communicationEventId:'message',conversationId:'chat',artifactIds:['managed-html','other-html','note'],fromAgent:true,attachments:[html,other,file]};
+ assert.deepEqual(attachmentsOutsideVisualizations(source),[other,file]);
+ for(const change of [{communicationEventId:undefined},{conversationId:undefined},{fromAgent:false},{artifactIds:['other-html']},{text:fence({...block,url:'https://invalid'})},{text:fence(block,'')}])assert.deepEqual(attachmentsOutsideVisualizations({...source,...change}),source.attachments);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,attachments:[{...html,unavailable:true}]}),[{...html,unavailable:true}]);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,attachments:[{...html,artifactKind:'document'}]}),[{...html,artifactKind:'document'}]);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,text:Array(8).fill(fence(metric)).join('\n\n')+'\n\n'+fence(block)}),source.attachments,'A ninth unrendered block cannot hide any attachment');
 });

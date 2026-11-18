@@ -57,7 +57,11 @@ Other windows are outside the grant. This is an unpacked extension, not a store 
   remain user qualification.
 
 Build: `pnpm --filter @ponderosa/browser-extension build`. Load `dist`, not `src`.
-Tests: `pnpm --filter @ponderosa/browser-extension test:built`; set
-`PONDEROSA_PLAYWRIGHT_PATH` and `PONDEROSA_CHROMIUM_PATH` for the real DOM/input
-check. `test/extension-load.check.mjs` additionally loads the actual MV3 package
-using `PONDEROSA_EXTENSION_CHROMIUM_PATH` (extension-capable Chromium).
+Maintained transport checks are in `tests/browser/local-browser-transport.test.mjs`,
+registered in the server lane of the root runner `tests/shared/run-tests.mjs`.
+This package has no `test:built` script, and the former
+`test/extension-load.check.mjs` is not retained. The controlled transport checks do
+not load an installed MV3 extension or qualify sign-in, current local-window
+pairing availability, or native-browser parity. New local-window pairing remains
+deferred for this release; the retained experimental instructions above do not
+make it a current setup path.

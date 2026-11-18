@@ -39,7 +39,7 @@ const FAILURE_MESSAGES: Record<ProviderUsageFailureCode, string> = {
   provider_not_installed: "This provider is not installed on the Ponderosa host.",
   provider_not_authenticated: "Sign in to this provider on the Ponderosa host.",
   provider_disabled: "This provider is disabled in Ponderosa settings.",
-  usage_not_supported: "This installed provider version does not expose subscription usage.",
+  usage_not_supported: "This installed provider version does not expose provider usage.",
   command_timeout: "Subscription usage retrieval timed out.",
   invalid_provider_response: "The provider returned an unrecognized usage response.",
   provider_rate_limited: "The provider rate-limited the usage request.",

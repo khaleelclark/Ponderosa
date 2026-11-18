@@ -1,13 +1,55 @@
+import {mergeChatTitleHistory} from "../portable-chat-title-history.js";
+import {describeExpertMemoryPreflightFailure} from '../branch-deletion-diagnostics.js';
+import {ExpertCaptureHeldBeforeStart} from '../expert-source-capture-outcome.js';
+import {MemorySourceMutationHold} from '../memory-source-mutations.js';
+import {MemoryHostClosing} from '../local-memory.js';
+import {verifyPortableWorkingFileParts} from '../portable-working-file-parts.js';
+import {isMemoryCleanupHold} from '../local-memory-authority.js';
+import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
+import {packageExportDownloads} from '../package-export-downloads.js';
+import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
+import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
+import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
+import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
+import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from '../portable-git-recreation.js';
+import {groupJournalAudit} from '../group-journal-audit.js';
+import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
+import {lifecycleDiscovery} from '../lifecycle-discovery.js';
+import {destinationLifecycle} from '../destination-lifecycle.js';
+import {checkpointCaptureAbandonment} from '../checkpoint-capture-abandonment.js';
+import {destinationAdmissionHeld} from '@ponderosa/agents';
+import {checkpointCustodyLifecycle} from '../checkpoint-custody-lifecycle.js';
+import {custodyLifecycleProof} from '../custody-lifecycle-proof.js';
+import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
+import {assertCheckpointMembership} from '../checkpoint-package-membership.js';
+import {activeChatResourceOwner} from '../branch-resource-owner.js';
+import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt,type CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
+export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
+export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
+import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secrets.js';
+import {REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
+import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
+import {parseReviewedUserData,verifyDormantModuleDeclarations} from '../portable-reviewed-user-data.js';
+import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,type WorkingFolderInventory,type WorkingRootIdentity} from '../portable-working-files.js';
+import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
+import {CapabilityPolicyStore} from '@ponderosa/agents';
+import {portableCommunicationVisible,portableCommunicationMessage} from '../portable-communication.js';
+import type {OutputAgentApps} from '../output-agent-apps.js';
+import {localMemoryFor} from '../local-memory.js';
+import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
+import {executionArchives,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
+import {constants} from "node:fs";
+import syncFs,{ promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
-  AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
+  normalizeAgentRole, FULL_PACKAGE_EXPORT_WARNING, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
   AGENT_PACKAGE_STAGING_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES,
-  AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,
+  AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL, workingFileArtifactRefs,
 } from "@ponderosa/core";
 import path from "node:path";
 import type {
+  AgentAccessImportReviewDto,
   AgentImportOperationDto,
   AgentImportPhase,
   AgentDto,
@@ -20,20 +62,22 @@ import type {
   ModelOption,
 } from "@ponderosa/core";
 import {
+  beginSourceCapture,commitSourceCapture,releaseSourceCapture,
   publishManagedArtifactContentsAsync,
   readManagedArtifactContentsAsync,
   readManagedArtifactContent,
   removeManagedArtifactContent,
+  makeWorkingFileTransportPart,
   stableJson,
   importedAgentHistoryPath,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyContentTypeParser, FastifyInstance, FastifyReply,FastifyRequest } from "fastify";
+import type {IncomingMessage} from 'node:http';
+import {requestProduct,resourceInProduct} from '../product-scope.js';
 import type { createOperationalNotifications } from "../operational-notifications.js";
 import {
-  CANONICAL_ARTIFACT_ID,
-  portableAgentTopologyError,
   rewritePortableArtifactReferences,
 } from "../artifact-refs.js";
 import {
@@ -42,21 +86,103 @@ import {
   generatedArtifactMetadataIsValid,
   type RegisteredGeneratedArtifact,
 } from "../assets.js";
-import { runtimeSelectionError } from "../runtime-selection.js";
+import { runtimeSelectionError, runtimeSpeedSelectionError } from "../runtime-selection.js";
 import {
   exactObjectFields,
   validatedObject,
 } from "../object-validation.js";
 import {
-  decodePortableArtifact,
-  encodePortableArtifact,
+  assertAgentPackageMemoryAvailable,
+  decodePortableArtifactData,
+  encodePortableArtifactData,
   parsePortablePackageFile,
   portablePackageJsonChunks,
+  portableArtifactByteLength,
+  portableImportPayloadHash,
   withAgentImportAdmission,
 } from "../agent-package-codec.js";
 
+import {validatePortableAgentPackage} from "../portable-agent-package-validation.js";
+
+import {withProjectImportLock} from '../project-import-lock.js';
+export interface BranchPackageExportOptions {
+  organization?:boolean;
+  selectedWorkingFiles?:readonly string[];
+  wholeWorkingFolder?:boolean;
+  organizationWorkingFolders?:boolean;
+  reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection;
+  gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[];
+}
+export interface BranchPackageImportOptions {
+  signal?:AbortSignal;
+  branchHooks?:BranchImportHooks;
+  accessSettingsResolution?:ImportAgentPackageRequest['accessSettingsResolution'];
+  workingFilesDestination?:ImportAgentPackageRequest['workingFilesDestination'];
+  workingCopyMode?:ImportAgentPackageRequest['workingCopyMode'];
+  workingRootDestinations?:ImportAgentPackageRequest['workingRootDestinations'];
+  workingFilesActivation?:ImportAgentPackageRequest['workingFilesActivation'];
+  reviewedUserDataActivation?:ImportAgentPackageRequest['reviewedUserDataActivation'];
+  reviewedMetadataActivation?:ImportAgentPackageRequest['reviewedMetadataActivation'];
+}
+export interface BranchAgentExportSet {agents:Record<string,AgentPortablePackageDto>;working?:AgentPortablePackageDto}
+/** Shared packaging boundary; callers own durable human review and destination selection. */
+export interface BranchPackageEngine {
+  prepareWorkingDataChild(input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>;
+  applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
+  inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
+  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean;expertFinal?:()=>void;omitMemory?:boolean}):Promise<CheckpointPackageReceipt>;
+  captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void,attemptId:string,beforeCapture:()=>void):Promise<CheckpointPackageReceipt>;
+  expertSourceHoldWitness():string|undefined;
+  checkExpertSnapshotSource(source:CheckpointPackageSource,sourceProjectId:string):void;
+  reserveExpertChatMemory(chatId:string):void;
+  readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
+  readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
+  verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
+  verifyImportedArtifactBytes(projectId:string,artifacts:readonly {destinationId:string;byteLength:number;sha256:string}[]):void;
+  finishDestinationImport(operationId:string,compose:(result:ImportAgentPackageResponse,complete:()=>void)=>void):void;
+  releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
+  composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
+  setOutputApps(owner:OutputAgentApps):void;
+  validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
+  exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
+  verifyStagedMemory(operationId:string,pkg:AgentPortablePackageDto):Promise<void>;
+  rollbackStagedMemory(operationId:string):Promise<void>;
+  exportAgent(id:string,mode:'template'|'full',options?:BranchPackageExportOptions):Promise<AgentPortablePackageDto>;
+  exportAgentSet?(ids:readonly string[],mode:'template'|'full',selections:import('@ponderosa/core').BranchExportFileSelections):Promise<BranchAgentExportSet>;
+  reviewAccess(pkg:AgentPortablePackageDto,chatId:string,selection?:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>):Promise<AgentAccessImportReviewDto>;
+  importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:BranchPackageImportOptions):Promise<ImportAgentPackageResponse>;
+}
+export interface BranchPackageImportError extends Error {
+  statusCode:number;
+  provisionRejected:boolean;
+  accessSettingsReview?:AgentAccessImportReviewDto;
+}
+export interface BranchImportHooks {
+  /** Called under the Project import lock, before a Branch import is admitted. */
+  assertImportReady?():void;
+  /** Persist idle canonical members for a later explicit human admission command. */
+  holdForDisclosure?(result:ImportAgentPackageResponse):void;
+  /** Host-only exact final-checkpoint working-data authority; never a portable grant. */
+  retainFinalWorkingData?(pkg:AgentPortablePackageDto,result:ImportAgentPackageResponse):void;
+  /** Called inside import reservation, before async effects and Agent creation. */
+  stage?(plan:import('@ponderosa/core').CoordinationDestinationImportPlan):void;
+  /** May wait for durable human disclosure review, outside any SQLite transaction. */
+  beforeAdmit?(result:ImportAgentPackageResponse):void|Promise<void>;
+  /** Compose historical admission; invoke completeImport synchronously in the owner transaction. */
+  admit?(result:ImportAgentPackageResponse,completeImport:()=>void):void;
+  plan(agentIds: string[], creationOperationId?: string): void | Promise<void>;
+  transaction?(operation:()=>void):void;
+  commit(result: ImportAgentPackageResponse): void;
+}
+
 interface AgentPackageRoutesContext {
+  destinationRuntimeIdle:()=>boolean;
+  assertLifecycleEffectsSettled:()=>void;
+  custodyOwner:()=>import('@ponderosa/agents').BranchCustodyLifecycle;
   dataDir: string;
+  workspace?:Pick<import("@ponderosa/agents").WorkspaceStore,"exportChatTitleHistory">;
+  workingCopies?: AgentWorkingCopyService;
+  portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
   store: AgentStore;
   coordination: CoordinationV3Store;
   assets: AssetStore;
@@ -89,7 +215,44 @@ interface AgentPackageRoutesContext {
 export function registerAgentPackageRoutes(
   app: FastifyInstance,
   context: AgentPackageRoutesContext,
-): void {
+): {packageEngine:BranchPackageEngine} {
+  const groupAudit=groupJournalAudit(context.store.sqlite,context.coordination);
+  app.get<{Querystring:import('@ponderosa/core').GroupJournalAuditSelection}>('/api/lifecycle/destination-groups/journal',(request,reply)=>{
+    try{exactObjectFields(validatedObject(request.query,'Group journal audit'),['kind','branchId','executionId','journalKey','journalSha256','custodySha256','commandKey','admissionId','reservationHash'],'Group journal audit');return groupAudit.read(request.query);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid retained group audit metadata':(error as Error).message});}
+  });
+  const checkpointCustody=checkpointPackageCustody(context.dataDir);
+  const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id,context.custodyOwner()));
+  // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.
+  app.get('/api/portable-metadata/provenance',()=>filesystemMetadataProvenance());
+  app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>('/api/lifecycle/checkpoint-custody',(request,reply)=>{
+    try{return lifecycle.list(request.query);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string}}>('/api/lifecycle/checkpoint-custody/:id',(request,reply)=>{
+    try{return context.store.sqlite.transaction(()=>lifecycle.review(request.params.id))();}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').CheckpointCustodyReconcileInput}>('/api/lifecycle/checkpoint-custody/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{const body=validatedObject(request.body,'Custody reconciliation');exactObjectFields(body,['commandKey','reviewSha256','preserveEvidence'],'Custody reconciliation');return context.store.sqlite.transaction(()=>lifecycle.reconcile(request.params.id,body as unknown as import('@ponderosa/core').CheckpointCustodyReconcileInput)).immediate();}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
+  const groupAbandonment=checkpointGroupCaptureAbandonment(context.dataDir,context.store.sqlite,context.custodyOwner);
+  app.post<{Body:import('@ponderosa/core').CheckpointGroupCaptureAbandonmentReviewInput}>('/api/lifecycle/checkpoint-capture-groups/abandonment-review',(request,reply)=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Group capture review');exactObjectFields(body,['executionId','captureKey'],'Group capture review');return groupAbandonment.review(request.body);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid group capture metadata; evidence remains held':(error as Error).message});}
+  });
+  app.post<{Body:import('@ponderosa/core').CheckpointGroupCaptureAbandonmentInput}>('/api/lifecycle/checkpoint-capture-groups/abandon',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Group capture abandonment');exactObjectFields(body,['executionId','captureKey','commandKey','reviewSha256','preserveEvidence'],'Group capture abandonment');return groupAbandonment.abandon(request.body);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid group capture metadata; evidence remains held':(error as Error).message});}
+  }));
+  const abandonment=checkpointCaptureAbandonment(context.dataDir,context.store.sqlite,context.custodyOwner);
+  app.post<{Body:import('@ponderosa/core').CheckpointCaptureAbandonmentReviewInput}>('/api/lifecycle/checkpoint-captures/abandonment-review',(request,reply)=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Capture abandonment review');exactObjectFields(body,['source','captureKey'],'Capture abandonment review');return abandonment.review(request.body);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Body:import('@ponderosa/core').CheckpointCaptureAbandonmentInput}>('/api/lifecycle/checkpoint-captures/abandon',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Capture abandonment');exactObjectFields(body,['source','captureKey','commandKey','reviewSha256','preserveEvidence'],'Capture abandonment');return abandonment.abandon(request.body);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
   const {
     store,
     coordination: coordinationV3,
@@ -104,6 +267,49 @@ export function registerAgentPackageRoutes(
     agentMessages,
     createOperationalNotification,
   } = context;
+  const validateNativeSelection=async(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>,projectId:string)=>{
+    if(selection.reviewedMetadataActivation!==undefined){
+      const metadataActivation=selection.reviewedMetadataActivation;requireReviewedMetadataApplication(metadataActivation);
+      if(pkg.mode!=='full')throw new Error('Metadata restoration requires a full package');
+      const refs=new Set(pkg.agents.filter(node=>node.workingFolder).map(node=>node.workingRootRef??node.ref));
+      for(const ref of metadataActivation.rootRefs){
+        if(!refs.has(ref))throw new Error('Metadata activation names an absent complete working root');
+        const node=pkg.agents.find(node=>(node.workingRootRef??node.ref)===ref&&node.workingFiles?.some(file=>file.path===REVIEWED_USER_DATA_PATH));
+        const file=node?.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node?.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
+        if(!artifact)throw new Error('Metadata restoration requires its authoritative original');
+        const manifest=parseReviewedUserData(decodePortableMetadataArtifact(artifact));
+        if(!manifest.filesystemMetadata)throw new Error('Per-node metadata evidence is absent');
+        planFilesystemMetadata(manifest.filesystemMetadata,manifest.selection,metadataActivation);
+      }
+      if(selection.workingFilesActivation&&pkg.agents.some(node=>metadataActivation.rootRefs.includes(node.workingRootRef??node.ref)&&(selection.workingCopyMode??node.workingCopyMode??'shared')==='shared')&&!store.isManagedProjectImportDestination(projectId))throw new Error('Live metadata application requires a NEW managed destination');
+    }
+    const activation=selection.reviewedUserDataActivation;if(!activation)return;
+    validateReviewedUserDataActivation(activation);
+    if(!selection.workingFilesActivation){
+      const owner=pkg.agents.find(node=>node.workingFolder||node.workingFiles?.length);
+      const destinations=selection.workingRootDestinations??(selection.workingFilesDestination&&owner?{[owner.workingRootRef??owner.ref]:selection.workingFilesDestination}:{});
+      for(const task of planReviewedRecoveryRoots(pkg,destinations,activation))if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);return;
+    }
+    const project=store.getProject(projectId),owners=pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length);
+    if(pkg.mode!=='full'||!project||!owners.length)throw new Error('Native activation requires selected full-package working roots');
+    const shared=pkg.agents.filter(node=>(selection.workingCopyMode??node.workingCopyMode??'shared')==='shared');
+    if(shared.length&&(selection.workingFilesActivation.sharedRoot!==project.hostPath||!store.isManagedProjectImportDestination(projectId)||store.listAgents(projectId).length))throw new Error('Native Shared data requires the confirmed unused NEW managed Chat');
+    const first=owners[0]!,destinations=selection.workingRootDestinations??(selection.workingFilesDestination?{[first.workingRootRef??first.ref]:selection.workingFilesDestination}:{});
+    // Review against the user's selected recovery map. At application the same
+    // included paths relocate to server-issued live roots, never arbitrary hosts.
+    for(const task of planReviewedRecoveryRoots(pkg,destinations,activation))if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);
+
+  };
+  const reviewAccess = async(pkg:AgentPortablePackageDto,chatId:string,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>={}):Promise<AgentAccessImportReviewDto>=>{
+    const portable=validatePortableAgentPackage(pkg).package;
+    const chat=store.getConversation(chatId);
+    if(!chat||deletingConversationIds.has(chat.id)||deletingProjectIds.has(chat.projectId))throw Object.assign(new Error('Import destination unavailable'),{statusCode:404});
+    if(selection.reviewedUserDataActivation!==undefined||selection.reviewedMetadataActivation!==undefined)await validateNativeSelection(portable,selection,chat.projectId);
+    const destination=new CapabilityPolicyStore(store.sqlite).resolveForChat(chat.id);
+    const reviewSha256=await portableImportPayloadHash({package:portable,destination:chat.id,destinationPolicy:destination,...(selection.reviewedUserDataActivation||selection.reviewedMetadataActivation?{nativeApplication:{reviewedMetadataActivation:selection.reviewedMetadataActivation,reviewedUserDataActivation:selection.reviewedUserDataActivation,workingFilesActivation:selection.workingFilesActivation,workingFilesDestination:selection.workingFilesDestination,workingRootDestinations:selection.workingRootDestinations,workingCopyMode:selection.workingCopyMode,projectRoot:store.getProject(chat.projectId)?.hostPath,newManagedDestination:store.isManagedProjectImportDestination(chat.projectId)}}:{})});
+    return {reviewSha256,source:portable.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination};
+  };
+  let outputApps:OutputAgentApps|undefined;
   const blobImportContentType = "application/vnd.ponderosa.agent-import";
   const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
   const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
@@ -125,18 +331,57 @@ export function registerAgentPackageRoutes(
       try { await directory.sync(); } finally { await directory.close(); }
     }
   };
+  type ImportSubmissionIntent = {project_id:string;request_id:string;conversation_id:string;product_scope:string;payload_sha256:string;request_fingerprint:string|null;operation_id:string;staged_name:string;state:'reserved'|'queued'|'retired'};
+  const getImportIntent=(projectId:string,requestId:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE project_id=? AND request_id=?').get(projectId,requestId) as ImportSubmissionIntent|undefined;
+  const importIntentForOperation=(id:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE operation_id=?').get(id) as ImportSubmissionIntent|undefined;
+  const importAdmissionHeld=(id:string)=>{const intent=importIntentForOperation(id);return !!intent&&intent.state!=='queued';};
+  const heldImportMessage='Import admission is held for recovery; the original request and upload have been preserved.';
+  const heldImportIdentity=(intent:ImportSubmissionIntent)=>({state:intent.state,operationId:intent.operation_id,requestId:intent.request_id,projectId:intent.project_id,conversationId:intent.conversation_id,product:intent.product_scope,requestFingerprint:intent.request_fingerprint});
+  // A deletion receipt only authorizes a content-free status when the exact
+  // locally issued Chat/Project/product identity matches and the Chat is gone.
+  const deletedImportDestination=(intent:ImportSubmissionIntent):boolean=>{
+    if(store.getConversation(intent.conversation_id,{includeDeleting:true}))return false;
+    if(store.getProjectDeletionReceipt(intent.project_id))return true;
+    const deletion=store.getConversationDeletionReceipt(intent.conversation_id);
+    return !!deletion&&deletion.canonicalDeletionCompleted&&deletion.projectId===intent.project_id&&
+      (deletion.branchId?'branches':'dev')===intent.product_scope;
+  };
+  const importOwnerAvailable=(intent:ImportSubmissionIntent):boolean=>{
+    if(intent.product_scope!=='dev'&&intent.product_scope!=='branches')return false;
+    const chat=store.getConversation(intent.conversation_id);
+    return !!chat&&chat.projectId===intent.project_id&&!deletingConversationIds.has(chat.id)&&
+      !deletingProjectIds.has(intent.project_id)&&resourceInProduct(store,'conversation',chat.id,intent.product_scope);
+  };
+  const importOwnerUnavailable=(id:string):boolean=>{
+    const intent=importIntentForOperation(id);return !!intent&&!importOwnerAvailable(intent);
+  };
+  const importOperationMatchesIntent=(operation:AgentImportOperationDto,intent:ImportSubmissionIntent):boolean=>
+    operation.id===intent.operation_id&&operation.projectId===intent.project_id&&operation.requestId===intent.request_id&&
+    operation.conversationId===intent.conversation_id&&operation.product===intent.product_scope&&
+    operation.payloadHash===intent.payload_sha256&&(operation.requestFingerprint??null)===intent.request_fingerprint;
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
-  const projectImportTails = new Map<string, Promise<void>>();
   const activeCopyOperations = new Set<string>();
   type StagedImportUpload = {
     pathname: string;
     sha256: string;
     size: number;
     reservationId: string;
+    requestFingerprint?:string;
+    metadata?:Omit<ImportAgentPackageRequest,'package'>;
+  };
+  const ownedUploads=new WeakSet<StagedImportUpload>();
+  const pendingUploads=new WeakMap<IncomingMessage,StagedImportUpload>();
+  const completedUploadRequests=new WeakSet<IncomingMessage>();
+  // Owned package processing can legitimately exceed the server's 10-second
+  // idle socket timeout before response headers. Body intake remains covered
+  // by the server request deadline, byte quotas and owned-upload lifecycle.
+  const packageOperation = async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (typeof reply.raw.socket?.setTimeout === "function") reply.raw.socket.setTimeout(0);
   };
   const maximumImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 1;
+  const maximumJsonImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 12;
   const maximumStagedImportBytes = AGENT_PACKAGE_STAGING_MAX_BYTES;
   let stagedImportBytes = 0;
   const stagedReservations = new Map<string, number>();
@@ -163,6 +408,25 @@ export function registerAgentPackageRoutes(
     stagedReservations.delete(reservationId);
     stagedImportBytes = Math.max(0, stagedImportBytes - bytes);
   };
+  const cleanupUpload=async(staged:StagedImportUpload):Promise<void>=>{
+    // Only parser-created objects reach this helper. Failure retains the byte
+    // reservation until observed removal or restart inventory reconciliation.
+    try{await fs.unlink(staged.pathname);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    releaseStagedReservation(staged.reservationId);ownedUploads.delete(staged);
+  };
+  const abandonUpload=async(request:FastifyRequest):Promise<void>=>{
+    completedUploadRequests.add(request.raw);
+    const staged=pendingUploads.get(request.raw);if(!staged)return;
+    pendingUploads.delete(request.raw);
+    try{await cleanupUpload(staged);}catch(error){request.log.error({err:error},'Unclaimed Agent upload cleanup remains pending');}
+  };
+  app.addHook('onResponse',abandonUpload);
+  app.addHook('onError',abandonUpload);
+  const claimUpload=async(request:FastifyRequest,reply:FastifyReply):Promise<unknown>=>{
+    const staged=request.body as StagedImportUpload;
+    if(!ownedUploads.has(staged))return reply.code(400).send({error:'An Agent package requires a parser-owned binary upload'});
+    pendingUploads.delete(request.raw);
+  };
   const sha256File = async (pathname: string): Promise<string> => {
     const hash = createHash("sha256");
     const handle = await fs.open(pathname, "r");
@@ -179,23 +443,17 @@ export function registerAgentPackageRoutes(
     }
     return hash.digest("hex");
   };
-  const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
-    const previous = projectImportTails.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
-    const tail = previous.catch(() => undefined).then(() => current);
-    projectImportTails.set(projectId, tail);
-    await previous.catch(() => undefined);
-    try { return await work(); } finally {
-      release();
-      if (projectImportTails.get(projectId) === tail) projectImportTails.delete(projectId);
-    }
-  };
   const requestOperationKey = (projectId: string, requestId: string) =>
     `${projectId}:${requestId}`;
   const validIdempotencyKey = (value: string | undefined): string | undefined => {
     const key = value?.trim();
     return key && /^[A-Za-z0-9_-]{8,128}$/u.test(key) ? key : undefined;
+  };
+  const parseRequestFingerprint=(value:unknown):{bytes:number;digest:string}|undefined=>{
+    const match=typeof value==='string'?/^sha256-4m-v1:(0|[1-9][0-9]*):([a-f0-9]{64})$/.exec(value):null;
+    const bytes=match?Number(match[1]):NaN;
+    return match&&Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1
+      ?{bytes,digest:match[2]!}:undefined;
   };
   const operationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
   const importPhases = new Set<AgentImportPhase>([
@@ -210,7 +468,10 @@ export function registerAgentPackageRoutes(
     if (operation.id !== expectedId || !operationIdPattern.test(operation.id) ||
         typeof operation.requestId !== "string" || !validIdempotencyKey(operation.requestId) ||
         typeof operation.payloadHash !== "string" || !/^[0-9a-f]{64}$/u.test(operation.payloadHash) ||
+        (operation.requestFingerprint!==undefined&&!parseRequestFingerprint(operation.requestFingerprint)) ||
         typeof operation.projectId !== "string" || !operation.projectId || operation.projectId.length > 200 ||
+        typeof operation.conversationId!=='string'||!operation.conversationId||operation.conversationId.length>200||
+        (operation.product!=='dev'&&operation.product!=='branches')||
         typeof operation.sourceLabel !== "string" || operation.sourceLabel.length > 240 ||
         typeof operation.phase !== "string" || !importPhases.has(operation.phase as AgentImportPhase) ||
         !["pending", "completed", "failed"].includes(operation.status ?? "") ||
@@ -222,7 +483,7 @@ export function registerAgentPackageRoutes(
           typeof operation.result.rootAgentId !== "string" || !operation.result.rootAgentId ||
           operation.result.rootAgentId.length > 200 ||
           !Array.isArray(operation.result.agentIds) ||
-          operation.result.agentIds.length > 10_000 ||
+          operation.result.agentIds.length > AGENT_PACKAGE_MAX_AGENTS ||
           operation.result.agentIds.some((id) => typeof id !== "string" || !id || id.length > 200)
         ))) {
       throw new Error("operation record fields are invalid or do not match its filename");
@@ -230,15 +491,19 @@ export function registerAgentPackageRoutes(
     return operation as AgentImportOperationDto;
   };
   const quarantineOperation = async (id: string, error: unknown): Promise<void> => {
-    quarantinedOperationIds.add(id);
+    if(importOwnerUnavailable(id))return;
     const source = operationPath(id);
     let destination = `${source}.corrupt`;
     try {
       await fs.access(destination);
       destination = `${source}.corrupt.${randomUUID()}`;
     } catch { /* the stable quarantine name is available */ }
+    if(importOwnerUnavailable(id))return;
+    quarantinedOperationIds.add(id);
     try {
-      await fs.rename(source, destination);
+      // The owner recheck and rename share one synchronous turn; deletion
+      // cannot interleave between the final check and this quarantine move.
+      syncFs.renameSync(source, destination);
       if (process.platform !== "win32") {
         const directory = await fs.open(importOperationDirectory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
@@ -253,7 +518,7 @@ export function registerAgentPackageRoutes(
         dedupeKey: `agent-import-corrupt:${id}`,
         category: "system",
         severity: "urgent",
-        title: "Agent import recovery needs attention",
+        title: "Agent Import Recovery Needs Attention",
         body: `Import operation ${id} was quarantined; its payload was preserved. ${
           error instanceof Error ? error.message : String(error)
         }`.slice(0, 1_000),
@@ -317,15 +582,80 @@ export function registerAgentPackageRoutes(
     );
   };
   const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
-    if (!operationIdPattern.test(id)) return undefined;
+    if (!operationIdPattern.test(id) || importOwnerUnavailable(id)) return undefined;
     try {
-      return validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
+      const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
+      if(importOwnerUnavailable(id))return undefined;
+      const byId=importIntentForOperation(id),byKey=getImportIntent(operation.projectId,operation.requestId);
+      // Keep structurally valid but mismatched journals in place. They cannot
+      // acquire authority through hydration, direct ID or legacy lookup.
+      if((byId&&!importOperationMatchesIntent(operation,byId))||(byKey&&!importOperationMatchesIntent(operation,byKey)))return undefined;
+      return operation;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || importOwnerUnavailable(id)) return undefined;
       await quarantineOperation(id, error);
       return undefined;
     }
   };
+  const readQueuedIntentOperation=async(intent:ImportSubmissionIntent):Promise<AgentImportOperationDto|undefined>=>{
+    try{
+      const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(intent.operation_id),'utf8')),intent.operation_id);
+      if(!importOperationMatchesIntent(operation,intent))return undefined;
+      return operation;
+    }catch{return undefined;}
+  };
+  const discovery=lifecycleDiscovery({db:store.sqlite,dataDir:context.dataDir,validateImport:validatedOperation,owner:context.custodyOwner,readRetirement:(id,group)=>group?coordinationV3.readCoordinationDestinationGroupRetirement(id):coordinationV3.readCoordinationDestinationRetirement(id)});
+  for(const [route,read] of [['agent-imports',discovery.imports],['destinations',discovery.destinations],['checkpoint-captures',discovery.captures],['checkpoint-capture-groups',discovery.groupCaptures]] as const){
+    app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>(`/api/lifecycle/${route}`,(request,reply)=>{
+      try{return read(request.query);}catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid retained lifecycle metadata; evidence remains held':(error as Error).message});}
+    });
+  }
+  const importLifecyclePath=(id:string)=>{if(!operationIdPattern.test(id))throw Error('Invalid import identity');return path.join(importOperationDirectory,`${id}.lifecycle.json`);};
+  const writeLifecycle=(file:string,value:unknown)=>{
+    const temporary=`${file}.${randomUUID()}.tmp`,fd=syncFs.openSync(temporary,'wx',0o600);
+    try{syncFs.writeFileSync(fd,stableJson(value));syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}syncFs.renameSync(temporary,file);
+    if(process.platform!=='win32'){const fd=syncFs.openSync(path.dirname(file),'r');try{syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}}
+  };
+  const importLifecycleReview=async(id:string)=>{
+    await operationHydration;if(importAdmissionHeld(id))throw Error(heldImportMessage);
+    const operation=await readOperation(id);if(!operation)throw Error('Import operation unavailable; corrupt evidence remains quarantined');
+    const creation=store.findAgentCreationOperation({projectId:operation.projectId,actorScope:'user:local-operator',kind:'import',idempotencyKey:operation.requestId});
+    const references=creation?custodyLifecycleProof(store.sqlite,undefined,creation.id).references:[];
+    const blockers=[...(operation.status==='completed'||operation.result?['Committed import must retain its canonical owner receipt']:[]),...references.map(ref=>`Canonical reference: ${ref}`),...(creation&&(creation.status!=='preparing'||creation.agentIds.length||creation.artifactIds.length||creation.result)?['Import has actual/reserved effects; canonical owner reconciliation required']:[])];
+    const reviewSha256=createHash('sha256').update(stableJson({operation,creation,references})).digest('hex');
+    return {operation,creation,dto:{operationId:id,...(creation?{creationOperationId:creation.id}:{}),canRetireMutationFree:!blockers.length,blockers,reviewSha256} as import('@ponderosa/core').AgentImportLifecycleReview};
+  };
+  app.get<{Params:{id:string}}>('/api/lifecycle/agent-imports/:id',async(request,reply)=>{
+    try{return (await importLifecycleReview(request.params.id)).dto;}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>('/api/lifecycle/agent-imports/orphan-evidence',async(request,reply)=>{
+    try{await operationHydration;return await retainedOrphanDiscovery(path.join(importOperationDirectory,'retained-orphans'),request.query);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').AgentImportLifecycleReconcileInput}>('/api/lifecycle/agent-imports/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{
+      const input=validatedObject(request.body,'Import lifecycle reconciliation');exactObjectFields(input,['commandKey','reviewSha256','action','note'],'Import lifecycle reconciliation');
+      if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.note!=='string'||input.note.length<8||input.note.length>4096||!['preserve_unresolved','retire_mutation_free'].includes(String(input.action)))throw Error('Exact operator reconciliation command and note required');
+      if(importAdmissionHeld(request.params.id))throw Error(heldImportMessage);
+      const file=importLifecyclePath(request.params.id);
+      if(syncFs.existsSync(file)){const saved=JSON.parse(syncFs.readFileSync(file,'utf8'));if(stableJson(saved.input)!==stableJson(input))throw Error('Import lifecycle command conflict');if(saved.receipt.state==='retired'){const operation=await readOperation(request.params.id);if(operation?.status==='pending')await writeOperation({...operation,status:'failed',phase:'failed',error:'Operator retired mutation-free import; original upload evidence retained',updatedAt:new Date().toISOString()});}return saved.receipt as import('@ponderosa/core').AgentImportLifecycleReceipt;}
+      const review=await importLifecycleReview(request.params.id);
+      if(review.dto.reviewSha256!==input.reviewSha256)throw Error('Import custody changed; review again');
+      if(review.operation.status==='completed'||review.operation.result)throw Error('Committed import ownership cannot be replaced by an unresolved hold');
+      if(input.action==='retire_mutation_free'&&!review.dto.canRetireMutationFree)throw Error('Only proved mutation-free unreferenced imports may retire');
+      const receipt:import('@ponderosa/core').AgentImportLifecycleReceipt={version:1,operationId:request.params.id,commandKey:input.commandKey,reviewSha256:review.dto.reviewSha256,state:input.action==='retire_mutation_free'?'retired':'preserved_unresolved',operatorId:'local-operator'};
+      store.sqlite.transaction(()=>{
+        const actual=review.creation?store.getAgentCreationOperation(review.creation.id):undefined;
+        if(stableJson(actual)!==stableJson(review.creation))throw Error('Import effects changed; review again');
+        if(input.action==='retire_mutation_free'&&actual&&custodyLifecycleProof(store.sqlite,undefined,actual.id).references.length)throw Error('Import acquired a canonical reference; owner retirement required');
+        if(input.action==='retire_mutation_free'&&actual)store.updateAgentCreationOperation(actual.id,{status:'rolled_back',lastError:'Operator retired proved mutation-free import'});
+        // This durable hold is checked before every background import attempt and survives owner deletion.
+        writeLifecycle(file,{input,receipt,operation:review.operation,creation:review.creation});
+      }).immediate();
+      if(receipt.state==='retired')await writeOperation({...review.operation,status:'failed',phase:'failed',error:'Operator retired mutation-free import; original upload evidence retained',updatedAt:new Date().toISOString()});
+      return receipt;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
   const operationHydration = fs.mkdir(importOperationDirectory, { recursive: true })
     .then(async () => {
       const names = await fs.readdir(importOperationDirectory);
@@ -334,8 +664,10 @@ export function registerAgentPackageRoutes(
         if (match && operationIdPattern.test(match[1]!)) quarantinedOperationIds.add(match[1]!);
       }
       for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+        // An uncertain admission is evidence, even if its journal is malformed.
+        if(importAdmissionHeld(name.slice(0,-5))||importOwnerUnavailable(name.slice(0,-5)))continue;
         const operation = await readOperation(name.slice(0, -5));
-        if (!operation) continue;
+        if (!operation||importOwnerUnavailable(operation.id)) continue;
         operationCache.set(operation.id, operation);
         operationByRequest.set(
           requestOperationKey(operation.projectId, operation.requestId),
@@ -349,6 +681,9 @@ export function registerAgentPackageRoutes(
         const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
         const abandonedUpload = name.startsWith(".incoming-");
+        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE staged_name=?").get(name)) continue;
+        // Any locally issued intent keeps its exact original payload in place.
+        if(payloadMatch && importIntentForOperation(payloadMatch[1]!)) continue;
         const liveCopy = copyMatch
           ? store.getAgentCreationOperation(copyMatch[1]!)
           : undefined;
@@ -361,9 +696,13 @@ export function registerAgentPackageRoutes(
           (copyMatch && liveCopy && liveCopy.status !== "completed") ||
           (!payloadMatch && !copyMatch)
         )) continue;
-        await fs.unlink(path.join(importOperationDirectory, name))
-          .then(() => { cleaned = true; })
-          .catch(() => undefined);
+        // Abandoned uploads/copy payloads can be the last private originals. Preserve them.
+        const orphanStat=await fs.lstat(path.join(importOperationDirectory,name)).catch(()=>undefined);
+        if(!orphanStat?.isFile()||orphanStat.isSymbolicLink()||orphanStat.nlink!==1)continue;
+        const evidence=path.join(importOperationDirectory,'retained-orphans');
+        await fs.mkdir(evidence,{recursive:true,mode:0o700});
+        await fs.rename(path.join(importOperationDirectory,name),path.join(evidence,`${randomUUID()}-${name}`)).then(()=>{cleaned=true;}).catch(()=>undefined);
+        if(process.platform!=='win32'){const fd=await fs.open(evidence,'r');try{await fd.sync();}finally{await fd.close();}}
       }
       if (cleaned && process.platform !== "win32") {
         const directory = await fs.open(importOperationDirectory, "r");
@@ -383,88 +722,253 @@ export function registerAgentPackageRoutes(
         stagedReservations.set(reservationId, stat.size);
         if (name.endsWith(".payload")) operationReservations.set(id, reservationId);
       }
+      const orphanDirectory=path.join(importOperationDirectory,'retained-orphans');
+      for(const name of await fs.readdir(orphanDirectory).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;})){
+        const stat=await fs.lstat(path.join(orphanDirectory,name));if(!stat.isFile()||stat.isSymbolicLink())continue;
+        stagedImportBytes+=stat.size;stagedReservations.set(`orphan:${name}`,stat.size);
+      }
     });
-  app.addContentTypeParser(
-    blobImportContentType,
-    (request, payload, done) => {
+  const stagedImportParser = (jsonEnvelope = false): FastifyContentTypeParser => (request, payload, done) => {
       void (async () => {
+        const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package','/api/projects/:id/agent-role-preview','/api/projects/:id/agent-access-preview'];
+        if(request.method!=='POST'||!allowedRoutes.includes(request.routeOptions.url??''))throw Object.assign(new Error('Agent package media is only accepted by upload routes'),{statusCode:415});
+        // Only the asynchronous import endpoint accepts this optional exact
+        // request fingerprint. Older clients may omit it.
+        const rawFingerprint=request.routeOptions.url==='/api/projects/:id/agent-import-operations'
+          ?request.headers['x-ponderosa-agent-package-fingerprint']:undefined;
+        const expectedFingerprint=rawFingerprint===undefined?undefined:parseRequestFingerprint(rawFingerprint);
+        if(rawFingerprint!==undefined&&!expectedFingerprint)
+          throw Object.assign(new Error('Agent import request fingerprint is invalid'),{statusCode:400});
         await operationHydration;
         await fs.mkdir(importOperationDirectory, { recursive: true });
         const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
         const reservationId = `upload:${randomUUID()}`;
         const handle = await fs.open(pathname, "wx", 0o600);
         const hash = createHash("sha256");
+        const fingerprintChunkBytes=4*1024*1024;
+        const fingerprint=expectedFingerprint===undefined?undefined:createHash('sha256').update(
+          `ponderosa-agent-import:sha256-4m-v1\0${expectedFingerprint.bytes}\0${fingerprintChunkBytes}\0${Math.ceil(expectedFingerprint.bytes/fingerprintChunkBytes)}\0`,'utf8');
+        let fingerprintPart=createHash('sha256'),fingerprintPartBytes=0,fingerprintBytes=0;
+        const updateRequestFingerprint=(input:Buffer)=>{
+          if(!fingerprint)return;
+          fingerprintBytes+=input.length;
+          if(fingerprintBytes>expectedFingerprint!.bytes)throw Object.assign(new Error('Agent import request fingerprint differs'),{statusCode:400});
+          for(let offset=0;offset<input.length;){
+            const count=Math.min(fingerprintChunkBytes-fingerprintPartBytes,input.length-offset);
+            fingerprintPart.update(input.subarray(offset,offset+count));fingerprintPartBytes+=count;offset+=count;
+            if(fingerprintPartBytes===fingerprintChunkBytes){fingerprint.update(fingerprintPart.digest());fingerprintPart=createHash('sha256');fingerprintPartBytes=0;}
+          }
+        };
         let size = 0;
         let metadataBytes: number | undefined;
         let headerBytes = 0;
+        const headerParts:Buffer[]=[];
+        let metadata:StagedImportUpload['metadata']|undefined;
         try {
           for await (const chunk of payload) {
+            if(completedUploadRequests.has(request.raw))throw new Error('Agent upload request already completed');
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             size += bytes.length;
-            if (metadataBytes === undefined) {
+            if (!jsonEnvelope && metadataBytes === undefined) {
               const separator = bytes.indexOf(0x0a);
               if (separator >= 0) metadataBytes = headerBytes + separator + 1;
               else headerBytes += bytes.length;
               if ((metadataBytes ?? headerBytes) > AGENT_PACKAGE_METADATA_MAX_BYTES + 1) {
                 throw Object.assign(new Error("Agent package upload metadata is invalid"), { statusCode: 400 });
               }
+              headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
+              if(separator>=0){
+                const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination','workingRootDestinations','workingFilesActivation','reviewedUserDataActivation','reviewedMetadataActivation'],'Agent upload metadata');
+                const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
+                if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
+                metadata=value as unknown as StagedImportUpload['metadata'];
+              }
             }
-            if (size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
+            if (jsonEnvelope ? size > maximumJsonImportBytes : size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
               throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
             }
+            updateRequestFingerprint(bytes);
             reserveStagedBytes(reservationId, bytes.length);
             hash.update(bytes);
             await handle.write(bytes);
           }
+          if((!jsonEnvelope&&!metadata)||completedUploadRequests.has(request.raw))throw Object.assign(new Error('Agent upload metadata is unavailable'),{statusCode:400});
+          if(fingerprint){
+            if(fingerprintPartBytes)fingerprint.update(fingerprintPart.digest());
+            if(fingerprintBytes!==expectedFingerprint!.bytes||fingerprint.digest('hex')!==expectedFingerprint!.digest)
+              throw Object.assign(new Error('Agent import request fingerprint differs'),{statusCode:400});
+          }
           await handle.sync();
           await handle.close();
-          done(null, {
+          if(completedUploadRequests.has(request.raw))throw new Error('Agent upload request already completed');
+          const staged:StagedImportUpload={
             pathname,
             sha256: hash.digest("hex"),
             size,
             reservationId,
-          } satisfies StagedImportUpload);
+            metadata,
+            ...(typeof rawFingerprint==='string'?{requestFingerprint:rawFingerprint}:{}),
+          };
+          ownedUploads.add(staged);pendingUploads.set(request.raw,staged);
+          done(null,staged);
         } catch (error) {
           await handle.close().catch(() => undefined);
-          await fs.unlink(pathname).catch(() => undefined);
-          releaseStagedReservation(reservationId);
+          // This pathname was allocated by this parser. Retain its byte charge
+          // if removal fails, just as handler-owned staged uploads do.
+          try {
+            await fs.unlink(pathname);
+            releaseStagedReservation(reservationId);
+          } catch (cleanupError) {
+            if ((cleanupError as NodeJS.ErrnoException).code === 'ENOENT') releaseStagedReservation(reservationId);
+            else request.log.error({ err: cleanupError }, 'Rejected Agent upload cleanup remains pending');
+          }
           request.log.warn({ err: error }, "Agent package upload was rejected before admission");
           done(error as Error);
         }
       })().catch((error) => done(error as Error));
-    },
-  );
+    };
+  app.addContentTypeParser(blobImportContentType, stagedImportParser());
 
   const buildPortablePackage = async (
     agentId: string,
     requestedMode: AgentExportMode,
     organization: boolean,
+    selectedWorkingFiles:readonly string[] = [],
+    wholeWorkingFolder=false,
+    organizationWorkingFolders=false,
+    reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,
+    gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[],
+    workingSet?:{nodes:AgentDto[];selections:import('@ponderosa/core').BranchExportFileSelections},
+    omitWorkingData=false,
+    expertFinal?:()=>void,
+    omitMemory=false,
+    operatorTitleHistory=false,
   ): Promise<AgentPortablePackageDto> => {
+    if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
+    if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
+    if(reviewedUserData){validateReviewedUserDataSelection(reviewedUserData);if(requestedMode==='template'||!wholeWorkingFolder&&!organizationWorkingFolders)throw new AssetError(400,'Git/settings review data requires full export and explicit working-folder selection');}
     const root = store.getAgent(agentId);
     if (!root || store.agentCreationPending(agentId)) throw new AssetError(404, "agent not found");
     // Context packages were an early V3.3 spelling of a full portable Agent.
     const mode: AgentExportMode = requestedMode === "context" ? "full" : requestedMode;
-    const nodes = organization
+    const retainedWorkingVerifiers:Array<()=>Promise<void>>=[];
+    const nodes = workingSet?.nodes??(organization
       ? store.listAgentSubtree(root.id)
-      : [root];
+      : [root]);
+    if (nodes.length > AGENT_PACKAGE_MAX_AGENTS) {
+      throw new AssetError(413, `Agent package contains ${nodes.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`);
+    }
     if (nodes.some((agent) => store.agentCreationPending(agent.id))) {
       throw new AssetError(409, "Agent creation is still being recovered");
     }
+    if(organizationWorkingFolders&&mode!=='full')throw new AssetError(400,'Organization folders require a full export');
+    const workingRoots=new Map<string,string>(),exportedRoots=new Set<string>();
+    const rootHandles:Array<{pathname:string;handle?:Awaited<ReturnType<typeof fs.open>>;device:bigint;inode:bigint;owner:bigint}>=[];
+    const ownedRootHandles:Array<Awaited<ReturnType<typeof fs.open>>>=[];
+    let captureError:unknown;
+    let gitCapture:GitExportCapture|undefined;
+    try {
+    // Allocate every final root ref before any association reads.
+    const physicalRoots=new Map<string,{ref:string;pathname:string}>();
+    if(organizationWorkingFolders)for(const agent of nodes){
+      const pathname=path.resolve(agent.workingCopy.rootPath);
+      if(workingRoots.has(pathname))continue;
+      const handle=process.platform==='win32'?undefined:await fs.open(pathname,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+      if(handle)ownedRootHandles.push(handle);
+      const held=handle?await handle.stat({bigint:true}):await fs.lstat(pathname,{bigint:true}),named=await fs.lstat(pathname,{bigint:true});
+      if(!held.isDirectory()||held.dev!==named.dev||held.ino!==named.ino||await fs.realpath(pathname)!==pathname)throw new Error('Selected working root must be canonical and held');
+      const physical=`${held.dev}:${held.ino}`,prior=physicalRoots.get(physical);
+      if(prior&&prior.pathname!==pathname)throw new Error('Physical working-root aliases require mount/view equivalence proof; inode equality alone is insufficient');
+      const ref=prior?.ref??randomUUID();
+      physicalRoots.set(physical,{ref,pathname});workingRoots.set(pathname,ref);
+      rootHandles.push({pathname,handle,device:held.dev,inode:held.ino,owner:held.uid});
+    }
+    const workingRootNesting:NonNullable<AgentPortablePackageDto['workingRootNesting']>=[];
+    for(const [childPath,childRootRef]of workingRoots){
+      const parent=[...workingRoots].filter(([name])=>childPath.startsWith(name+path.sep)).sort(([a],[b])=>b.length-a.length)[0];
+      if(parent)workingRootNesting.push({parentRootRef:parent[1],childRootRef,path:path.relative(parent[0],childPath).split(path.sep).join('/')});
+    }
+    validateWorkingRootNesting(new Set(workingRoots.values()),workingRootNesting);
+    const verifySelectedRoots=async()=>{
+      if(gitStorageBindings!==undefined&&!workingSet){const current=store.listAgentSubtree(root.id);if(current.length!==nodes.length||current.some(agent=>!nodes.some(selected=>selected.id===agent.id)))throw new Error('Selected organization membership changed during capture');}
+      for(const agent of organizationWorkingFolders?nodes:[]){
+        const current=store.getAgent(agent.id);
+        if(!current||current.projectId!==agent.projectId||current.conversationId!==agent.conversationId||current.managerAgentId!==agent.managerAgentId||current.workingCopy.mode!==agent.workingCopy.mode||path.resolve(current.workingCopy.rootPath)!==path.resolve(agent.workingCopy.rootPath)||store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Selected source membership or registered working root changed');
+      }
+      for(const root of rootHandles){
+        const held=root.handle?await root.handle.stat({bigint:true}):await fs.lstat(root.pathname,{bigint:true}),named=await fs.lstat(root.pathname,{bigint:true});
+        if(!held.isDirectory()||!named.isDirectory()||held.dev!==root.device||held.ino!==root.inode||held.uid!==root.owner||named.dev!==root.device||named.ino!==root.inode||named.uid!==root.owner||await fs.realpath(root.pathname)!==root.pathname)throw new Error('Selected held working-root identity changed');
+      }
+    };
+    await verifySelectedRoots();
+    if(gitStorageBindings!==undefined){
+      validateGitStorageSelections(gitStorageBindings);
+      const liveGitSelected=workingSet?gitStorageBindings.every(binding=>{const choice=workingSet.selections[binding.worktreeAgentId]?.reviewedUserData;return choice?.git&&choice.source!=='retained_originals';}):reviewedUserData?.git&&reviewedUserData.source!=='retained_originals';
+      if(mode!=='full'||!organization||!organizationWorkingFolders||!liveGitSelected)throw new Error('Git storage bindings require one full organization with explicitly selected live whole-folder Git roots');
+      const selected=new Map(nodes.map(agent=>[agent.id,agent]));
+      const bindings:SelectedGitBinding[]=[];
+      for(const binding of gitStorageBindings){
+        const worktree=selected.get(binding.worktreeAgentId),storage=selected.get(binding.storageAgentId);
+        if(!worktree||!storage)throw new Error('Git storage Agents must both be included in the selected organization');
+        const source=rootHandles.find(root=>root.pathname===path.resolve(worktree.workingCopy.rootPath))!,target=rootHandles.find(root=>root.pathname===path.resolve(storage.workingCopy.rootPath))!;
+        if(source.owner!==target.owner)throw new Error('Associated Git roots must have the same observed owner');
+        bindings.push({id:binding.id,worktreeRootRef:workingRoots.get(source.pathname)!,storageRootRef:workingRoots.get(target.pathname)!,relativePath:binding.relativePath,role:binding.role,worktreePath:source.pathname,storagePath:target.pathname});
+      }
+      validatePortableGitStorageBindings(bindings.map(({worktreePath,storagePath,...binding})=>binding),new Set(workingRoots.values()));
+      gitCapture=createGitExportCapture(rootHandles.map(root=>{
+        if(!root.handle)throw new Error('Cross-root capture requires held selected roots');
+        return {pathname:root.pathname,ref:workingRoots.get(root.pathname)!,handle:root.handle,owner:root.owner};
+      }),bindings);
+      await verifyGitExportAssociations(gitCapture);
+      await verifySelectedRoots();
+    }
+    const folderInventories=new Map<string,WorkingFolderInventory>(),hardlinkCapture=organizationWorkingFolders||wholeWorkingFolder?createWorkingHardlinkCapture():undefined;
+    const reviewedSelectionForRoot=async(sourceRoot:string)=>{
+      const members=nodes.filter(agent=>path.resolve(agent.workingCopy.rootPath)===sourceRoot);
+      const choices=workingSet?members.map(agent=>workingSet.selections[agent.id]?.reviewedUserData):[reviewedUserData];
+      if(new Set(choices.map(choice=>stableJson(choice??null))).size>1)throw new Error('Agents sharing one selected root must use the same metadata/Git family selection');
+      const chosen=choices[0];
+      if(!gitCapture||!chosen||await gitCapture.usesGit(sourceRoot))return chosen;
+      return chosen.harness||chosen.extendedMetadata||chosen.persistentNodes?{...chosen,git:false}:undefined;
+    };
+    if(organizationWorkingFolders)for(const sourceRoot of [...workingRoots.keys()].sort((a,b)=>a.length-b.length||a.localeCompare(b))){
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,workingRoots,hardlinkCapture,workingRootNesting.filter(boundary=>boundary.parentRootRef===workingRoots.get(sourceRoot)).map(boundary=>boundary.path)));
+    }
+    if(!organizationWorkingFolders&&wholeWorkingFolder){
+      const sourceRoot=path.resolve(root.workingCopy.rootPath);
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,new Map([[sourceRoot,root.id]]),hardlinkCapture));
+    }
+    if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
     const included = new Set(nodes.map((agent) => agent.id));
     const chat = store.getConversation(root.conversationId);
+    if(operatorTitleHistory&&mode==='full'&&!context.workspace)throw Error('Selected Chat title history exporter is unavailable');
+    const selectedTitleHistory=operatorTitleHistory&&mode==='full'?context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES}):undefined;
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
-    const canonicalUserDocuments = mode === "template"
+    let retainedArtifactWireBytes = 0;
+    const admitArtifact = (artifact: import('@ponderosa/core').PortableArtifactDto) => {
+      retainedArtifactWireBytes += agentPackageJsonUtf8Bytes(artifact);
+      if (retainedArtifactWireBytes + retainedHistoryBytes > AGENT_PACKAGE_MAX_BYTES) {
+        throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} of serialized UTF-8 bytes; complete originals were not omitted`);
+      }
+      return artifact;
+    };
+    const canonicalCommunications = workingSet || mode === "template"
       ? []
-      : store.readCommunicationEvents(root.projectId)
-        .filter((event) =>
-          event.sender.kind === "user" && Boolean(event.document?.artifactId));
+      : store.readCommunicationEvents(root.projectId);
+    const revisionsByEvent=new Map<string,ReturnType<AgentStore['readCommunicationRevisions']>>();
+    if(!workingSet&&mode!=='template')for(const revision of store.readCommunicationRevisions(root.projectId)){
+      const revisions=revisionsByEvent.get(revision.targetEventId)??[];revisions.push(revision);revisionsByEvent.set(revision.targetEventId,revisions);
+    }
     type ImportedHistory = {
       messages: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
       initialInstructions?: string;
+      chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[];portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder'];emptyWorkingArtifacts?:AgentPortablePackageDto['agents'][number]['artifacts']};
     };
     const importedHistories = new Map<string, ImportedHistory>();
-    for (const agent of nodes) {
+    let retainedImportedBytes = 0;
+    for (const agent of workingSet?[]:nodes) {
       const pathname = importedAgentHistoryPath(context.dataDir, agent.projectId, agent.id);
       try {
         await fs.access(pathname);
@@ -473,10 +977,21 @@ export function registerAgentPackageRoutes(
         throw error;
       }
       const { portable } = await parsePortablePackageFile(pathname, { packageOnly: true });
-      importedHistories.set(agent.id, portable as unknown as ImportedHistory);
+      const imported = portable as unknown as ImportedHistory;
+      // Bound the total retained text while loading, rather than loading up to
+      // 10,000 separately admitted archives before the export can be refused.
+      // These values are a lower bound of the eventual package's JSON bytes.
+      const messages = mode === "template" ? [] : imported.messages;
+      const importedInstructions = imported.initialInstructions;
+      if (mode !== "template") retainedImportedBytes += agentPackageJsonUtf8Bytes(messages);
+      if (importedInstructions !== undefined) retainedImportedBytes += agentPackageJsonUtf8Bytes(importedInstructions);
+      if (retainedImportedBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedImportedBytes} serialized UTF-8 bytes)`);
+      importedHistories.set(agent.id, { messages,...(operatorTitleHistory&&imported.chatTitleHistory?{chatTitleHistory:imported.chatTitleHistory}:{}), ...(imported.portableState?{portableState:imported.portableState}:{}), ...(importedInstructions !== undefined ? { initialInstructions: importedInstructions } : {}) });
     }
-    const histories = new Map((mode === "template" ? [] : nodes).map((agent) => {
-      const history = [
+    const histories = new Map<string, ImportedHistory["messages"]>();
+    let retainedHistoryBytes = 0;
+    for (const [index, agent] of (workingSet || mode === "template" ? [] : nodes).entries()) {
+      const history:ImportedHistory["messages"] = [
         ...(importedHistories.get(agent.id)?.messages ?? []),
         ...agentMessages(agent.id).map((message) => ({
           role: message.role,
@@ -484,54 +999,68 @@ export function registerAgentPackageRoutes(
           createdAt: message.createdAt,
         })),
       ];
-      for (const event of canonicalUserDocuments) {
-        // Chat location is presentation, never authority to export a private DM.
-        const visible = (!event.conversationId || agent.conversationId === event.conversationId)
-          && (event.intent === "broadcast"
-            ? event.audience.kind === "organization" && event.audience.organizationId === agent.projectId
-            : event.intent === "user_dm"
-              ? (event.audience.kind === "user_agent"
-                  ? event.audience.agentId === agent.id
-                  : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agent.id))
-              : event.intent === "collaboration"
-                && event.audience.kind === "agents" && event.audience.agentIds.includes(agent.id));
-        if (
-          visible
-          && !history.some((message) =>
-            message.text.includes(event.document!.artifactId!))
-        ) {
-          history.push({
-            role: "user" as const,
-            text: event.text,
-            createdAt: event.createdAt,
-          });
-        }
+      for (const event of canonicalCommunications) {
+        if (!portableCommunicationVisible(event,agent)) continue;
+        if (history.some(message=>message.communication?.eventId===event.eventId)) continue;
+        // Replace the flattened projection once; preserve genuine repeated authored messages.
+        const flattened=history.findIndex(message=>!message.communication && message.text===event.text && message.createdAt===event.createdAt);
+        const message=portableCommunicationMessage(event);
+        const revisions=revisionsByEvent.get(event.eventId)??[];
+        if(revisions.length)message.communicationRevisions=withoutPortableSecrets(revisions) as typeof revisions;
+        if(flattened<0)history.push(message);else history[flattened]=message;
       }
-      return [agent.id, history] as const;
-    }));
-    const projectArtifacts = mode === "template"
+      retainedHistoryBytes += agentPackageJsonUtf8Bytes(history);
+      if (retainedHistoryBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedHistoryBytes} serialized UTF-8 bytes)`);
+      histories.set(agent.id, history);
+      if (index % 32 === 0) await yieldToLoop();
+    }
+    const projectArtifacts = workingSet || mode === "template"
       ? []
       : store.getProjectArtifacts(root.projectId);
     const artifactOwner = new Map<string, string>();
     if (mode !== "template") {
-      for (const artifact of projectArtifacts) {
+      for (const [artifactIndex, artifact] of projectArtifacts.entries()) {
+        if (artifactIndex % 128 === 0) await yieldToLoop();
+        if (artifact.origin?.kind === "operator") continue;
         if (artifact.originAgentId && included.has(artifact.originAgentId)) {
           artifactOwner.set(artifact.id, artifact.originAgentId);
           continue;
         }
         const referencingAgent = nodes.find((agent) =>
           (histories.get(agent.id) ?? []).some((message) =>
-            message.text.includes(artifact.id)));
+            message.text.includes(artifact.id)||Object.values(message.artifactRefs??{}).includes(artifact.id)||message.attachmentRefs?.includes(artifact.id)||message.communication?.artifactIds?.includes(artifact.id)||message.communication?.document?.artifactId===artifact.id)
+          || importedHistories.get(agent.id)?.portableState?.workingFiles?.some(file=>workingFileArtifactRefs(file).includes(artifact.id)));
         if (referencingAgent) artifactOwner.set(artifact.id, referencingAgent.id);
       }
     }
     const agents: AgentPortablePackageDto["agents"] = [];
+    const artifactsByOwner = new Map<string, typeof projectArtifacts>();
+    for (const artifact of projectArtifacts) {
+      const owner = artifactOwner.get(artifact.id);
+      if (!owner) continue;
+      const owned = artifactsByOwner.get(owner) ?? [];
+      owned.push(artifact);
+      artifactsByOwner.set(owner, owned);
+    }
+    let retainedAgentBytes = 0;
     for (const agent of nodes) {
       const history = histories.get(agent.id) ?? [];
+      const sourceRoot=path.resolve(agent.workingCopy.rootPath);
+      await verifySelectedRoots();
+      const firstRoot=organizationWorkingFolders&&!exportedRoots.has(workingRoots.get(sourceRoot)!);
+      if(firstRoot)exportedRoots.add(workingRoots.get(sourceRoot)!);
+      const folderInventory=firstRoot?folderInventories.get(sourceRoot):!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?folderInventories.get(sourceRoot):undefined;
+      const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
+      const capturesWorkingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&!!(selectedPaths.length||folderInventory);
+      // Retained transport parts belong only to the retained manifest, not a
+      // fresh capture or an export that explicitly omits working data.
+      const retainedParts=new Set(!capturesWorkingFiles&&!omitWorkingData&&mode==='full'
+        ?(importedHistories.get(agent.id)?.portableState?.workingFiles??[]).flatMap(file=>file.parts?.refs??[])
+        :[]);
       const selectedArtifacts = mode === "template"
         ? []
-        : projectArtifacts.filter((artifact) =>
-          artifactOwner.get(artifact.id) === agent.id);
+        : (artifactsByOwner.get(agent.id) ?? []).filter(artifact=>
+            !store.isWorkingFileTransportPart(agent.projectId,artifact.id)||retainedParts.has(artifact.id));
       const artifacts: NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]> = [];
       const pendingArtifacts: Array<{
         artifact: typeof selectedArtifacts[number];
@@ -555,7 +1084,7 @@ export function registerAgentPackageRoutes(
           if (!data) {
             throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
           }
-          artifacts.push({
+          artifacts.push(admitArtifact({
             ref: artifact.id,
             kind: artifact.kind,
             path: artifact.path,
@@ -565,8 +1094,8 @@ export function registerAgentPackageRoutes(
             ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
             ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
             ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-            dataBase64: await encodePortableArtifact(data),
-          });
+            ...await encodePortableArtifactData(data),
+          }));
         }
       };
       for (const artifact of selectedArtifacts) {
@@ -609,39 +1138,163 @@ export function registerAgentPackageRoutes(
         }
         reservedArtifactBytes += identity.size;
         pendingArtifacts.push({ artifact, identity });
-        if (pendingArtifacts.length >= 128) await flushArtifacts();
+        if (pendingArtifacts.length >= 128 || pendingArtifacts.reduce((bytes, entry) => bytes + entry.identity.size, 0) >= 16 * 1024 * 1024) await flushArtifacts();
       }
       await flushArtifacts();
+      if(!capturesWorkingFiles&&!omitWorkingData&&mode==='full'){
+        for(const artifact of importedHistories.get(agent.id)?.portableState?.emptyWorkingArtifacts??[]){
+          const files=importedHistories.get(agent.id)!.portableState!.workingFiles;
+          if(artifact.kind!=='document'||artifact.dataBase64!==''||artifact.dataEncoding!==undefined||artifact.decodedSize!==undefined||!files?.some(file=>!file.parts&&file.artifactRef===artifact.ref))throw new AssetError(409,'Retained empty working-file original binding changed');
+          artifacts.push(admitArtifact(artifact));
+        }
+      }
+      if(!workingSet&&mode === "full") {
+        const originals=new Map<string,string>();
+        for(const message of history) {
+          if(!message.communication?.attachments?.length)continue;
+          if(message.attachmentRefs?.length===message.communication.attachments.length && message.attachmentRefs.every(ref=>artifacts.some(a=>a.ref===ref)))continue;
+          message.attachmentRefs=[];
+          for(const attachment of message.communication.attachments) {
+            const key=`${attachment.agentId}:${attachment.id}`;
+            let ref=originals.get(key);
+            if(!ref) {
+              const content=await assets.content(agent.projectId,attachment.conversationId??attachment.agentId,attachment.id,false);
+              if(!content||content.body.length!==attachment.size||(attachment.sha256&&createHash('sha256').update(content.body).digest('hex')!==attachment.sha256))throw new AssetError(409,`Attachment ${attachment.id} original is unavailable or changed`);
+              reservedArtifactBytes+=content.body.length;
+              if(reservedArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw new AssetError(413,'Portable attachment originals exceed the artifact byte limit');
+              ref=randomUUID();originals.set(key,ref);
+              artifacts.push(admitArtifact({ref,kind:'document',path:attachment.name,summary:attachment.name,mediaType:attachment.mediaType,createdAt:attachment.createdAt??message.createdAt??new Date().toISOString(),...await encodePortableArtifactData(content.body)}));
+            }
+            message.attachmentRefs.push(ref);
+          }
+        }
+      }
+      if(!workingSet&&mode === "full") {
+        const archives=await executionArchives(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
+        for(const archive of archives){reservedArtifactBytes+=portableArtifactByteLength(archive);artifacts.push(admitArtifact(archive));}
+      }
+      if(gitCapture?.exclusions(sourceRoot).includes('.')&&(await reviewedSelectionForRoot(sourceRoot))?.harness)throw new Error('Whole-root Git storage cannot also carry harness working-file review; select separate storage and working roots');
+      const rootReviewedSelection=await reviewedSelectionForRoot(sourceRoot);
+      let retainedOriginal:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof}|undefined;
+      if(folderInventory&&rootReviewedSelection?.source==='retained_originals'){
+        // Shared-root originals may belong to a peer excluded from this Agent export.
+        const owners=store.listAgents(agent.projectId).filter(node=>node.conversationId===agent.conversationId&&path.resolve(node.workingCopy.rootPath)===sourceRoot);
+        if(owners.length>AGENT_PACKAGE_MAX_AGENTS)throw new AssetError(413,'Retained original owner inventory exceeds the package bound');
+        const bindings:Array<{binding:NonNullable<AgentPortablePackageDto['agents'][number]['workingFiles']>[number];ownerAgentId:string}>=[];
+        for(const owner of owners){
+          let imported=importedHistories.get(owner.id);
+          if(!imported){
+            const pathname=importedAgentHistoryPath(context.dataDir,owner.projectId,owner.id);
+            try{const parsed=await parsePortablePackageFile(pathname,{packageOnly:true});imported=parsed.portable as unknown as ImportedHistory;}
+            catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+          }
+          bindings.push(...(imported.portableState?.workingFiles?.filter(file=>file.path==='.ponderosa-portable-review/user-data.json')??[]).map(binding=>({binding,ownerAgentId:owner.id})));
+        }
+        if(bindings.length!==1)throw new AssetError(409,'Retained review data needs one unambiguous imported original binding for this working root');
+        const {binding,ownerAgentId}=bindings[0]!,original=(workingSet?store.getProjectArtifacts(agent.projectId):projectArtifacts).find(artifact=>artifact.id===binding.artifactRef);
+        if(!original?.size||!original.sha256)throw new AssetError(409,'Retained review original artifact identity is unavailable');
+        const [data]=await readManagedArtifactContentsAsync(context.dataDir,agent.projectId,[{artifactId:original.id,expectedSize:original.size,expectedSha256:original.sha256}]);
+        if(!data)throw new AssetError(409,'Retained review original artifact is missing or changed');
+        const observedRoot=await fs.lstat(sourceRoot,{bigint:true});
+        if(!observedRoot.isDirectory()||await fs.realpath(sourceRoot)!==sourceRoot)throw new AssetError(409,'Retained original working-root custody changed');
+        const canonicalGeneratedHooksProof=store.findGeneratedHookNamespace({agentId:ownerAgentId,rootPath:sourceRoot,root:{device:observedRoot.dev.toString(),inode:observedRoot.ino.toString()},sourceOriginalSha256:createHash('sha256').update(data).digest('hex')});
+        retainedOriginal={data,mode:binding.mode,mtime:binding.mtime,...(canonicalGeneratedHooksProof?{canonicalGeneratedHooksProof}:{})};
+      }
+      const workingFiles=capturesWorkingFiles
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture,workingRoots,folderInventory):undefined;
+      if(workingFiles?.verify)retainedWorkingVerifiers.push(workingFiles.verify);
+      if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
-      const initialInstructions = agent.spawnPrompt ?? agent.presetSnapshot?.guidance
-        ?? importedHistories.get(agent.id)?.initialInstructions;
-      agents.push({
+      const initialInstructions = importedHistories.get(agent.id)?.initialInstructions
+        ?? agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance;
+      const portableAgent: AgentPortablePackageDto["agents"][number] = {
         ref: agent.id,
         title: agent.title,
         engine: agent.activeEngine,
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
+        ...(agent.speed !== undefined ? { speed: agent.speed } : {}),
+        ...(agent.role !== undefined ? { role: agent.role } : {}),
+        ...(agent.presetSnapshot ? { presetSnapshot: agent.presetSnapshot } : {}),
         managementPermissions: agent.managementPermissions,
+        workingCopyMode:agent.workingCopy.mode,
+        ...(organizationWorkingFolders?{workingRootRef:workingRoots.get(sourceRoot)!}:{}),
+        ...(folderInventory?{workingFolder:{cyclicLinks:'passive_in_root',mode:folderInventory.mode,mtime:folderInventory.mtime,directories:folderInventory.directories,excludedPaths:folderInventory.excludedPaths,...(folderInventory.links.length?{links:folderInventory.links}:{})}}:!omitWorkingData&&mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFolder?{workingFolder:importedHistories.get(agent.id)!.portableState!.workingFolder}:{}),
+        ...(workingFiles?{workingFiles:workingFiles.files}:!omitWorkingData&&mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFiles?{workingFiles:importedHistories.get(agent.id)!.portableState!.workingFiles}:{}),
+        sourceChat:{ref:agent.conversationId,title:store.getConversation(agent.conversationId)?.title??agent.conversationId},
+        accessSettings:{restrictedCapabilityIds:new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds,
+          ...(localMemoryFor(app)&&!expertFinal&&!omitMemory?{readGlobalMemory:localMemoryFor(app)!.getGrant(agent.conversationId,store.getConversation(agent.conversationId)?.branchId?'branches':'dev').readGlobal}:{}),
+          ...context.portableBrowserSettings?.(agent)},
         ...(initialInstructions !== undefined ? { initialInstructions } : {}),
         ...(agent.managerAgentId && included.has(agent.managerAgentId)
           ? { managerRef: agent.managerAgentId }
           : {}),
         ...(mode !== "template" ? { history } : {}),
         ...(artifacts.length ? { artifacts } : {}),
-      });
+      };
+      if(workingSet){
+        const allowed=new Set(['ref','title','engine','workingCopyMode','workingRootRef','workingFolder','workingFiles','artifacts','managementPermissions']);
+        for(const key of Object.keys(portableAgent))if(!allowed.has(key))delete (portableAgent as unknown as Record<string,unknown>)[key];
+        portableAgent.managementPermissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
+      }
+      retainedAgentBytes += agentPackageJsonUtf8Bytes(portableAgent);
+      if (retainedAgentBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedAgentBytes} serialized UTF-8 bytes)`);
+      agents.push(portableAgent);
+      await yieldToLoop();
     }
-    return {
+    const exportedTitleHistory=selectedTitleHistory?mergeChatTitleHistory(selectedTitleHistory,...[...importedHistories.values()].map(history=>history.chatTitleHistory)):undefined;
+    const portable: AgentPortablePackageDto = {
       schema: "ponderosa.agent-package.v1",
       mode,
       kind: nodes.length === 1 ? "agent" : "organization",
       exportedAt: new Date().toISOString(),
       sourceLabel: `${project.label} / ${root.title}`,
-      ...(mode === "full" && project.instructions
+      ...(!workingSet && mode === "full" && project.instructions
         ? { sourceProjectInstructions: project.instructions }
         : {}),
-      rootRef: root.id,
+      ...(exportedTitleHistory?.length?{chatTitleHistory:exportedTitleHistory}:{}),
+      rootRef: workingSet?agents[0]!.ref:root.id,
+      ...(workingSet&&agents.length>1?{rootRefs:agents.map(agent=>agent.ref)}:{}),
       agents,
+      ...(workingRootNesting.length?{workingRootNesting}:{}),
     };
+    if(!workingSet&&mode==='full'&&!omitMemory&&localMemoryFor(app)){
+      const groups=new Map<string,string[]>();for(const agent of nodes){if(!agent.conversationId)throw new Error('Package memory Agent has no Chat');const ids=groups.get(agent.conversationId)??[];ids.push(agent.id);groups.set(agent.conversationId,ids);}
+      if(groups.size>1)throw new Error('Cross-Chat memory exports require separate packages and destination Chats');
+      portable.memory=[];
+      for(const [chatId,ids] of groups)portable.memory.push({snapshot:expertFinal?await localMemoryFor(app)!.exportExpertFinalPackageMemory(chatId,ids,expertFinal):await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
+    }
+    if(selectedTitleHistory&&stableJson(selectedTitleHistory)!==stableJson(context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES})))throw Error('Selected Chat title history changed during export; review again');
+    const roles=workingSet?undefined:outputApps?.portableRoles([...included]);if(roles?.length)portable.outputRoles=roles;
+    for(const node of agents)for(const message of node.history??[]){
+      const refs=[...(message.communication?.artifactIds??[]),...(message.communication?.document?[message.communication.document.artifactId]:[])];
+      for(const ref of refs){if(message.artifactRefs?.[ref])continue;if(!agents.some(owner=>owner.artifacts?.some(a=>a.ref===ref)))throw new AssetError(409,`Authored Communication artifact ${ref} is unavailable`);message.artifactRefs={...message.artifactRefs,[ref]:ref};}
+    }
+    await verifySelectedRoots();
+    if(gitCapture){
+      portable.gitStorageBindings=gitCapture.portableBindings();
+      validatePortableGitStorageBindings(portable.gitStorageBindings,new Set(workingRoots.values()));
+      validatePortableAgentPackage(portable);
+      await verifyGitExportAssociations(gitCapture);await verifySelectedRoots();
+    }
+    if(portable.agents.some(node=>node.workingFolder?.links?.some(link=>link.targetRootRef)))validateMappedWorkingLinks(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[],cyclicLinks:node.workingFolder!.cyclicLinks})));
+    if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
+    for(const verify of retainedWorkingVerifiers)await verify();
+    await verifySelectedRoots();
+    agentPackageJsonUtf8Bytes(portable);
+    return portable;
+    }catch(error){captureError=error;throw error;}
+    finally{
+      // Finish descendant cleanup before releasing the selected root descriptors; retain every failure.
+      const descendantCleanup:unknown[]=[];
+      if(gitCapture)try{await gitCapture.close(captureError);}catch(error){descendantCleanup.push(error);}
+      const closed=await Promise.allSettled(ownedRootHandles.map(handle=>handle.close()));
+      const cleanupErrors=[...descendantCleanup,...closed.flatMap(result=>result.status==='rejected'?[result.reason]:[])];
+      if(cleanupErrors.length){
+        const primary=captureError as {code?:string;observed?:unknown;cleanupErrors?:unknown[]}|undefined;
+        throw Object.assign(new Error('Selected-root capture descriptor cleanup failed',{cause:captureError}),{code:primary?.code??'ERR_PORTABLE_ROOT_CAPTURE_CLEANUP',partialStatePossible:false,observed:primary?.observed??null,cleanupErrors:[...(primary?.cleanupErrors??[]),...cleanupErrors]});
+      }
+    }
   };
 
   type PreparedCopySnapshot = {
@@ -706,61 +1359,82 @@ export function registerAgentPackageRoutes(
     return installed;
   };
 
-  app.get<{
-    Params: { id: string };
-    Querystring: {
-      mode?: AgentExportMode;
-      organization?: string;
-      download?: string;
-    };
-  }>("/api/agents/:id/export", async (request, reply) => withAgentImportAdmission(async () => {
-    const requestedMode: AgentExportMode = ["template", "context", "full"]
-      .includes(request.query.mode ?? "")
-      ? request.query.mode!
-      : "full";
-    const result = await buildPortablePackage(
-      request.params.id,
-      requestedMode,
-      request.query.organization === "true",
-    );
-    if (request.query.download === "1") {
-      const safeTitle = result.sourceLabel
-        .normalize("NFKD")
-        .replace(/[^\p{L}\p{N}]+/gu, "-")
-        .replace(/^-+|-+$/gu, "")
-        .toLocaleLowerCase()
-        .slice(0, 80);
-      reply.header(
-        "content-disposition",
-        `attachment; filename="${safeTitle || "agent"}-${result.mode}.ponderosa.json"`,
-      );
+  const importedAgentProvenance=async(agent:{id:string;title:string;projectId:string;conversationId:string}):Promise<import('@ponderosa/core').ImportedAgentProvenanceDto|undefined>=>{
+    const chat=store.getConversation(agent.conversationId);if(!chat||chat.projectId!==agent.projectId)return;
+    const product=chat.branchId?'branches':'dev';
+    const owners=store.sqlite.prepare(`SELECT o.id,o.actor_scope,o.idempotency_key,o.payload_hash,o.created_at FROM agent_creation_operations o
+      JOIN agent_creation_operation_members m ON m.operation_id=o.id
+      WHERE m.agent_id=? AND o.project_id=? AND o.conversation_id=? AND o.product_scope=? AND o.kind='import' AND o.status='completed'
+      ORDER BY o.created_at LIMIT 2`).all(agent.id,agent.projectId,agent.conversationId,product) as Array<{id:string;actor_scope:string;idempotency_key:string;payload_hash:string;created_at:string}>;
+    if(owners.length!==1)return;
+    const owner=owners[0]!,intent=getImportIntent(agent.projectId,owner.idempotency_key);
+    let operation:AgentImportOperationDto|undefined;
+    if(intent){
+      if(intent.conversation_id!==agent.conversationId||intent.product_scope!==product||intent.state!=='queued')return;
+      operation=await readQueuedIntentOperation(intent);
+      if(!operation||operation.status!=='completed'||operation.payloadHash!==owner.payload_hash||!operation.result?.agentIds.includes(agent.id))return;
     }
-    // Serialize to admitted, owned staging before starting the response so an
-    // over-limit export fails honestly; the download then streams with backpressure.
-    await operationHydration;
-    const reservationId = `export:${randomUUID()}`;
-    const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
-    const handle = await fs.open(pathname, "wx", 0o600);
-    try {
-      for await (const chunk of portablePackageJsonChunks(result)) {
-        const bytes = Buffer.from(chunk, "utf8");
-        reserveStagedBytes(reservationId, bytes.length);
-        await handle.writeFile(bytes);
-      }
-      await handle.close();
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      const removed = await fs.unlink(pathname).then(() => true).catch(() => false);
-      if (removed) releaseStagedReservation(reservationId);
-      throw error;
-    }
-    const stream = createReadStream(pathname);
-    stream.once("close", () => {
-      void fs.unlink(pathname).then(() => releaseStagedReservation(reservationId)).catch(() => undefined);
+    const creation=store.getAgentCreationOperation(owner.id);
+    if(!creation||creation.status!=='completed'||!creation.agentIds.includes(agent.id))return;
+    const result=creation.result&&typeof creation.result==='object'?creation.result as Record<string,unknown>:undefined;
+    const applications=[result?.reviewedUserDataApplications,result?.reviewedMetadataApplications].flatMap(value=>Array.isArray(value)?value:[]);
+    const states=applications.map(value=>value&&typeof value==='object'?(value as {state?:unknown}).state:undefined);
+    const reviewedDataState=states.length&&states.every(state=>state==='applying'||state==='incomplete'||state==='completed')
+      ?states.includes('incomplete')?'incomplete':states.includes('applying')?'applying':'completed':undefined;
+    return {actorScope:owner.actor_scope,destinationChatId:chat.id,destinationChatTitle:chat.title,createdAt:owner.created_at,
+      agentTitle:agent.title,agentCount:creation.agentIds.length,...(reviewedDataState?{reviewedDataState}:{}),
+      creationOperationId:owner.id,requestId:owner.idempotency_key,...(operation?{operationId:operation.id,sourceLabel:operation.sourceLabel}:{})};
+  };
+  app.get<{Params:{id:string};Querystring:{offset?:string;limit?:string;archiveVersion?:string}}>('/api/agents/:id/imported-communications',async(request,reply)=>{
+    const agent=store.getAgent(request.params.id);
+    if(!agent||store.agentCreationPending(agent.id)||!resourceInProduct(store,'agent',agent.id,requestProduct(request)))return reply.code(404).send({error:'Agent unavailable'});
+    const offset=Number(request.query.offset??0),limit=Number(request.query.limit??10);
+    if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>20)return reply.code(400).send({error:'Use nonnegative offset and limit 1–20'});
+    const importProvenance=await importedAgentProvenance(agent);
+    const availability=store.getImportedHistoryAvailability(agent.id);
+    if(!availability.archiveVersion)return {source:'',importedAt:'',messages:[],artifacts:[],hasMore:false,...(importProvenance?{importProvenance}:{})};
+    if(request.query.archiveVersion&&request.query.archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
+    const {portable:archiveData}=await parsePortablePackageFile(importedAgentHistoryPath(context.dataDir,agent.projectId,agent.id),{packageOnly:true});
+    if(!store.getAgent(agent.id)||deletingAgentIds.has(agent.id))return reply.code(404).send({error:'Agent unavailable'});
+    if(store.getImportedHistoryAvailability(agent.id).archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
+    const archive=archiveData as unknown as {source:string;importedAt:string;messages:AgentPortablePackageDto['agents'][number]['history'];chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[]};
+    if(!archive?.messages)return reply.code(404).send({error:'Imported history unavailable'});
+    const messages=archive.messages.slice(offset,offset+limit);
+    const titleHistory=archive.chatTitleHistory?mergeChatTitleHistory(archive.chatTitleHistory):[];
+    const chatTitleHistory=titleHistory.slice(offset,offset+limit),pageLength=Math.max(messages.length,chatTitleHistory.length);
+    const refs=new Set(messages.flatMap(message=>[...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{})]));
+    const artifacts=[...refs].flatMap(ref=>{
+      if(!store.agentCanReadProjectArtifact(agent.projectId,ref,agent.id)||!store.operatorCanReadProjectArtifact(agent.projectId,ref))return [];
+      const artifact=store.getProjectArtifact(agent.projectId,ref);
+      return artifact?[{...artifact,downloadUrl:`/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(ref)}/download`}]:[];
     });
-    reply.raw.once("close", () => stream.destroy());
-    return reply.type("application/json; charset=utf-8").send(stream);
-  }));
+    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messageCount:archive.messages.length,messages,artifacts,...(importProvenance?{importProvenance}:{}),...(chatTitleHistory.length?{chatTitleHistory}:{}),hasMore:offset+pageLength<Math.max(archive.messages.length,titleHistory.length),nextOffset:offset+pageLength};
+    if(agentPackageJsonUtf8Bytes(result)>2*1024*1024)return reply.code(413).send({error:'History page exceeds 2 MiB; request fewer messages or use bounded history retrieval'});
+    return result;
+  });
+
+  const downloads=packageExportDownloads(app,context.dataDir,context.store.sqlite,undefined,typeof context.store.stateAdmission==='function'?()=>context.store.stateAdmission():undefined);
+  const exportPackage=async(agentId:string,input:Record<string,unknown>,reply:FastifyReply,attachment=false)=>withAgentImportAdmission(async()=>{
+    exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings'],'Agent export');
+    for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');
+    if(input.mode!==undefined&&!['template','context','full'].includes(input.mode as string))throw new AssetError(400,'Choose a supported Agent export mode');
+    const requestedMode=(input.mode??'full') as AgentExportMode,selectedWorkingFiles=input.workingFiles??[];
+    if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Selected working files must be relative paths');
+    let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined,gitStorageBindings:import('@ponderosa/core').GitStorageSelection[]|undefined;
+    if(input.reviewedUserData!==undefined){validateReviewedUserDataSelection(input.reviewedUserData);reviewedUserData=input.reviewedUserData;}
+    if(input.gitStorageBindings!==undefined){validateGitStorageSelections(input.gitStorageBindings);gitStorageBindings=input.gitStorageBindings;}
+    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings,undefined,false,undefined,false,true);
+    if(result.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
+    const safeTitle=result.sourceLabel.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-+|-+$/gu,'').toLocaleLowerCase().slice(0,80);
+    return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment);
+  });
+  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await downloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'agent',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
+  app.get<{Params:{id:string};Querystring:Record<string,string|undefined>}>('/api/agents/:id/export',{onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
+    const q=request.query,input:Record<string,unknown>={mode:q.mode,organization:q.organization==='true',wholeWorkingFolder:q.wholeWorkingFolder==='true',organizationWorkingFolders:q.organizationWorkingFolders==='true'};
+    try{for(const key of ['workingFiles','reviewedUserData','gitStorageBindings'])if(q[key]!==undefined)input[key]=JSON.parse(q[key]!);}catch{throw new AssetError(400,'Export selections must be valid JSON');}
+    // Legacy direct links keep their direct response and attachment behavior.
+    try{return await exportPackage(request.params.id,input,reply,q.download==='1');}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}
+  });
 
   const validChatInstructionsResolution = (value: unknown): boolean => {
     if (value === undefined) return true;
@@ -772,6 +1446,19 @@ export function registerAgentPackageRoutes(
       /^[a-f0-9]{64}$/u.test(record.expectedDestinationSha256);
   };
 
+  type RoleResult=ImportAgentPackageResponse&{outputRoleFinalization?:{reviewId:string;binding:string;mapping:Record<string,string>;done?:boolean}};
+  const finishRoles=(operationId:string):ImportAgentPackageResponse=>{
+    const operation=store.getAgentCreationOperation(operationId)!;const result=operation.result as RoleResult;
+    if(operation.agentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Output roles remain held until destination admission commits');
+    const intent=result.outputRoleFinalization;
+    if(intent&&!intent.done){
+      if(!outputApps)throw new Error('Output role service unavailable');
+      outputApps.finalizeImport(intent.reviewId,intent.binding,operationId,intent.mapping);
+      intent.done=true;store.updateAgentCreationOperation(operationId,{result});
+      outputApps.finishImport(intent.reviewId);
+    }
+    return result;
+  };
   const importPackage = async (
     projectId: string,
     body: ImportAgentPackageRequest,
@@ -779,15 +1466,25 @@ export function registerAgentPackageRoutes(
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
     creationOperationId?: string,
     creationRequest?: { idempotencyKey: string; rawPayloadHash?: string },
+    branchHooks?: BranchImportHooks,
+    signal?: AbortSignal,
   ): Promise<unknown> => withProjectImportLock(projectId, async () => {
+      signal?.throwIfAborted();
+      branchHooks?.assertImportReady?.();
       let importBody: Record<string, unknown>;
       try {
         importBody = validatedObject(body, "Agent import request");
         exactObjectFields(
           importBody,
-          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution"],
+          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation"],
           "Agent import request",
         );
+        if(importBody.workingFilesDestination!==undefined&&(typeof importBody.workingFilesDestination!=='string'||!path.isAbsolute(importBody.workingFilesDestination)))throw new Error('Choose an absolute new working-files destination');
+        if (importBody.workingCopyMode!==undefined&&!['shared','separate_git'].includes(String(importBody.workingCopyMode)))throw new Error('Invalid destination working-copy mode');
+        if(importBody.reviewedUserDataActivation!==undefined)validateReviewedUserDataActivation(importBody.reviewedUserDataActivation);
+        if(importBody.reviewedMetadataActivation!==undefined)validateReviewedMetadataActivation(importBody.reviewedMetadataActivation);
+        if(importBody.workingFilesActivation!==undefined){const activation=validatedObject(importBody.workingFilesActivation,'Live working-root activation');exactObjectFields(activation,['sharedRoot'],'Live working-root activation');if(activation.sharedRoot!==undefined&&typeof activation.sharedRoot!=='string')throw new Error('Invalid new Shared root confirmation');}
+        if(importBody.accessSettingsResolution!==undefined){const resolution=validatedObject(importBody.accessSettingsResolution,'Access review');exactObjectFields(resolution,['action','reviewSha256','agentActions'],'Access review');if(resolution.agentActions!==undefined){const actions=validatedObject(resolution.agentActions,'Per-Agent access choices');if(Object.values(actions).some(action=>action!=='keep_destination'&&action!=='use_source'))throw new Error('Invalid per-Agent access choice');}if(!['keep_destination','use_source'].includes(String(resolution.action))||typeof resolution.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(resolution.reviewSha256))throw new Error('Invalid access review');}
         if (!validChatInstructionsResolution(importBody.chatInstructionsResolution) ||
             typeof importBody.conversationId !== "string" ||
             !importBody.engineMapping || typeof importBody.engineMapping !== "object" ||
@@ -809,22 +1506,44 @@ export function registerAgentPackageRoutes(
           Object.entries(importBody.engineMapping as Record<string, string>)
             .map(([source, target]) => [source, target.trim()]),
         );
-        const payloadHash = creationRequest.rawPayloadHash ?? createHash("sha256").update(stableJson({
-          package: importBody.package,
-          conversationId: importBody.conversationId,
-          engineMapping: normalizedEngineMapping,
-          ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
-          acknowledgeElevatedManagementPermissions:
-            importBody.acknowledgeElevatedManagementPermissions ?? false,
-        })).digest("hex");
+        let payloadHash: string;
         try {
-          creationOperationId = store.beginAgentCreationOperation({
-            projectId,
-            actorScope: "user:local-operator",
-            kind: "import",
-            idempotencyKey: creationRequest.idempotencyKey,
-            payloadHash,
-          }).operation.id;
+          if (!creationRequest.rawPayloadHash) {
+            const { package: portable, ...metadata } = importBody;
+            agentPackageJsonUtf8Bytes(portable);
+            agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES);
+          }
+          payloadHash = creationRequest.rawPayloadHash ?? await portableImportPayloadHash({
+            package: importBody.package,
+            conversationId: importBody.conversationId,
+            engineMapping: normalizedEngineMapping,
+            ...(importBody.accessSettingsResolution?{accessSettingsResolution:importBody.accessSettingsResolution}:{}),
+            ...(importBody.reviewedUserDataActivation?{reviewedUserDataActivation:importBody.reviewedUserDataActivation}:{}),
+            ...(importBody.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:importBody.reviewedMetadataActivation}:{}),
+            ...(importBody.workingFilesActivation?{workingFilesActivation:importBody.workingFilesActivation}:{}),
+        ...(importBody.workingRootDestinations?{workingRootDestinations:importBody.workingRootDestinations}:{}),
+            ...(importBody.workingFilesDestination?{workingFilesDestination:importBody.workingFilesDestination}:{}),
+            ...(importBody.workingCopyMode?{workingCopyMode:importBody.workingCopyMode}:{}),
+            ...(importBody.outputRoleReviewId ? {outputRoleReviewId:importBody.outputRoleReviewId} : {}),
+            ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
+            acknowledgeElevatedManagementPermissions:
+              importBody.acknowledgeElevatedManagementPermissions ?? false,
+          }, signal);
+        } catch (error) {
+          return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "invalid Agent import identity" });
+        }
+        try {
+          creationOperationId = store.sqlite.transaction(()=>{
+            if(getImportIntent(projectId,creationRequest.idempotencyKey))throw Error(heldImportMessage);
+            return store.beginAgentCreationOperation({
+              projectId,
+              actorScope: "user:local-operator",
+              kind: "import",
+              idempotencyKey: creationRequest.idempotencyKey,
+              payloadHash,
+              conversationId: body.conversationId,
+            }).operation.id;
+          }).immediate();
         } catch (error) {
           return reply.code(409).send({
             error: error instanceof Error ? error.message : "Agent import replay conflict",
@@ -833,8 +1552,13 @@ export function registerAgentPackageRoutes(
       }
       const durableOperation = store.getAgentCreationOperation(creationOperationId);
       if (!durableOperation) throw new Error("Agent import creation operation is unavailable");
+      const backgroundId=operationByRequest.get(requestOperationKey(projectId,durableOperation.idempotencyKey));
+      if(backgroundId&&syncFs.existsSync(importLifecyclePath(backgroundId)))return reply.code(409).send({error:'Import is held by an explicit lifecycle reconciliation decision',operationId:backgroundId});
+      if (durableOperation.projectId !== projectId || durableOperation.conversationId !== body.conversationId) {
+        return reply.code(409).send({error:"Agent import destination does not match its durable owner"});
+      }
       if (durableOperation.status === "completed" && durableOperation.result) {
-        return reply.code(200).send(durableOperation.result);
+        return reply.code(200).send(finishRoles(durableOperation.id));
       }
       if (durableOperation.status === "canonical_committed" || durableOperation.status === "rolling_back") {
         return reply.code(409).send({
@@ -918,162 +1642,108 @@ export function registerAgentPackageRoutes(
       let operationAgentIds: string[] = [];
       let rollbackArtifacts: PlannedArtifact[] = [];
       let appliedChatInstructions: string | undefined;
+      let roleIntent:RoleResult["outputRoleFinalization"];
+      let reviewedDestinationPolicy:string|undefined;
+      let retainedWorkingFiles=false;
+      const reviewedApplications:NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>=[];
+      const metadataApplications:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>=[];
+      const pendingFolderMetadata:Array<{destination:string;receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
+      const pendingLiveMetadata:Array<{destination:string;receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
+      let metadataPrimaryError:unknown;
+      const stagedFolderMetadata=new Set<(typeof pendingFolderMetadata)[number]>();
+      const stageFolderMetadata=async(pendingRows:typeof pendingFolderMetadata)=>{
+        for(const pending of [...pendingRows].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+          if(stagedFolderMetadata.has(pending))continue;
+          try{await pending.apply();stagedFolderMetadata.add(pending);}
+          catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+          finally{if(pending.receipt)saveMetadataApplications();}
+        }
+      };
+
+      const runNativeMetadataPhase=async(operation:()=>Promise<void>)=>{
+        try{await operation();}
+        catch(error){
+          metadataPrimaryError=error;
+          const pending=metadataApplications.filter(receipt=>receipt.state==='applying');
+          for(const receipt of pending){receipt.state='incomplete';receipt.error=metadataFailure(error);}
+          if(pending.length)saveMetadataApplications();
+          throw error;
+        }
+      };
+      const saveMetadataApplications=()=>{
+        try{return store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedMetadataApplications:metadataApplications}});}
+        catch(receiptError){throw Object.assign(new Error('Metadata receipt persistence failed; preserve destination and original: '+(metadataPrimaryError instanceof Error?metadataPrimaryError.message:String(receiptError)),{cause:metadataPrimaryError??receiptError}),{code:(metadataPrimaryError as {code?:string}|undefined)?.code??'ERR_METADATA_RECEIPT_PERSISTENCE',partialStatePossible:true,receiptError});}
+      };
+      const metadataFailure=(error:unknown)=>{
+        const failure=error as {code?:string;observed?:Record<string,unknown>};
+        const raw=failure.observed?.identity??failure.observed;
+        const identity=raw&&typeof raw==='object'?Object.fromEntries(['device','inode','kind','mode','mtimeNs','ownerId','groupId','parentDevice','parentInode','deviceMajor','deviceMinor'].filter(key=>Object.hasOwn(raw,key)).map(key=>[key,(raw as Record<string,unknown>)[key]])):null;
+        return {message:redactPortableDiagnostic(error instanceof Error?error.message:String(error)),code:failure.code,partialStatePossible:true,observed:failure.observed?JSON.parse(JSON.stringify({identity,inventoryState:failure.observed.inventoryState??null},(_key,value)=>typeof value==='bigint'?value.toString():value)):null};
+      };
+      const liveWorkingRoots:NonNullable<ImportAgentPackageResponse['liveWorkingRoots']>=[];
+      const liveModeReleases:Array<()=>void>=[];
       try {
       await onPhase?.("creating_records");
+      signal?.throwIfAborted();
 
       let portablePackage: AgentPortablePackageDto;
       let importNodes: PlannedNode[];
+      const metadataRootLinks=()=>importNodes.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[]}));
       let importSourceLabel: string;
       const artifactRefMap = new Map<string, string>();
       try {
-        const packageRecord = validatedObject(body?.package, "Agent package");
-        exactObjectFields(
-          packageRecord,
-          [
-            "schema", "mode", "kind", "exportedAt", "sourceLabel",
-            "sourceProjectInstructions", "rootRef", "agents",
-          ],
-          "Agent package",
-        );
-        if (
-          packageRecord.schema !== "ponderosa.agent-package.v1"
-          || (
-            packageRecord.mode !== "template"
-            && packageRecord.mode !== "full"
-          )
-          || !Array.isArray(packageRecord.agents)
-          || packageRecord.agents.length < 1
-          || packageRecord.agents.length > 100
-        ) {
-          throw new Error("invalid Ponderosa Agent package");
+        const validated = validatePortableAgentPackage(body?.package);
+        assertAgentPackageMemoryAvailable(validated.totalArtifactBytes);
+        portablePackage = validated.package;
+        importSourceLabel = portablePackage.sourceLabel.slice(0,240);
+        const sourceChatRefs=new Set(portablePackage.agents.flatMap(node=>node.sourceChat?[node.sourceChat.ref]:[]));
+        if(sourceChatRefs.size>1)throw new Error('Multiple source Chat bindings require separate organization packages; one export is one within-Chat reporting subtree');
+        if(body.accessSettingsResolution?.agentActions){
+          const refs=portablePackage.agents.filter(node=>node.accessSettings).map(node=>node.ref),actions=body.accessSettingsResolution.agentActions;
+          if(Object.keys(actions).length!==refs.length||refs.some(ref=>!Object.hasOwn(actions,ref))||Object.keys(actions).some(ref=>!refs.includes(ref)))throw new Error('Per-Agent access choices must cover exactly the reviewed source settings');
         }
-        if (
-          typeof packageRecord.exportedAt !== "string"
-          || !Number.isFinite(Date.parse(packageRecord.exportedAt))
-          || typeof packageRecord.sourceLabel !== "string"
-          || (
-            packageRecord.sourceProjectInstructions !== undefined
-            && (typeof packageRecord.sourceProjectInstructions !== "string"
-              || packageRecord.sourceProjectInstructions.length > 100_000)
-          )
-        ) {
-          throw new Error("Agent package metadata is invalid");
-        }
-        if (
-          packageRecord.mode === "template"
-          && packageRecord.sourceProjectInstructions !== undefined
-        ) {
-          throw new Error(
-            "template packages cannot contain full-mode Project context",
-          );
-        }
-        portablePackage = packageRecord as unknown as AgentPortablePackageDto;
-        importSourceLabel = portablePackage.sourceLabel.slice(0, 240);
-        const topologyError = portableAgentTopologyError(portablePackage);
-        if (topologyError) throw new Error(topologyError);
-
-        const elevatedAgentRefs: string[] = [];
-        const sourceEngines = new Set<string>();
-        for (const candidate of portablePackage.agents as unknown[]) {
-          const node = validatedObject(candidate, "Agent package node");
-          exactObjectFields(
-            node,
-            [
-              "ref", "title", "engine", "model", "effort",
-              "initialInstructions", "managerRef", "managementPermissions",
-              "history", "artifacts",
-            ],
-            "Agent package node",
-          );
-          if (
-            typeof node.ref !== "string"
-            || typeof node.title !== "string"
-            || typeof node.engine !== "string"
-            || !node.engine.trim()
-            || (node.model !== undefined && typeof node.model !== "string")
-            || (node.effort !== undefined && typeof node.effort !== "string")
-            || (
-              node.initialInstructions !== undefined
-              && typeof node.initialInstructions !== "string"
-            )
-          ) {
-            throw new Error(
-              "every imported Agent must declare valid identity and runtime fields",
-            );
-          }
-          const permissions = validatedObject(
-            node.managementPermissions,
-            "managementPermissions",
-          );
-          exactObjectFields(
-            permissions,
-            [
-              "allowAutomaticDescendantDeletion",
-              "allowAutomaticDescendantReorganization",
-            ],
-            "managementPermissions",
-          );
-          if (
-            typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
-            || typeof permissions.allowAutomaticDescendantReorganization
-              !== "boolean"
-          ) {
-            throw new Error(
-              "every imported Agent must declare exact boolean management permissions",
-            );
-          }
-          if (
-            permissions.allowAutomaticDescendantDeletion
-            || permissions.allowAutomaticDescendantReorganization
-          ) elevatedAgentRefs.push(node.ref);
-          sourceEngines.add(node.engine);
-          if (
-            portablePackage.mode === "template"
-            && (
-              node.history !== undefined
-              || node.artifacts !== undefined
-            )
-          ) {
-            throw new Error(
-              "template packages cannot contain history or artifacts",
-            );
-          }
-          if (node.history !== undefined && !Array.isArray(node.history)) {
-            throw new Error("Agent history must be an array");
-          }
-          let messagePosition = 0;
-          for (
-            const messageCandidate of
-              (node.history as unknown[] | undefined) ?? []
-          ) {
-            if (messagePosition++ % 128 === 0) await yieldToLoop();
-            const message = validatedObject(
-              messageCandidate,
-              "history message",
-            );
-            exactObjectFields(
-              message,
-              ["role", "text", "createdAt"],
-              "history message",
-            );
-            if (
-              !["user", "assistant", "system"].includes(String(message.role))
-              || typeof message.text !== "string"
-              || (
-                message.createdAt !== undefined
-                && (
-                  typeof message.createdAt !== "string"
-                  || !Number.isFinite(Date.parse(message.createdAt))
-                )
-              )
-            ) {
-              throw new Error("Agent history messages have an invalid shape");
-            }
-          }
-          if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) {
-            throw new Error("Agent artifacts must be an array");
+        if(body.reviewedUserDataActivation!==undefined||body.reviewedMetadataActivation!==undefined||body.accessSettingsResolution||portablePackage.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length)){
+          const accessReview=await reviewAccess(portablePackage,conversation.id,body);
+          reviewedDestinationPolicy=stableJson(accessReview.destination);
+          const {reviewSha256}=accessReview;
+          if(body.accessSettingsResolution?.reviewSha256!==reviewSha256){
+            abandonMutationFreeOperation('Nonsecret access settings require human review');
+            return reply.code(409).send({error:'Review source restrictions and destination access before importing',...accessReview});
           }
         }
+        const rootRefs=[...new Set(portablePackage.agents.flatMap(node=>node.workingRootRef?[node.workingRootRef]:[]))];
+        if(rootRefs.length){
+          if(body.workingFilesDestination)throw new Error('Choose per-root destinations for an organization folder bundle');
+          const mapping=body.workingRootDestinations;
+          if(!mapping||typeof mapping!=='object'||Array.isArray(mapping)||Object.keys(mapping).length!==rootRefs.length||rootRefs.some(ref=>typeof mapping[ref]!=='string'||!path.isAbsolute(mapping[ref]!))||Object.keys(mapping).some(ref=>!rootRefs.includes(ref)))throw new Error('Choose one new absolute destination for every exported working root');
+          validateWorkingRootNesting(new Set(rootRefs),portablePackage.workingRootNesting??[],mapping);
+        }else{
+          if(body.workingRootDestinations)throw new Error('Package has no organization working roots');
+          if(portablePackage.agents.some(node=>node.workingFiles?.length||node.workingFolder)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
+          if(body.workingFilesDestination&&portablePackage.agents.filter(node=>node.workingFiles?.length||node.workingFolder).length!==1)throw new Error('One selected working folder is required for this destination');
+        }
+        await validateNativeSelection(portablePackage,body,project.id);
+        if(body.workingFilesActivation){
+          if(portablePackage.mode!=='full'||!portablePackage.agents.some(node=>node.workingFolder||node.workingFiles?.length))throw new Error('Live activation requires a full package with selected folder originals');
+          if(!context.workingCopies)throw new Error('Live working-copy import service is unavailable');
+          const shared=portablePackage.agents.filter(node=>(body.workingCopyMode??node.workingCopyMode??'shared')==='shared');
+          if(shared.length||body.workingFilesActivation.sharedRoot!==undefined){
+            if(body.workingFilesActivation.sharedRoot!==project.hostPath||!store.isManagedProjectImportDestination(project.id)||store.listAgents(project.id).length)throw new Error('Choose an unused NEW managed Chat and explicitly confirm its Shared root');
+            if(new Set(shared.map(node=>node.workingRootRef??node.ref)).size>1&&shared.filter(node=>node.workingFolder||node.workingFiles?.length).length>1)throw new Error('Distinct source roots cannot be collapsed into one Shared folder');
+          }
+          for(const ref of rootRefs){const members=portablePackage.agents.filter(node=>node.workingRootRef===ref);const modes=new Set(members.map(node=>body.workingCopyMode??node.workingCopyMode??'shared'));if(modes.size!==1||modes.has('separate_git')&&members.length!==1)throw new Error('Live import must preserve source root membership');}
+        }
+        if(portablePackage.agents.some(node=>(body.workingCopyMode??node.workingCopyMode)==='separate_git')&&!context.workingCopies)throw new Error('Separate Git copy import service is unavailable');
+        if(portablePackage.outputRoles?.length&&!branchHooks){
+          if(!outputApps||typeof body.outputRoleReviewId!=='string')throw new Error('Review imported output roles before confirming');
+          const binding=await portableImportPayloadHash({package:portablePackage,destination:conversation.id});
+          outputApps.claimImport(body.outputRoleReviewId,binding,creationOperationId!);
+          roleIntent={reviewId:body.outputRoleReviewId,binding,mapping:{}};
+        }
+        const elevatedAgentRefs = portablePackage.agents.filter(node =>
+          node.managementPermissions.allowAutomaticDescendantDeletion ||
+          node.managementPermissions.allowAutomaticDescendantReorganization).map(node=>node.ref);
+        const sourceEngines = new Set(portablePackage.agents.map(node=>node.engine));
         if (
           elevatedAgentRefs.length > 0
           && body.acknowledgeElevatedManagementPermissions !== true
@@ -1109,69 +1779,16 @@ export function registerAgentPackageRoutes(
         for (const node of portablePackage.agents) {
           const plannedArtifacts: PlannedArtifact[] = [];
           for (const artifactCandidate of node.artifacts ?? []) {
-            const artifact = validatedObject(
-              artifactCandidate,
-              "portable artifact",
-            );
-            exactObjectFields(
-              artifact,
-              [
-                "ref", "kind", "path", "summary", "createdAt", "mediaType",
-                "visibility", "pinned", "sourcePath", "dataBase64",
-              ],
-              "portable artifact",
-            );
-            if (
-              typeof artifact.ref !== "string"
-              || !CANONICAL_ARTIFACT_ID.test(artifact.ref)
-              || artifactRefMap.has(artifact.ref)
-            ) {
-              throw new Error(
-                "artifact refs must be unique canonical identifiers",
-              );
-            }
-            if (
-              ![
-                "diff", "test_report", "pr_summary", "log", "document",
-                "screenshot", "generated_file",
-              ].includes(String(artifact.kind))
-              || typeof artifact.path !== "string"
-              || !artifact.path
-              || typeof artifact.createdAt !== "string"
-              || !Number.isFinite(Date.parse(artifact.createdAt))
-              || typeof artifact.dataBase64 !== "string"
-              || (
-                artifact.summary !== undefined
-                && typeof artifact.summary !== "string"
-              )
-              || (
-                artifact.mediaType !== undefined
-                && typeof artifact.mediaType !== "string"
-              )
-              || (
-                artifact.visibility !== undefined
-                && artifact.visibility !== "project"
-                && artifact.visibility !== "published"
-              )
-              || (
-                artifact.pinned !== undefined
-                && typeof artifact.pinned !== "boolean"
-              )
-              || (
-                artifact.sourcePath !== undefined
-                && typeof artifact.sourcePath !== "string"
-              )
-            ) {
-              throw new Error(
-                `artifact ${String(artifact.ref)} has an invalid shape`,
-              );
-            }
-            const encodedBytes = Math.floor(artifact.dataBase64.replace(/=+$/u, "").length * 3 / 4);
+            const artifact = artifactCandidate;
+            const encodedBytes = validated.artifactBytes.get(artifact)!;
             if (artifactBytes + encodedBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
               abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
               return reply.code(413).send({ error: `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}` });
             }
-            const { data, sha256 } = await decodePortableArtifact(artifact.dataBase64);
+            signal?.throwIfAborted();
+            const { data, sha256 } = await decodePortableArtifactData(artifact);
+            signal?.throwIfAborted();
+            if(artifact.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE)validateExecutionArchive(data);
             artifactBytes += data.length;
             if (artifactBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
               abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
@@ -1183,7 +1800,8 @@ export function registerAgentPackageRoutes(
             const replayDestinationId = durableOperation.artifactIds[artifactPosition];
             let destinationId = replayDestinationId ?? artifact.ref;
             if (!replayDestinationId && (
-              store.getProjectArtifact(project.id, destinationId)
+              data.length===0
+              || store.getProjectArtifact(project.id, destinationId)
               || reservedDestinationIds.has(destinationId)
               || (
                 artifact.kind === "generated_file"
@@ -1261,45 +1879,84 @@ export function registerAgentPackageRoutes(
             effort,
             cachedModelOptions(importAdapter, project.id),
           );
-          if (selectionError) {
-            throw new Error(`${node.title}: ${selectionError}`);
+          const speedError = runtimeSpeedSelectionError(importAdapter, model, node.speed, cachedModelOptions(importAdapter, project.id));
+          if (selectionError || speedError) {
+            throw new Error(`${node.title}: ${selectionError ?? speedError}`);
           }
           const initialInstructions = node.initialInstructions === undefined ? undefined
-            : rewritePortableArtifactReferences(node.initialInstructions, artifactRefMap).slice(0, 100_000);
+            : rewritePortableArtifactReferences(node.initialInstructions, artifactRefMap);
           // Initial guidance has its own portable authority. Its private-context
           // entry is derived by the store, never added to exportable history.
-          const history = (node.history ?? []).map((message) => ({
-            ...message,
-            ...(message.createdAt
-              ? { createdAt: new Date(message.createdAt).toISOString() }
-              : {}),
-          }));
+          const history = [...(node.history ?? [])];
           for (let index = 0; index < history.length; index++) {
             const message = history[index]!;
-            history[index] = { ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap).slice(0, 100_000) };
+            history[index] = { ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap), ...(message.attachmentRefs?{attachmentRefs:message.attachmentRefs.map(ref=>artifactRefMap.get(ref)!)}:{}), ...(message.artifactRefs?{artifactRefs:Object.fromEntries(Object.entries(message.artifactRefs).map(([source,ref])=>[source,artifactRefMap.get(ref)!]))}:{}) };
             if (index % 16 === 0) await yieldToLoop();
           }
           importNodes.push({
             ...node,
             title: node.title.trim().slice(0, 80) || "Imported Agent",
             initialInstructions,
+            ...(node.role !== undefined ? { role: normalizeAgentRole(rewritePortableArtifactReferences(node.role, artifactRefMap)) } : {}),
+            ...(node.presetSnapshot ? { presetSnapshot: {
+              ...node.presetSnapshot,
+              guidance: rewritePortableArtifactReferences(node.presetSnapshot.guidance, artifactRefMap),
+            } } : {}),
             targetEngine,
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
             history,
+            ...(node.workingFiles?{workingFiles:node.workingFiles.map(file=>({...file,artifactRef:artifactRefMap.get(file.artifactRef)!,
+              ...(file.parts?{parts:{...file.parts,refs:file.parts.refs.map(ref=>artifactRefMap.get(ref)!)}}:{})}))}:{}),
             artifacts: artifactsByNode.get(node.ref) ?? [],
           });
           await yieldToLoop();
         }
       } catch (error) {
         abandonMutationFreeOperation(error instanceof Error ? error.message : "invalid Ponderosa Agent package");
-        return reply.code(400).send({
-          error: error instanceof Error
-            ? error.message
-            : "invalid Ponderosa Agent package",
+        return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({
+          error: error instanceof Error ? error.message : "invalid Ponderosa Agent package",
         });
       }
 
+      // Resolve and verify every complete logical original before publishing any
+      // part or creating a working root. Existing package admission reserves
+      // capacity for decoded bytes and this one combined original.
+      const workingOriginals=new Map<string,Map<string,{data:Buffer;sha256:string}>>();
+      const transportParts=new Map<string,ReturnType<typeof makeWorkingFileTransportPart>>();
+      try {
+      for(const node of importNodes)for(const file of node.workingFiles??[]){
+        const parts=workingFileArtifactRefs(file).map(ref=>node.artifacts.find(artifact=>artifact.destinationId===ref));
+        if(parts.some(part=>!part))throw new Error('Selected working-file original part is missing');
+        const bodies=parts.map(part=>part!.data),verified=verifyPortableWorkingFileParts(file,bodies);
+        const data=bodies.length===1?bodies[0]!:Buffer.concat(bodies,verified.byteLength);
+        validateWorkingFileData(file.path,data);
+        const byPath=workingOriginals.get(node.ref)??new Map<string,{data:Buffer;sha256:string}>();
+        byPath.set(file.path,{data,sha256:verified.sha256});workingOriginals.set(node.ref,byPath);
+      }
+      for(const node of importNodes)for(const link of node.workingFolder?.links??[]){
+        if(link.kind!=='hardlink')continue;
+        const targetRoot=link.targetRootRef??node.workingRootRef??node.ref;
+        const owner=importNodes.find(candidate=>(candidate.workingRootRef??candidate.ref)===targetRoot&&workingOriginals.get(candidate.ref)?.has(link.target));
+        const original=owner&&workingOriginals.get(owner.ref)?.get(link.target);
+        if(!original)throw new Error('Selected hardlink original is missing');
+        validateWorkingFileData(link.path,original.data);
+      }
+      for(const node of importNodes)for(const file of node.workingFiles??[])if(file.parts){
+        // Scope ownership to a node, even when two roots have the same path and bytes.
+        const ownerScope=createHash('sha256').update(JSON.stringify([creationOperationId,node.ref])).digest('hex');
+        for(let index=0;index<file.parts.refs.length;index++){
+          const marker=makeWorkingFileTransportPart(file,index,ownerScope);
+          if(transportParts.has(marker.artifactId))throw new Error('Working-file transport part has multiple owners');
+          transportParts.set(marker.artifactId,marker);
+        }
+      }
+      } catch (error) {
+        abandonMutationFreeOperation(error instanceof Error ? error.message : "Invalid working-file original");
+        return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({
+          error:error instanceof Error ? error.message : "Invalid working-file original",
+        });
+      }
       const activeDestinationConversation = () => {
         const current = store.getConversation(conversation.id);
         return current?.projectId === project.id &&
@@ -1366,8 +2023,48 @@ export function registerAgentPackageRoutes(
         abandonMutationFreeOperation("Imported Chat instructions exceed 100000 characters");
         return reply.code(400).send({ error: "Imported Chat instructions exceed 100000 characters" });
       }
+      try {
+        // Remapping a short colliding reference can grow otherwise admitted
+        // text. Admit the complete persisted values before reserving records,
+        // publishing bytes or changing the destination Chat.
+        agentPackageJsonUtf8Bytes({
+          ...portablePackage,
+          ...(importedChatInstructions !== undefined ? { sourceProjectInstructions: importedChatInstructions } : {}),
+          agents: importNodes.map((node, index) => ({
+            ...portablePackage.agents[index],
+            ...(node.initialInstructions !== undefined ? { initialInstructions: node.initialInstructions } : {}),
+            ...(node.role !== undefined ? { role: node.role } : {}),
+            ...(node.presetSnapshot ? { presetSnapshot: node.presetSnapshot } : {}),
+            ...(portablePackage.mode === "full" ? { history: node.history } : {}),
+            ...(node.artifacts.length ? { artifacts: node.artifacts.map((artifact, artifactIndex) => ({
+              ...portablePackage.agents[index]!.artifacts![artifactIndex],
+              ref: artifact.destinationId,
+              path: artifact.managedPath,
+            })) } : {}),
+          })),
+        });
+        for (const node of importNodes) {
+          agentPackageJsonUtf8Bytes({
+            source: importSourceLabel,
+            importedAt: new Date().toISOString(),
+            ...(node.initialInstructions !== undefined ? { initialInstructions: node.initialInstructions, initialInstructionsSeparated: true } : {}),
+            messages: node.history,
+            ...(node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?{chatTitleHistory:portablePackage.chatTitleHistory}:{}),
+          }, AGENT_PACKAGE_MAX_BYTES - 1);
+        }
+      } catch (error) {
+        abandonMutationFreeOperation(error instanceof Error ? error.message : "Agent package exceeds its byte limit");
+        return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "Agent package exceeds its byte limit" });
+      }
+      const packageMemory=portablePackage.memory??[];
+      if(packageMemory.length){
+        const memory=localMemoryFor(app);if(!memory)throw new AssetError(409,'Package contains memory; configure destination local memory before importing');
+        for(const entry of packageMemory){try{validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}catch(error){throw new AssetError(400,error instanceof Error?error.message:'Invalid memory snapshot');}}
+      }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
-      rollbackArtifacts = plannedArtifacts;
+      const physicalArtifacts=plannedArtifacts.filter(artifact=>artifact.data.length>0);
+      rollbackArtifacts = physicalArtifacts;
+      store.sqlite.transaction(() => {
       if (creationOperationId) {
         const creationOperation = store.getAgentCreationOperation(creationOperationId);
         if (!creationOperation) throw new Error("Agent import creation operation is unavailable");
@@ -1410,17 +2107,36 @@ export function registerAgentPackageRoutes(
           for (const agentId of operationAgentIds) deletingAgentIds.add(agentId);
         }
       }
+
+      if(packageMemory.length){
+        const memoryPlan=localMemoryFor(app)!.prepareImportMemory(creationOperationId!,packageMemory);
+        store.updateAgentCreationOperation(creationOperationId!,{result:{phase:'prepared_memory',memoryPlan}});
+      }
+
+      if(branchHooks?.stage){
+        if(!creationOperationId)throw new Error('Staged import requires its canonical creation operation');
+        const result:unknown=branchHooks.stage({creationOperationId,projectId:project.id,conversationId:conversation.id,
+          agents:importNodes.map((node,index)=>({sourceRef:node.ref,agentId:operationAgentIds[index]!})),
+          artifacts:plannedArtifacts.filter(artifact=>artifact.data.length>0).map(artifact=>({sourceRef:artifact.ref,destinationId:artifact.destinationId,sha256:artifact.sha256,byteLength:artifact.data.length}))});
+        if(result&&typeof result==='object'&&'then' in result)throw new Error('Import staging must be synchronous');
+      }
+      })();
+      await branchHooks?.plan(operationAgentIds, creationOperationId);
+      signal?.throwIfAborted();
       await onPhase?.("importing_artifacts");
+      signal?.throwIfAborted();
+      // Zero originals already have exact same-owner working-file bindings.
+      // Their inert DTOs use the existing imported archive, not a managed blob.
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
-        plannedArtifacts.map((artifact) => ({
+        physicalArtifacts.map((artifact) => ({
           artifactId: artifact.destinationId,
           input: artifact.data,
         })),
       );
       const publicationById = new Map(
-        plannedArtifacts.map((artifact, index) => [
+        physicalArtifacts.map((artifact, index) => [
           artifact.destinationId,
           publishedArtifacts[index]!,
         ]),
@@ -1428,7 +2144,7 @@ export function registerAgentPackageRoutes(
 
       if (deletingProjectIds.has(project.id) ||
           !activeDestinationConversation()) {
-        const rollbackComplete = removeUncataloguedPublications(plannedArtifacts);
+        const rollbackComplete = removeUncataloguedPublications(physicalArtifacts);
         const reason = deletingProjectIds.has(project.id)
           ? "Project deletion is already in progress"
           : "The destination Chat is no longer active";
@@ -1442,30 +2158,178 @@ export function registerAgentPackageRoutes(
         });
       }
 
+      const recoveryRootIdentities:Record<string,WorkingRootIdentity>={},liveRootIdentities:Record<string,WorkingRootIdentity>={},nativeMetadata=createWorkingNativeMetadataEvidence();
+      const folderImports=orderWorkingRoots((body.workingRootDestinations
+        ? Object.entries(body.workingRootDestinations).map(([ref,destination])=>({destination,nodes:importNodes.filter(node=>node.workingRootRef===ref)}))
+        : body.workingFilesDestination?[{destination:body.workingFilesDestination,nodes:importNodes}]:[]).map(item=>({...item,ref:item.nodes.find(node=>node.workingFolder)?.workingRootRef??item.nodes[0]!.ref,links:item.nodes.find(node=>node.workingFolder)?.workingFolder?.links??[]})),portablePackage.workingRootNesting);
+      for(const {destination,nodes} of folderImports){
+        const files=nodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const original=workingOriginals.get(node.ref)!.get(file.path)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
+        store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),workingFilesDestination:body.workingFilesDestination,workingRootDestinations:body.workingRootDestinations}});
+        const folder=nodes.find(node=>node.workingFolder)?.workingFolder;
+        retainedWorkingFiles=true;
+        const ref=nodes.find(node=>node.workingFolder)?.workingRootRef??nodes[0]!.ref;
+        const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(ref)?body.reviewedMetadataActivation:undefined;
+        const original=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
+        const receipt=metadataActivation&&original?{ref,path:destination,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
+        if(receipt){metadataApplications.push(receipt);saveMetadataApplications();}
+        try{const identity=await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks,metadataActivation,true,body.workingRootDestinations,true);recoveryRootIdentities[destination]=identity;pendingFolderMetadata.push({destination,receipt,apply:()=>finalizeWorkingFolderMetadata(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,folder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()),identity,nativeMetadata)});}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{if(receipt)saveMetadataApplications();}
+      }
+      for(const item of folderImports){
+        try{await importWorkingLinks(item.destination,item.links,body.workingRootDestinations,undefined,recoveryRootIdentities[item.destination],Boolean(branchHooks?.retainFinalWorkingData));}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
+      }
+      if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
+        const activation=body.reviewedUserDataActivation;
+        const owner=portablePackage.agents.find(node=>node.workingFolder||node.workingFiles?.length);
+        const destinations=body.workingRootDestinations??{[owner!.workingRootRef??owner!.ref]:body.workingFilesDestination!};
+        await runNativeMetadataPhase(()=>applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,activation),activation,receipt=>{
+          const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+          if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+        },recoveryRootIdentities,nativeMetadata,()=>stageFolderMetadata(pendingFolderMetadata)));
+      }
+      for(const pending of [...(body.workingFilesActivation?[]:pendingFolderMetadata)].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+        try{if(!stagedFolderMetadata.has(pending)){await pending.apply();stagedFolderMetadata.add(pending);}if(pending.receipt)pending.receipt.state='completed';}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{if(pending.receipt)saveMetadataApplications();}
+      }
+      signal?.throwIfAborted();
+      if(body.workingFilesActivation&&importNodes.some(node=>(body.workingCopyMode??node.workingCopyMode??'shared')==='shared')){
+        store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingProjectRoot:project.hostPath}});
+        await context.workingCopies!.stageImportedSharedGit(project);
+      }
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
+      signal?.throwIfAborted();
       for (const [index, node] of importNodes.entries()) {
+        signal?.throwIfAborted();
         const agent = store.createAgent(project.id, {
           title: node.title,
           engine: node.targetEngine,
           conversationId: conversation.id,
           ...(node.model ? { model: node.model } : {}),
           ...(node.effort ? { effort: node.effort } : {}),
+          ...(node.speed !== undefined ? { speed: node.speed } : {}),
+          ...(node.role !== undefined ? { role: node.role } : {}),
           managementPermissions: node.managementPermissions,
-        }, undefined, operationAgentIds[index]);
+        }, undefined, operationAgentIds[index], node.presetSnapshot ?? null);
         created.set(node.ref, agent);
         rollbackAgentIds.push(agent.id);
+        const folderMode=body.workingCopyMode??node.workingCopyMode;
+        if(folderMode==='separate_git'&&!body.workingFilesActivation){
+          const release=context.workingCopies!.beginModeChange(agent.id);
+          try{const configured=await context.workingCopies!.setMode(agent,project,folderMode);if(configured.workingCopy.state!=='ready')throw new Error(configured.workingCopy.failure??'Imported working copy is unavailable');created.set(node.ref,configured);}finally{release();}
+        }
         deletingAgentIds.add(agent.id);
+        await yieldToLoop();
       }
 
+      if(body.workingFilesActivation){
+        let liveProject=project;
+        for(const agent of created.values())liveModeReleases.push(context.workingCopies!.beginModeChange(agent.id));
+        const rootRef=(node:PlannedNode)=>node.workingRootRef??node.ref;
+        const rows=[...new Set(importNodes.filter(node=>node.workingFolder||node.workingFiles?.length).map(rootRef))].map(ref=>{
+          const selected=importNodes.find(node=>rootRef(node)===ref)!;
+          const mode=body.workingCopyMode??selected.workingCopyMode??'shared';
+          const members=importNodes.filter(node=>rootRef(node)===ref||!selected.workingRootRef&&!node.workingRootRef&&mode==='shared'&&(body.workingCopyMode??node.workingCopyMode??'shared')==='shared'),node=members.find(member=>member.workingFolder)??members[0]!;
+          const agent=created.get(node.ref)!;
+          const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=workingOriginals.get(member.ref)!.get(file.path)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
+          return {ref,members,node,agent,mode,files,folder:node.workingFolder};
+        });
+        const byRef=new Map(rows.map(row=>[row.ref,row])),allocated=new Set<string>();
+        const remember=()=>{
+          for(const row of rows)row.agent=store.getAgent(row.agent.id)!;
+          for(const [ref,agent] of created)created.set(ref,store.getAgent(agent.id)!);
+          liveProject=store.getProject(project.id)!;
+        };
+        const allocate=async(ref:string):Promise<void>=>{
+          if(allocated.has(ref))return;signal?.throwIfAborted();
+          const row=byRef.get(ref);if(!row)throw new Error('Nested live root lacks its complete source folder');
+          const boundary=portablePackage.workingRootNesting?.find(item=>item.childRootRef===ref);
+          if(boundary){
+            await allocate(boundary.parentRootRef);const parent=byRef.get(boundary.parentRootRef)!;
+            const reservation=await context.workingCopies!.reserveImportedContainedRoot(store.getAgent(parent.agent.id)!,liveProject,boundary.path);
+            store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveRootBindings:{...((store.getAgentCreationOperation(creationOperationId!)?.result as {liveRootBindings?:object}|undefined)?.liveRootBindings??{}),[ref]:{parentRootRef:boundary.parentRootRef,path:boundary.path,agentIds:row.members.map(member=>created.get(member.ref)!.id),reservation}}}});
+            row.agent=row.mode==='shared'&&liveProject.hostPath!==reservation.rootPath
+              ?await context.workingCopies!.bindImportedContainedProjectForCreation(store.getAgent(row.agent.id)!,liveProject,reservation,creationOperationId!)
+              :await context.workingCopies!.bindImportedContainedRoot(store.getAgent(row.agent.id)!,liveProject,reservation,row.mode);
+            remember();
+          }else if(row.mode==='separate_git'){
+            row.agent=await context.workingCopies!.allocateImportedSeparateGit(store.getAgent(row.agent.id)!,liveProject);remember();
+          }
+          allocated.add(ref);
+        };
+        // A Separate actor without selected originals still needs its own locally
+        // allocated ownership, never a source path or an existing Shared branch.
+        for(const node of importNodes)if((body.workingCopyMode??node.workingCopyMode??'shared')==='separate_git'&&!byRef.has(rootRef(node))){
+          created.set(node.ref,await context.workingCopies!.allocateImportedSeparateGit(created.get(node.ref)!,liveProject));
+        }
+        for(const row of rows)await allocate(row.ref);
+        remember();
+        const liveLinkDestinations=Object.fromEntries(rows.map(row=>[row.ref,row.agent.workingCopy.rootPath]));
+        validateWorkingRootNesting(new Set(rows.map(row=>row.ref)),portablePackage.workingRootNesting??[],liveLinkDestinations);
+        const finalBackups=new Map<string,{device:string;inode:string}>();
+        for(const row of [...rows].sort((a,b)=>a.agent.workingCopy.rootPath.split(path.sep).length-b.agent.workingCopy.rootPath.split(path.sep).length)){
+          if(row.members.some(member=>created.get(member.ref)!.workingCopy.rootPath!==row.agent.workingCopy.rootPath))throw new Error('Live import split source working-root membership');
+          const root={ref:row.ref,path:row.agent.workingCopy.rootPath,agentIds:row.members.map(member=>created.get(member.ref)!.id)};
+          liveWorkingRoots.push(root);store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingRoots}});
+          const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(row.ref)?body.reviewedMetadataActivation:undefined,original=row.files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
+          const receipt=metadataActivation&&original?{ref:row.ref,path:root.path,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
+          if(receipt){metadataApplications.push(receipt);saveMetadataApplications();}
+          try{
+            const identity=await context.workingCopies!.populateImportedRoot(row.agent,liveProject,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,path.join(root.path,'.ponderosa-import-backups'),row.folder?.links,row.folder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);
+            liveRootIdentities[root.path]=identity;
+            if(branchHooks?.retainFinalWorkingData){if(!identity.backupDirectory)throw Error('Final import backup creation proof unavailable');finalBackups.set(path.join(root.path,'.ponderosa-import-backups'),identity.backupDirectory);}
+            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:async()=>{
+              await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()),nativeMetadata);
+            }});
+          }catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+          finally{if(receipt)saveMetadataApplications();}
+        }
+        for(const row of rows){
+          try{await importWorkingLinks(row.agent.workingCopy.rootPath,row.folder?.links??[],liveLinkDestinations,{backupRoot:path.join(row.agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[row.agent.workingCopy.rootPath],Boolean(branchHooks?.retainFinalWorkingData));}
+          catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
+        }
+        for(const [backup,issued] of finalBackups){
+          const current=await fs.lstat(backup,{bigint:true});
+          if(!current.isDirectory()||String(current.dev)!==issued.device||String(current.ino)!==issued.inode)throw Error('Final import backup ownership changed; preserve retained roots and review');
+          // Only this operation's empty generated backup is removed, before root
+          // metadata is finalized. Nonempty/replaced directories retain all data.
+          try{await fs.rmdir(backup);}catch(error){
+            if((error as NodeJS.ErrnoException).code==='ENOTEMPTY')throw Error('Final import backup contains retained files; preserve retained roots and review',{cause:error});
+            throw error;
+          }
+        }
+        const recoveryDestinations=body.workingRootDestinations??{[rows[0]!.ref]:body.workingFilesDestination!};
+        const relocate=(target:string)=>{const entry=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length)[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveLinkDestinations[entry[0]]!,path.relative(entry[1],target));};
+        const requested=body.reviewedUserDataActivation,activation=requested?{...requested,...(requested.gitPathMappings?{gitPathMappings:requested.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})}:undefined;
+        await runNativeMetadataPhase(()=>context.workingCopies!.completeImportedGitRoots(liveProject,portablePackage,liveLinkDestinations,activation,receipt=>{
+          const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+          if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+        },[...created.values()].map(agent=>agent.id),nativeMetadata,()=>stageFolderMetadata([...pendingFolderMetadata,...pendingLiveMetadata])));
+        remember();
+      }
+
+      for(const pending of [...(body.workingFilesActivation?pendingFolderMetadata:[]),...pendingLiveMetadata].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+        try{if(!stagedFolderMetadata.has(pending)){await pending.apply();stagedFolderMetadata.add(pending);}if(pending.receipt)pending.receipt.state='completed';}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{if(pending.receipt)saveMetadataApplications();}
+      }
+
+      for(const release of liveModeReleases.splice(0).reverse())release();
       const catalogArtifacts: Array<{
         artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
+        transportPart?:ReturnType<typeof makeWorkingFileTransportPart>;
       }> = [];
       await onPhase?.("importing_history");
       await onPhase?.("finalizing");
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         for (const artifact of node.artifacts) {
+          if(artifact.data.length===0)continue;
           const catalogArtifact = {
             id: artifact.destinationId,
             projectId: project.id,
@@ -1484,29 +2348,56 @@ export function registerAgentPackageRoutes(
             size: artifact.data.length,
             sha256: artifact.sha256,
           };
-          catalogArtifacts.push({ artifact: catalogArtifact });
+          const transportPart=transportParts.get(artifact.destinationId);
+          catalogArtifacts.push({ artifact: catalogArtifact,...(transportPart?{transportPart}:{}) });
         }
       }
       store.recordProjectArtifacts(catalogArtifacts);
 
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
-        if (node.history.length || node.initialInstructions !== undefined) {
+        if (node.history.length || node.initialInstructions !== undefined || node.workingFiles?.length || node.workingFolder || node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?.length) {
           await store.setImportedHistoryAsync(
             agent.id,
             importSourceLabel,
             node.history,
             node.initialInstructions,
+            node.workingFiles||node.workingFolder?{workingFiles:node.workingFiles,workingFolder:node.workingFolder,
+              emptyWorkingArtifacts:node.artifacts.filter(artifact=>artifact.data.length===0).map(({data,destinationId,managedPath,sha256,...artifact})=>({...artifact,ref:destinationId,path:managedPath})),
+            }:undefined,
+            node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?mergeChatTitleHistory(portablePackage.chatTitleHistory):undefined,
           );
         }
       }
+      for(const [index,entry] of packageMemory.entries()){
+        signal?.throwIfAborted();
+        const mapping=Object.fromEntries(Object.entries(entry.agentRefs).map(([id,ref])=>[id,created.get(ref)!.id]));
+        await localMemoryFor(app)!.restoreImportMemory(creationOperationId!,entry,mapping,creationOperationId+':m:'+index,signal);
+      }
+      signal?.throwIfAborted();
+      // All imported Agents start detached. Attach descendants before their
+      // managers so each existing ancestry check stays bounded even for a
+      // 10,000-deep organization supplied in arbitrary package order.
+      const childrenByManager = new Map<string, PlannedNode[]>();
       for (const node of importNodes) {
+        if (!node.managerRef) continue;
+        const siblings = childrenByManager.get(node.managerRef) ?? [];
+        siblings.push(node);
+        childrenByManager.set(node.managerRef, siblings);
+      }
+      const assignmentOrder = (portablePackage.rootRefs??[portablePackage.rootRef]).map(ref=>importNodes.find(node=>node.ref===ref)!);
+      for (let index = 0; index < assignmentOrder.length; index++) {
+        for (const child of childrenByManager.get(assignmentOrder[index]!.ref) ?? []) assignmentOrder.push(child);
+      }
+      for (const node of assignmentOrder.reverse()) {
+        signal?.throwIfAborted();
         if (node.managerRef) {
           store.updateAgentOrganization(
             created.get(node.ref)!.id,
             { managerAgentId: created.get(node.managerRef)!.id },
           );
         }
+        await yieldToLoop();
       }
       for (const { artifact } of catalogArtifacts) {
         if (artifact.kind !== "generated_file") continue;
@@ -1515,7 +2406,15 @@ export function registerAgentPackageRoutes(
           publicationById.get(artifact.id)!,
         );
       }
-      const response: ImportAgentPackageResponse = {
+      const response: RoleResult = {
+        agentRefs:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id])),
+        ...(body.workingFilesActivation?{liveWorkingRoots}:{}),
+        ...(body.reviewedUserDataActivation?{reviewedUserDataApplications:reviewedApplications}:{}),
+        ...(body.reviewedMetadataActivation?{reviewedMetadataApplications:metadataApplications}:{}),
+        ...(body.workingFilesDestination?{workingFilesDestination:body.workingFilesDestination}:{}),
+        ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
+        accessSettingsToReview:importNodes.filter(node=>node.accessSettings&&(node.accessSettings.readGlobalMemory!==undefined||node.accessSettings.savedBrowserAllowed!==undefined||node.accessSettings.browserMode!==undefined)).map(node=>({agentId:created.get(node.ref)!.id,source:node.accessSettings!,conversationId:conversation.id})),
+        ...(body.workingRootDestinations?{workingRoots:Object.entries(body.workingRootDestinations).map(([ref,destination])=>({ref,destination,agentIds:importNodes.filter(node=>node.workingRootRef===ref).map(node=>created.get(node.ref)!.id)}))}:{}),
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
       };
@@ -1525,17 +2424,48 @@ export function registerAgentPackageRoutes(
         // caller cannot observe success with stale recovery data.
         await removeCopySnapshot(creationOperationId);
         if (importedChatInstructions !== undefined) {
+          const currentDestination = activeDestinationConversation();
+          if (!currentDestination || (currentDestination.instructions ?? "") !== destinationInstructions) {
+            throw Object.assign(new Error("Destination Chat instructions changed. Review them and choose again."), { statusCode: 409 });
+          }
           appliedChatInstructions = importedChatInstructions;
           if (!store.updateConversation(conversation.id, { instructions: importedChatInstructions })) {
             throw new Error("The destination Chat is no longer active");
           }
         }
-        store.updateAgentCreationOperation(creationOperationId, {
-          status: "completed",
-          result: response,
-          lastError: null,
-        });
+        signal?.throwIfAborted();
+        await branchHooks?.beforeAdmit?.(response);
+        signal?.throwIfAborted();
+        if(roleIntent)outputApps!.checkImport(roleIntent.reviewId,roleIntent.binding,creationOperationId);
+        const commit=()=>{
+          if(reviewedDestinationPolicy!==undefined&&stableJson(new CapabilityPolicyStore(store.sqlite).resolveForChat(conversation.id))!==reviewedDestinationPolicy)throw new Error('Destination access changed; review the import again');
+          if(body.accessSettingsResolution){
+            const policies=new CapabilityPolicyStore(store.sqlite);
+            for(const node of importNodes)if(node.accessSettings&&(body.accessSettingsResolution.agentActions?.[node.ref]??body.accessSettingsResolution.action)==='use_source')policies.put({scopeKind:'agent',scopeId:created.get(node.ref)!.id,expectedRevision:0,restrictedCapabilityIds:node.accessSettings.restrictedCapabilityIds,actor:'operator',reason:'Human-reviewed portable nonsecret access settings'});
+          }
+          const completeImport=()=>store.updateAgentCreationOperation(creationOperationId!, {
+            status: "completed", result: {...((store.getAgentCreationOperation(creationOperationId!)?.result as {importedProjectRootBindings?:object}|undefined)?.importedProjectRootBindings?{importedProjectRootBindings:(store.getAgentCreationOperation(creationOperationId!)!.result as {importedProjectRootBindings:object}).importedProjectRootBindings}:{}),...(branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response)}, lastError: null,
+          });
+          if(branchHooks?.holdForDisclosure){
+            if(!branchHooks.stage||operationAgentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Disclosure hold requires exact staged identities');
+            if(roleIntent||packageMemory.length)throw new Error('Deferred admission excludes roles and memory');
+            if(plannedArtifacts.length||liveWorkingRoots.length||retainedWorkingFiles){
+              if(!branchHooks.retainFinalWorkingData)throw new Error('Deferred admission supports only artifact-free private organization state');
+              const checked:unknown=branchHooks.retainFinalWorkingData(portablePackage,response);
+              if(checked&&typeof checked==='object'&&'then' in checked)throw new Error('Final working data authority must be synchronous');
+            }
+            store.updateAgentCreationOperation(creationOperationId!,{status:'canonical_committed',result:{...response,branchDestinationPrepared:true},lastError:null});
+            const held:unknown=branchHooks.holdForDisclosure(response);
+            if(held&&typeof held==='object'&&'then' in held)throw new Error('Disclosure hold must be synchronous');
+          }else if(branchHooks?.admit){
+            const result:unknown=branchHooks.admit(response,completeImport);
+            if(result&&typeof result==='object'&&'then' in result)throw new Error('Historical admission must be synchronous');
+            if(store.getAgentCreationOperation(creationOperationId!)?.status!=='completed'||operationAgentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Historical admission did not publish readiness and import completion');
+          }else{branchHooks?.commit(response);completeImport();}
+        };
+        if(branchHooks?.transaction)branchHooks.transaction(commit);else store.sqlite.transaction(commit)();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
+        if(!branchHooks?.holdForDisclosure)finishRoles(creationOperationId);
       }
       try {
         appendWorkspace({
@@ -1554,7 +2484,38 @@ export function registerAgentPackageRoutes(
       }
       return reply.code(201).send(response);
       } catch (error) {
+        if(liveWorkingRoots.length)error=new Error(`${error instanceof Error?error.message:String(error)}; live working roots and displaced baselines retained at ${JSON.stringify(liveWorkingRoots)}`,{cause:error});
+        if(retainedWorkingFiles)error=new Error(`${error instanceof Error?error.message:String(error)}; user working files retained at ${JSON.stringify(body.workingRootDestinations??body.workingFilesDestination)}`,{cause:error});
+        if(creationOperationId&&['completed','canonical_committed'].includes(store.getAgentCreationOperation(creationOperationId)?.status??'')){
+          return reply.code(409).send({error:'Imported resources committed; output role finalization needs recovery/review: '+(error as Error).message,operationId:creationOperationId});
+        }
+        const heldBindings=creationOperationId?(store.getAgentCreationOperation(creationOperationId)?.result as {importedProjectRootBindings?:Record<string,object>}|undefined)?.importedProjectRootBindings:undefined;
+        if(creationOperationId&&heldBindings&&Object.keys(heldBindings).length){
+          const message='Imported final working-root binding requires inspection; canonical members and partial roots are held without replay: '+(error instanceof Error?error.message:String(error));
+          store.updateAgentCreationOperation(creationOperationId,{result:{...(store.getAgentCreationOperation(creationOperationId)?.result as object??{}),importedProjectRootBindings:Object.fromEntries(Object.entries(heldBindings).map(([id,binding])=>[id,{...binding,state:'unavailable',error:{code:'ERR_IMPORT_PROJECT_BINDING_HELD',message,at:new Date().toISOString()}}]))},lastError:message});
+          throw Object.assign(new Error(message,{cause:error}),{statusCode:409,code:'ERR_IMPORT_PROJECT_BINDING_HELD',partialStatePossible:true});
+        }
         let rollbackComplete = true;
+        if(creationOperationId){
+          store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back'});
+          try{const memoryPlan=(store.getAgentCreationOperation(creationOperationId)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(memoryPlan?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for import rollback');await memory.rollbackImportMemory(creationOperationId);}}
+          catch(memoryError){
+            // Do not discard staged owners, artifacts, instructions or the
+            // original reason when memory cleanup has not been proven safe.
+            let originalError:unknown=error;
+            for(let depth=0;depth<4;depth++){
+              if(originalError instanceof AggregateError&&originalError.errors.length){originalError=originalError.errors[0];continue;}
+              if(originalError instanceof Error&&originalError.cause instanceof Error){originalError=originalError.cause;continue;}
+              break;
+            }
+            const original=redactPortableDiagnostic(originalError instanceof Error?originalError.message:String(originalError)).slice(0,4096);
+            const cause=redactPortableDiagnostic(memoryError instanceof Error?memoryError.message:String(memoryError)).slice(0,4096);
+            const held=isMemoryCleanupHold(memoryError);
+            const previous=store.getAgentCreationOperation(creationOperationId);
+            store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back',result:{...(previous?.result as object??{}),memoryCleanupOriginalError:original,...(!held?{memoryCleanupFailure:cause}:{})},lastError:held&&memoryError instanceof Error?memoryError.message:cause});
+            throw Object.assign(new Error(held&&memoryError instanceof Error?memoryError.message:cause,{cause:error}),{statusCode:409,code:'ERR_IMPORT_MEMORY_CLEANUP_HELD',partialStatePossible:true,operationId:creationOperationId});
+          }
+        }
         if (appliedChatInstructions !== undefined) {
           try {
             if (store.getConversation(conversation.id)?.instructions === appliedChatInstructions) {
@@ -1563,15 +2524,18 @@ export function registerAgentPackageRoutes(
           } catch { rollbackComplete = false; }
         }
         const authorityBlockedArtifactIds = new Set<string>();
-        for (const agentId of [...rollbackAgentIds].reverse()) {
-          try {
-            if (!store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id)) &&
-                store.getAgent(agentId)) rollbackComplete = false;
-          } catch {
-            rollbackComplete = false;
-            // Preserve the original import failure. Startup deletion recovery
-            // completes any rollback whose durable deletion already committed.
+        try {
+          // Pending members are intentionally absent from the public directory.
+          // Resolve and delete the entire owned organization in one preview.
+          const liveIds=rollbackAgentIds.filter(id=>store.getAgent(id));
+          if(liveIds.length){
+            const preview=store.previewAgentDeletion(liveIds);
+            if(preview.affectedAgents.some(agent=>!rollbackAgentIds.includes(agent.id)))throw new Error("Import rollback would affect an unowned Agent");
+            store.deleteAgentSubtrees(liveIds,preview.previewHash,id=>coordinationV3.handleAgentDeletion(id));
           }
+        } catch {
+          // Exact cleanup authority remains durable for startup recovery.
+          rollbackComplete=false;
         }
         const operationAgentsRemain = operationAgentIds.some((agentId) => store.getAgent(agentId));
         if (creationOperationId) {
@@ -1623,14 +2587,17 @@ export function registerAgentPackageRoutes(
           }
         }
         if (operationAgentsRemain) rollbackComplete = false;
+        if(rollbackComplete&&roleIntent)outputApps?.abandonReview(roleIntent.reviewId);
         if (creationOperationId) {
           store.updateAgentCreationOperation(creationOperationId, {
             status: rollbackComplete ? "rolled_back" : "rolling_back",
+            ...(retainedWorkingFiles?{result:{...(store.getAgentCreationOperation(creationOperationId)?.result as object??{}),workingFilesDestination:body.workingFilesDestination,workingRootDestinations:body.workingRootDestinations}}:{}),
             lastError: error instanceof Error ? error.message : "Agent import failed",
           });
         }
         throw error;
       } finally {
+        for(const release of liveModeReleases.splice(0).reverse())release();
         for (const agentId of operationAgentIds.length ? operationAgentIds : rollbackAgentIds) {
           if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
         }
@@ -1638,29 +2605,64 @@ export function registerAgentPackageRoutes(
       }
   });
 
-  app.post<{
-    Params: { id: string };
-    Headers: { "idempotency-key"?: string };
-    Body: ImportAgentPackageRequest;
-  }>(
-    "/api/projects/:id/import-agents",
-    { bodyLimit: 1024 * 1024 },
-    (request, reply) => {
+  const importStagedPackage = async (
+    request: FastifyRequest<{ Params: { id: string }; Headers: { "idempotency-key"?: string }; Body: StagedImportUpload }>,
+    reply: FastifyReply,
+    jsonEnvelope = false,
+  ): Promise<unknown> => {
+    try {
       const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
-      if (!idempotencyKey) {
-        return reply.code(400).send({ error: "a valid import idempotency key is required" });
-      }
-      return withAgentImportAdmission(() => importPackage(request.params.id, request.body, reply, undefined, undefined, {
-        idempotencyKey,
-      }));
-    },
-  );
+      if (!idempotencyKey) return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      return await withAgentImportAdmission(async () => {
+        if (await sha256File(request.body.pathname) !== request.body.sha256) throw new Error("Agent upload changed after admission");
+        const { metadata, portable, canonicalPayloadHash } = await parsePortablePackageFile(request.body.pathname, { jsonEnvelope });
+        if (jsonEnvelope && !canonicalPayloadHash) throw new Error("Agent import canonical identity is unavailable");
+        if ((!jsonEnvelope && metadata.conversationId !== request.body.metadata?.conversationId) ||
+            !resourceInProduct(store, "conversation", metadata.conversationId, requestProduct(request))) {
+          return reply.code(404).send({ error: "The destination Chat is unavailable in this product" });
+        }
+        return importPackage(request.params.id, { ...metadata, package: portable }, reply, undefined, undefined, {
+          idempotencyKey,
+          // JSON callers retain their original canonical payload identity;
+          // binary uploads retain their exact owned-upload identity.
+          rawPayloadHash: jsonEnvelope ? canonicalPayloadHash : request.body.sha256,
+        });
+      });
+    } catch (error) {
+      return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "invalid Ponderosa Agent package" });
+    } finally {
+      await cleanupUpload(request.body);
+    }
+  };
+
+  // Scope the legacy JSON envelope to the existing owned staging and codec.
+  // Ordinary JSON routes keep their parser and request budgets unchanged.
+  void app.register(async scope => {
+    scope.removeContentTypeParser("application/json");
+    scope.addContentTypeParser("application/json", stagedImportParser(true));
+    scope.post<{ Params: { id: string }; Headers: { "idempotency-key"?: string }; Body: StagedImportUpload }>(
+      "/api/projects/:id/import-agents",
+      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload, onRequest: packageOperation,config:{agentPackageOperation:true} },
+      (request, reply) => importStagedPackage(request, reply, true),
+    );
+  });
 
   const runBackgroundImport = async (operationId: string): Promise<void> =>
     withAgentImportAdmission(async () => {
     await operationHydration;
+    if(importAdmissionHeld(operationId))return;
+    const intent=importIntentForOperation(operationId);
+    if(intent&&!importOwnerAvailable(intent))return;
+    if(syncFs.existsSync(importLifecyclePath(operationId)))return;
+    // Acquire the existing Chat creation lease before any worker await. Chat
+    // and Project deletion consult this same lease through the entire import.
+    if(intent)agentCreationConversationLeases.set(intent.conversation_id,(agentCreationConversationLeases.get(intent.conversation_id)??0)+1);
+    try{
     let operation = await readOperation(operationId);
     if (!operation || operation.status !== "pending") return;
+    // A valid journal for another scope is not authority for this leased Chat.
+    // Leave both journal and payload untouched if any exact identity differs.
+    if(intent&&!importOperationMatchesIntent(operation,intent))return;
     const update = async (patch: Partial<AgentImportOperationDto>) => {
       operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
       await writeOperation(operation);
@@ -1673,21 +2675,24 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "info",
-          title: "Agent import in progress",
+          title: "Agent Import In Progress",
           body: next.replaceAll("_", " "),
           projectId: operation!.projectId,
+          conversationId:operation!.conversationId,
           action: { kind: "open_project", targetId: operation!.projectId },
         });
       } catch { /* phase state is durable; notification is best effort */ }
     };
     let committedResult: ImportAgentPackageResponse | undefined;
     let retainPayloadForRecovery = false;
+    let committedCreationId:string|undefined;
     try {
       const durablePayloadPath = payloadPath(operationId);
       if (await sha256File(durablePayloadPath) !== operation.payloadHash) {
         throw new Error("Import payload no longer matches its durable operation");
       }
       const { metadata, portable } = await parsePortablePackageFile(durablePayloadPath);
+      if(metadata.conversationId!==operation.conversationId||!resourceInProduct(store,'conversation',operation.conversationId,operation.product))throw new Error('Import destination no longer matches its admitted product');
       await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
       const creationOperation = store.beginAgentCreationOperation({
         projectId: operation.projectId,
@@ -1695,9 +2700,11 @@ export function registerAgentPackageRoutes(
         kind: "import",
         idempotencyKey: operation.requestId,
         payloadHash: operation.payloadHash,
+        conversationId: metadata.conversationId,
       }).operation;
+      committedCreationId=creationOperation.id;
       if (creationOperation.status === "completed" && creationOperation.result) {
-        const result = creationOperation.result as ImportAgentPackageResponse;
+        const result = finishRoles(creationOperation.id);
         committedResult = result;
         await update({ phase: "completed", status: "completed", result });
         for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
@@ -1739,16 +2746,24 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "info",
-          title: "Import complete",
+          title: "Import Complete",
           informational: true,
           body: `${operation.sourceLabel} was imported successfully. Reviewing its preserved history is optional; the Agent is ready to use.`,
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           agentId: result.rootAgentId,
           action: { kind: "open_agent", targetId: result.rootAgentId },
         });
       } catch { /* completion remains authoritative */ }
     } catch (error) {
+      if(intent&&!importOwnerAvailable(intent)){retainPayloadForRecovery=true;return;}
       const message = error instanceof Error ? error.message : "Import failed";
+      if(committedCreationId&&store.getAgentCreationOperation(committedCreationId)?.status==='completed'&&!committedResult){
+        retainPayloadForRecovery=true;
+        await update({phase:'finalizing',status:'pending',error:message.slice(0,1000),outputRoleRecoveryId:committedCreationId});
+        try{createOperationalNotification({dedupeKey:'import-role-recovery:'+committedCreationId,category:'system',severity:'attention',title:'Imported Output Roles Need Review',body:message.slice(0,1000),projectId:operation.projectId,conversationId:operation.conversationId,action:{kind:'open_project',targetId:operation.projectId}});}catch{/* Durable role recovery remains visible on the import operation. */}
+        return;
+      }
       if (committedResult) {
         // The imported Agents are authoritative. If the acknowledgement write
         // failed, leave the durable operation pending so startup can replay it;
@@ -1772,14 +2787,15 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "urgent",
-          title: "Agent import failed",
+          title: "Agent Import Failed",
           body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           action: { kind: "open_project", targetId: operation.projectId },
         });
       } catch { /* failure state is durable */ }
     } finally {
-      if (!retainPayloadForRecovery) {
+      if (!retainPayloadForRecovery && (!intent||importOwnerAvailable(intent))) {
         const removed = await fs.unlink(payloadPath(operationId))
           .then(() => true)
           .catch(() => false);
@@ -1789,15 +2805,67 @@ export function registerAgentPackageRoutes(
         }
       }
     }
+    }finally{
+      if(intent){
+        const remaining=(agentCreationConversationLeases.get(intent.conversation_id)??1)-1;
+        if(remaining>0)agentCreationConversationLeases.set(intent.conversation_id,remaining);
+        else agentCreationConversationLeases.delete(intent.conversation_id);
+      }
+    }
   });
 
+  app.post<{Params:{id:string;operationId:string};Body?:{reviewId?:string}}>('/api/projects/:id/agent-role-finalizations/:operationId',async(request,reply)=>{
+    try{
+      const op=store.getAgentCreationOperation(request.params.operationId),result=op?.result as RoleResult|undefined,intent=result?.outputRoleFinalization;
+      if(!op||op.projectId!==request.params.id||!op.conversationId||!resourceInProduct(store,'conversation',op.conversationId,requestProduct(request))||op.status!=='completed'||!intent)return reply.code(404).send({error:'Committed role import unavailable'});
+      const body=request.body??{};exactObjectFields(validatedObject(body,'Role confirmation'),['reviewId'],'Role confirmation');
+      if(body.reviewId!==undefined&&typeof body.reviewId!=='string')throw new Error('Invalid role review');
+      if(intent.done){for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));return result;}
+      if(!outputApps)throw new Error('Output role service unavailable');
+
+      if(body.reviewId===undefined){
+        try{const result=finishRoles(op.id);for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));return result;}catch{/* A changed state needs an explicit new review. */}
+        return outputApps.reReviewImport(intent.reviewId,intent.binding,op.id,intent.mapping);
+      }
+      if(typeof body.reviewId!=='string')throw new Error('Invalid role review');
+      outputApps.claimImport(body.reviewId,intent.binding,op.id);
+      const old=intent.reviewId;intent.reviewId=body.reviewId;store.updateAgentCreationOperation(op.id,{result});outputApps.abandonReview(old);
+      const finalized=finishRoles(op.id);
+      for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));
+      return finalized;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
+    try{
+      if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
+      const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
+      validatePortableAgentPackage(portable);
+      const chat=store.getConversation(metadata.conversationId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,requestProduct(request)))return reply.code(404).send({error:'Import destination unavailable'});
+      return await reviewAccess(portable,chat.id,metadata);
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+    finally{await cleanupUpload(request.body);}
+  });
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
+    try{
+      if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
+      const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
+      validatePortableAgentPackage(portable);
+      const chat=store.getConversation(metadata.conversationId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,requestProduct(request)))return reply.code(404).send({error:'Import destination unavailable'});
+      if(!outputApps)throw new Error('Output role service unavailable');
+      const binding=await portableImportPayloadHash({package:portable,destination:chat.id});
+      return outputApps.reviewImport(portable.outputRoles??[],binding,Boolean(chat.branchId&&!chat.executionId));
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+    finally{await cleanupUpload(request.body);}
+  });
   app.post<{
     Params: { id: string };
     Headers: { "idempotency-key"?: string };
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/agent-import-operations",
-    { bodyLimit: maximumImportBytes },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true} },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
       const staged = request.body;
       let transferredReservation = false;
@@ -1807,13 +2875,25 @@ export function registerAgentPackageRoutes(
       if (!requestId) {
         return reply.code(400).send({ error: "a valid import idempotency key is required" });
       }
+      const destination=store.getConversation(staged.metadata!.conversationId),product=requestProduct(request);
+      if(!destination||destination.projectId!==request.params.id||!resourceInProduct(store,'conversation',destination.id,product))return reply.code(404).send({error:'The destination Chat is unavailable in this product'});
       const requestKey = requestOperationKey(request.params.id, requestId);
       const requestPayloadHash = staged.sha256;
+      const priorIntent=getImportIntent(request.params.id,requestId);
+      if(priorIntent){
+        if(priorIntent.conversation_id!==destination.id||priorIntent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(priorIntent.payload_sha256!==requestPayloadHash||priorIntent.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
+        if(priorIntent.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(priorIntent)});
+        const prior=await readQueuedIntentOperation(priorIntent);
+        if(!prior)return reply.code(409).send({error:heldImportMessage});
+        return reply.code(prior.status==='pending'?202:200).send(prior);
+      }
       const existingId = operationByRequest.get(requestKey);
       if (existingId) {
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
         if (existing) {
-          if (existing.payloadHash !== requestPayloadHash) {
+          if(existing.conversationId!==destination.id||existing.product!==product)return reply.code(404).send({error:'import operation not found'});
+          if (existing.payloadHash !== requestPayloadHash || existing.requestFingerprint!==staged.requestFingerprint) {
             return reply.code(409).send({
               error: "Import idempotency key was reused with different input",
             });
@@ -1834,13 +2914,42 @@ export function registerAgentPackageRoutes(
         id,
         requestId,
         payloadHash: requestPayloadHash,
+        ...(staged.requestFingerprint?{requestFingerprint:staged.requestFingerprint}:{}),
         projectId: request.params.id,
+        conversationId:destination.id,
+        product,
         sourceLabel: "Agent import",
         phase: "queued",
         status: "pending",
         createdAt: now,
         updatedAt: now,
       };
+      // Reserve the key and operation before any queue-file mutation.
+      transferredReservation=true;
+      let reserved:boolean;
+      try{
+        reserved=store.sqlite.transaction(()=>{
+          // The legacy synchronous route creates in the same canonical ledger.
+          // Serialize its admission with this reservation across processes.
+          if(store.findAgentCreationOperation({projectId:request.params.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:requestId}))return false;
+          const result=store.sqlite.prepare(`INSERT INTO agent_import_submission_intents
+            (project_id,request_id,conversation_id,product_scope,payload_sha256,request_fingerprint,operation_id,staged_name,state)
+            VALUES (?,?,?,?,?,?,?,?,'reserved') ON CONFLICT(project_id,request_id) DO NOTHING`)
+            .run(request.params.id,requestId,destination.id,product,requestPayloadHash,staged.requestFingerprint??null,id,path.basename(staged.pathname));
+          return result.changes===1;
+        }).immediate();
+      }catch{return reply.code(409).send({error:heldImportMessage});}
+      if(!reserved){
+        transferredReservation=false;
+        const competing=getImportIntent(request.params.id,requestId);
+        if(!competing)return reply.code(409).send({error:'An existing import owns this request identity; no second import was started.'});
+        if(competing.conversation_id!==destination.id||competing.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(competing.payload_sha256!==requestPayloadHash||competing.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
+        if(competing.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(competing)});
+        const prior=await readQueuedIntentOperation(competing);
+        if(!prior)return reply.code(409).send({error:heldImportMessage});
+        return reply.code(prior.status==='pending'?202:200).send(prior);
+      }
       try {
         await fs.mkdir(importOperationDirectory, { recursive: true });
         await fs.rename(staged.pathname, payloadPath(id));
@@ -1851,17 +2960,11 @@ export function registerAgentPackageRoutes(
           try { await directory.sync(); } finally { await directory.close(); }
         }
         await writeOperation(operation);
-      } catch (error) {
-        operationByRequest.delete(requestKey);
-        operationCache.delete(id);
-        const removed = await fs.unlink(payloadPath(id))
-          .then(() => true)
-          .catch(() => false);
-        if (removed) {
-          releaseStagedReservation(operationReservations.get(id));
-          operationReservations.delete(id);
-        }
-        throw error;
+        const updated=store.sqlite.prepare("UPDATE agent_import_submission_intents SET state='queued' WHERE project_id=? AND request_id=? AND operation_id=? AND state='reserved'").run(request.params.id,requestId,id);
+        if(updated.changes!==1)throw Error('Import reservation changed before queue admission');
+      } catch {
+        // Journal installation or rollback may have reached disk. Preserve evidence.
+        return reply.code(409).send({error:heldImportMessage});
       }
       setImmediate(() => void runBackgroundImport(id));
       try {
@@ -1869,21 +2972,92 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${id}`,
           category: "system",
           severity: "info",
-          title: "Agent import queued",
+          title: "Agent Import Queued",
           body: "The import continues in the background.",
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           action: { kind: "open_project", targetId: operation.projectId },
         });
       } catch { /* the durable queue and scheduled worker remain authoritative */ }
       return reply.code(202).send(operation);
       } finally {
-        const removed = await fs.unlink(staged.pathname)
-          .then(() => true)
-          .catch(() => false);
-        if (removed || !transferredReservation) {
-          releaseStagedReservation(staged.reservationId);
-        }
+        if(!transferredReservation)await cleanupUpload(staged);
+        else ownedUploads.delete(staged);
       }
+    }),
+  );
+
+  // Read-only lookup after a lost enqueue response. A missing key does not
+  // prove an earlier upload has drained or may no longer be admitted.
+  app.get<{ Params:{id:string;requestId:string};Querystring:{conversationId?:string} }>(
+    "/api/projects/:id/agent-import-operations/by-request/:requestId",
+    async(request,reply)=>{
+      reply.header('cache-control','no-store');
+      await operationHydration;
+      const requestId=validIdempotencyKey(request.params.requestId),chatId=request.query?.conversationId,product=requestProduct(request);
+      if(!requestId||requestId!==request.params.requestId||typeof chatId!=='string'||!chatId||chatId.length>200)
+        return reply.code(404).send({error:'import operation not found'});
+      const intent=getImportIntent(request.params.id,requestId);
+      if(intent&&intent.conversation_id===chatId&&intent.product_scope===product&&deletedImportDestination(intent))
+        return reply.code(409).send({...heldImportIdentity(intent),state:'destination_deleted',error:'The destination was deleted. The import outcome remains unknown; any retained evidence remains on the server.'});
+      const chat=store.getConversation(chatId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chatId,product))
+        return reply.code(404).send({error:'import operation not found'});
+      if(intent){
+        if(intent.conversation_id!==chatId||intent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(intent.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(intent)});
+        const operation=await readQueuedIntentOperation(intent);
+        const current=getImportIntent(request.params.id,requestId);
+        if(!current||stableJson(current)!==stableJson(intent))return reply.code(404).send({error:'import operation not found'});
+        if(deletedImportDestination(current))return reply.code(409).send({...heldImportIdentity(current),state:'destination_deleted',error:'The destination was deleted. The import outcome remains unknown; any retained evidence remains on the server.'});
+        if(!importOwnerAvailable(current))return reply.code(404).send({error:'import operation not found'});
+        if(!operation)return reply.code(409).send({error:heldImportMessage});
+        return reply.send(operation);
+      }
+      const operationId=operationByRequest.get(requestOperationKey(request.params.id,requestId));
+      if(!operationId)return reply.code(404).send({error:'import operation not found'});
+      // Both maps are populated only after the durable operation write or
+      // validated startup hydration. A dangling/invalid entry is not authority
+      // to reveal another Chat's operation; the caller must retain its request.
+      const cached=operationCache.get(operationId);
+      if(!cached)return reply.code(404).send({error:'import operation not found'});
+      let operation:AgentImportOperationDto;
+      try{operation=validatedOperation(cached,operationId);}catch{return reply.code(404).send({error:'import operation not found'});}
+      if(operation.requestId!==requestId||operation.projectId!==request.params.id||operation.conversationId!==chatId||operation.product!==product)
+        return reply.code(404).send({error:'import operation not found'});
+      return reply.send(operation);
+    },
+  );
+
+  // A deliberate, exact retirement never replays an upload or frees its old key.
+  // The Project lock excludes a still-running admission; the state transition and
+  // absence of a creation ledger are checked under one immediate transaction.
+  app.post<{Params:{id:string;requestId:string};Body:{conversationId?:string;operationId?:string}}>(
+    '/api/projects/:id/agent-import-operations/by-request/:requestId/retire',
+    (request,reply)=>withProjectImportLock(request.params.id,async()=>{
+      await operationHydration;
+      const requestId=validIdempotencyKey(request.params.requestId),body=request.body;
+      if(!requestId||requestId!==request.params.requestId||!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).sort().join(',')!=='conversationId,operationId'||typeof body.conversationId!=='string'||typeof body.operationId!=='string')
+        return reply.code(400).send({error:'The exact held request and destination are required'});
+      const chat=store.getConversation(body.conversationId),product=requestProduct(request);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,product))return reply.code(404).send({error:'import operation not found'});
+      try{
+        const result=store.sqlite.transaction(()=>{
+          const intent=getImportIntent(request.params.id,requestId);
+          if(!intent||intent.conversation_id!==chat.id||intent.product_scope!==product||intent.operation_id!==body.operationId)return 'missing' as const;
+          if(intent.state==='retired')return 'retired' as const;
+          if(intent.state!=='reserved')return 'changed' as const;
+          const creation=store.findAgentCreationOperation({projectId:request.params.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:requestId});
+          if(creation)return 'changed' as const;
+          const updated=store.sqlite.prepare("UPDATE agent_import_submission_intents SET state='retired' WHERE project_id=? AND request_id=? AND operation_id=? AND state='reserved'").run(request.params.id,requestId,intent.operation_id);
+          return updated.changes===1?'retired' as const:'changed' as const;
+        }).immediate();
+        if(result==='missing')return reply.code(404).send({error:'import operation not found'});
+        if(result==='changed')return reply.code(409).send({error:'Import state changed or may have effects; it remains held for review.'});
+        const retired=getImportIntent(request.params.id,requestId);
+        if(!retired||retired.state!=='retired'||retired.operation_id!==body.operationId||retired.conversation_id!==chat.id||retired.product_scope!==product)throw Error('Retired import receipt is unavailable');
+        return reply.send(heldImportIdentity(retired));
+      }catch{return reply.code(409).send({error:'Import admission could not be proved safe to retire; its evidence remains held.'});}
     }),
   );
 
@@ -1891,15 +3065,36 @@ export function registerAgentPackageRoutes(
     "/api/projects/:id/agent-import-operations/:operationId",
     async (request, reply) => {
       await operationHydration;
+      const intent=importIntentForOperation(request.params.operationId);
+      if(intent && intent.state!=='queued'){
+        if(intent.project_id!==request.params.id||intent.product_scope!==requestProduct(request)||!resourceInProduct(store,'conversation',intent.conversation_id,requestProduct(request)))return reply.code(404).send({error:'import operation not found'});
+        return reply.code(409).send({error:heldImportMessage});
+      }
       const operation = operationCache.get(request.params.operationId)
         ?? await readOperation(request.params.operationId);
-      if (!operation || operation.projectId !== request.params.id) {
+      if (!operation || operation.projectId !== request.params.id || operation.product!==requestProduct(request) || !resourceInProduct(store,'conversation',operation.conversationId,requestProduct(request))) {
         return reply.code(404).send({ error: "import operation not found" });
       }
+      if(intent&&!importOperationMatchesIntent(operation,intent))return reply.code(404).send({error:'import operation not found'});
+      if(importAdmissionHeld(operation.id))return reply.code(409).send({error:heldImportMessage});
       return operation;
     },
   );
 
+  for(const group of [false,true]){
+  const destinationRetirement=destinationLifecycle({dataDir:context.dataDir,store,coordination:coordinationV3,owner:context.custodyOwner,runtimeIdle:context.destinationRuntimeIdle,creationLeases:agentCreationConversationLeases},group);
+  const retirementPath=group?'/api/lifecycle/destination-groups/:id':'/api/lifecycle/destinations/:id';
+  app.get<{Params:{id:string}}>(retirementPath+'/review',async(request,reply)=>{
+    try{await operationHydration;context.assertLifecycleEffectsSettled();return destinationRetirement.review(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string}}>(retirementPath+'/receipt',(request,reply)=>{
+    try{return destinationRetirement.receipt(request.params.id)??reply.code(404).send({error:'Retirement receipt unavailable'});}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  for(const action of ['approve','retire'] as const)app.post<{Params:{id:string};Body:import('@ponderosa/core').DestinationRetirementChoice}>(retirementPath+'/'+action,(request,reply)=>withAgentImportAdmission(async()=>{
+    try{await operationHydration;context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Destination retirement choice');exactObjectFields(body,['commandKey','expectedReviewHash','releaseSourcePins','authorizeDeletedOwner'],'Destination retirement choice');return destinationRetirement[action](request.params.id,request.body);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
+  }
   void operationHydration.then(() => {
     for (const operation of operationCache.values()) {
       if (operation.status === "pending") {
@@ -1914,38 +3109,8 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/import-agent-package",
-    { bodyLimit: maximumImportBytes },
-    async (request, reply) => {
-      try {
-        const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
-        if (!idempotencyKey) {
-          return reply.code(400).send({ error: "a valid import idempotency key is required" });
-        }
-        return await withAgentImportAdmission(async () => {
-          const { metadata, portable } = await parsePortablePackageFile(request.body.pathname);
-          return importPackage(
-            request.params.id,
-            { ...metadata, package: portable },
-            reply,
-            undefined,
-            undefined,
-            {
-              idempotencyKey,
-              rawPayloadHash: request.body.sha256,
-            },
-          );
-        });
-      } catch (error) {
-        return reply.code(400).send({
-          error: error instanceof Error
-            ? error.message
-            : "invalid Ponderosa Agent package",
-        });
-      } finally {
-        await fs.unlink(request.body.pathname).catch(() => undefined);
-        releaseStagedReservation(request.body.reservationId);
-      }
-    },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true} },
+    (request, reply) => importStagedPackage(request, reply),
   );
 
   app.post<{
@@ -1954,7 +3119,7 @@ export function registerAgentPackageRoutes(
     Body: CopyAgentPackageRequest;
   }>(
     "/api/projects/:id/copy-agent",
-    { bodyLimit: 64 * 1024 },
+    { bodyLimit: 64 * 1024, onRequest: packageOperation,config:{agentPackageOperation:true} },
     async (request, reply) => withAgentImportAdmission(async () => {
       await operationHydration;
       const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
@@ -1964,12 +3129,15 @@ export function registerAgentPackageRoutes(
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
             "sourceAgentId", "conversationId", "rootTitle", "mode", "organization",
-            "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution",
+            "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation",
           ].includes(key)) ||
           !validChatInstructionsResolution(request.body.chatInstructionsResolution) ||
           typeof request.body.sourceAgentId !== "string" ||
           typeof request.body.conversationId !== "string") {
         return reply.code(400).send({ error: "copy request fields are invalid" });
+      }
+      if(request.body.reviewedMetadataActivation!==undefined){
+        try{requireReviewedMetadataApplication(request.body.reviewedMetadataActivation);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:String(error)});}
       }
       const sourceAgentId = request.body.sourceAgentId.trim();
       const conversationId = request.body.conversationId.trim();
@@ -2009,6 +3177,13 @@ export function registerAgentPackageRoutes(
       const payloadHash = createHash("sha256").update(stableJson({
         sourceAgentId,
         conversationId,
+        ...(request.body.accessSettingsResolution?{accessSettingsResolution:request.body.accessSettingsResolution}:{}),
+        ...(request.body.workingCopyMode?{workingCopyMode:request.body.workingCopyMode}:{}),
+        ...(request.body.reviewedUserDataActivation?{reviewedUserDataActivation:request.body.reviewedUserDataActivation}:{}),
+            ...(request.body.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:request.body.reviewedMetadataActivation}:{}),
+            ...(request.body.workingFilesActivation?{workingFilesActivation:request.body.workingFilesActivation}:{}),
+        ...(request.body.workingRootDestinations?{workingRootDestinations:request.body.workingRootDestinations}:{}),
+        ...(request.body.workingFilesDestination?{workingFilesDestination:request.body.workingFilesDestination}:{}),
         ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
         ...(rootTitle ? { rootTitle } : {}),
         mode: request.body.mode ?? "full",
@@ -2018,13 +3193,19 @@ export function registerAgentPackageRoutes(
       })).digest("hex");
       let creationOperation;
       try {
-        creationOperation = store.beginAgentCreationOperation({
-          projectId: request.params.id,
-          actorScope: "user:local-operator",
-          kind: "import",
-          idempotencyKey,
-          payloadHash,
-        }).operation;
+        creationOperation = store.sqlite.transaction(()=>{
+          // Copy and package import share the same canonical import identity.
+          // Serialize the fence and creation with async admission reservation.
+          if(getImportIntent(request.params.id,idempotencyKey))throw Error(heldImportMessage);
+          return store.beginAgentCreationOperation({
+            projectId: request.params.id,
+            actorScope: "user:local-operator",
+            kind: "import",
+            idempotencyKey,
+            payloadHash,
+            conversationId,
+          }).operation;
+        }).immediate();
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "Agent copy replay conflict",
@@ -2088,6 +3269,7 @@ export function registerAgentPackageRoutes(
             ),
           );
         }
+        delete prepared.portable.outputRoles; // Copy is not a reviewed output-role import.
         portable = rootTitle
           ? {
               ...prepared.portable,
@@ -2127,6 +3309,13 @@ export function registerAgentPackageRoutes(
           package: portable,
           conversationId,
           engineMapping,
+          ...(request.body.accessSettingsResolution?{accessSettingsResolution:request.body.accessSettingsResolution}:{}),
+          ...(request.body.workingCopyMode?{workingCopyMode:request.body.workingCopyMode}:{}),
+          ...(request.body.reviewedUserDataActivation?{reviewedUserDataActivation:request.body.reviewedUserDataActivation}:{}),
+            ...(request.body.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:request.body.reviewedMetadataActivation}:{}),
+            ...(request.body.workingFilesActivation?{workingFilesActivation:request.body.workingFilesActivation}:{}),
+        ...(request.body.workingRootDestinations?{workingRootDestinations:request.body.workingRootDestinations}:{}),
+        ...(request.body.workingFilesDestination?{workingFilesDestination:request.body.workingFilesDestination}:{}),
           ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
           ...(request.body.acknowledgeElevatedManagementPermissions === true
             ? { acknowledgeElevatedManagementPermissions: true }
@@ -2143,4 +3332,167 @@ export function registerAgentPackageRoutes(
       });
     }),
   );
+  app.addHook('onReady',async()=>{
+    for(const row of store.sqlite.prepare("SELECT id FROM agent_creation_operations WHERE status='completed' AND json_type(result_json,'$.outputRoleFinalization')='object' AND COALESCE(json_extract(result_json,'$.outputRoleFinalization.done'),0)=0 LIMIT 64").all() as Array<{id:string}>){
+      try{finishRoles(row.id);}catch(error){try{createOperationalNotification({dedupeKey:'import-role-recovery:'+row.id,category:'system',severity:'attention',title:'Imported Output Roles Need Review',body:(error as Error).message,projectId:store.getAgentCreationOperation(row.id)!.projectId,conversationId:store.getAgentCreationOperation(row.id)!.conversationId,action:{kind:'open_agent',targetId:(store.getAgentCreationOperation(row.id)!.result as ImportAgentPackageResponse).rootAgentId}});}catch{/* Durable receipt remains pending role recovery. */}}
+    }
+  });
+  const checkExpertSnapshotSource=(frozen:CheckpointPackageSource,sourceProjectId:string)=>{
+    const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
+    if(!chat||chat.projectId!==sourceProjectId||!agent||agent.projectId!==sourceProjectId||agent.conversationId!==chat.id||
+      !activeChatResourceOwner(store,'chat',chat.id)||!activeChatResourceOwner(store,'agent',agent.id)||
+      store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(chat.id)||deletingProjectIds.has(sourceProjectId))
+      throw new Error('Expert source identity or ownership changed');
+  };
+  return {packageEngine:{
+    verifyImportedArtifactBytes:(projectId,artifacts)=>{
+      for(const artifact of artifacts)if(!readManagedArtifactContent(context.dataDir,projectId,artifact.destinationId,artifact.byteLength,artifact.sha256))
+        throw Error('Final imported artifact bytes changed; preserve current data and review');
+    },
+    prepareWorkingDataChild:(input,onReceipt)=>prepareBranchWorkingDataChild(store,context.workingCopies!,input,onReceipt),
+    applyWorkingData:(input,onReceipt,signal)=>withAgentImportAdmission(()=>applyBranchWorkingData(context.dataDir,store,context.workingCopies!,input,onReceipt,signal)),
+    inspectCheckpoint:source=>checkpointCustody.inspect(source),
+    captureCheckpoint:(source,seal,options)=>withAgentImportAdmission(async()=>{
+      const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
+      const status=await checkpointCustody.inspect(frozen);
+      if(status.state==='retained'){if(seal)throw new Error('Issued capture needs its committed Branch receipt; retained bytes alone cannot reseal a later cut');return status.receipt;}
+      if(status.state!=='missing')throw new Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
+      const memory=options?.omitMemory?undefined:localMemoryFor(app);
+      const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
+      const token=beginSourceCapture(store.sqlite,...memoryDatabases);
+      const admit=()=>{
+        options?.expertFinal?.();
+        const chat=store.getConversation(frozen.sourceChatId);
+        if(!chat||!activeChatResourceOwner(store,'chat',chat.id))throw new Error('Checkpoint source Chat unavailable');
+        assertCheckpointMembership(frozen.sourceChatId,frozen.agentIds,store.listAgents(chat.projectId,{includePendingCreation:true}));
+        for(const id of frozen.agentIds){const agent=store.getAgent(id);if(!agent||!activeChatResourceOwner(store,'agent',id)||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');}
+        memory?.assertCheckpointSourceSettled();
+      };
+      try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
+        admit();
+        const inputs:AgentPackageCompositionInput[]=[];
+        let capturedBytes=0;
+        for(const id of frozen.agentIds){
+          const agent=store.getAgent(id);
+          if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
+          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true,false,undefined,undefined,undefined,false,options?.expertFinal,options?.omitMemory===true);
+          capturedBytes+=agentPackageJsonUtf8Bytes(portable);
+          if(capturedBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint source packages exceed package byte limit');
+          inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});
+        }
+        return (await composeAgentPackages(inputs)).package;
+      },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
+    }),
+    captureExpertSnapshot:(source,sourceProjectId,seal,attemptId,beforeCapture)=>withAgentImportAdmission(async()=>{
+      const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
+      if(frozen.agentIds.length!==1)throw new Error('Expert copy requires exactly one source Agent');
+      const status=await checkpointCustody.inspect(frozen);
+      if(status.state!=='missing')throw new Error(`Expert snapshot custody ${status.state}; review its existing receipt`);
+      let memory=localMemoryFor(app);
+      let memoryDatabases:import('better-sqlite3').Database[]=[];
+      if(memory){
+        // A known source-mutation/provisioning hold is not an unavailable
+        // service: preserve that evidence and keep this capture held.
+        const preflight=()=>{
+          try{memory!.assertCheckpointSourceSettled();}
+          catch(error){
+            if(error instanceof MemorySourceMutationHold||error instanceof MemoryHostClosing){
+              let witness:string|undefined;
+              try{witness=memory!.checkpointMutationHoldWitness();}catch{/* No proof means retain the original failure. */}
+              if(witness)throw new ExpertCaptureHeldBeforeStart(frozen,sourceProjectId,attemptId,witness,error);
+            }
+            throw error;
+          }
+        };
+        preflight();
+        try{memoryDatabases=await memory.checkpointSourceDatabases();}
+        catch(original){
+          try{preflight();}
+          catch(current){
+            if((original instanceof MemorySourceMutationHold||original instanceof MemoryHostClosing)&&current instanceof ExpertCaptureHeldBeforeStart)throw current;
+            throw new Error(describeExpertMemoryPreflightFailure(original));
+          }
+          memory=undefined;
+        }
+      }
+      // The owner fences the exact prior proof synchronously immediately
+      // before this capture starts; there is no await between the two.
+      beforeCapture();
+      const token=beginSourceCapture(store.sqlite,...memoryDatabases);
+      const admit=()=>{
+        checkExpertSnapshotSource(frozen,sourceProjectId);
+        memory?.assertCheckpointSourceSettled();
+      };
+      try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
+        // Expert copies use a fresh workspace. Retained working originals stay
+        // with their source; ordinary history and artifacts still travel.
+        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[],false,false,undefined,undefined,undefined,true,undefined,!memory);
+      },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
+    }),
+    expertSourceHoldWitness:()=>localMemoryFor(app)?.checkpointMutationHoldWitness(),
+    checkExpertSnapshotSource,
+    reserveExpertChatMemory:chatId=>{const memory=localMemoryFor(app);if(!memory)throw Error('Local Memory is unavailable; expert copy remains held');memory.reserveExpertChatMemory(chatId);},
+    readCheckpoint:receipt=>checkpointCustody.read(receipt),
+    readCheckpointBytes:receipt=>checkpointCustody.readBytes(receipt),
+    verifyCheckpointNow:receipt=>checkpointCustody.verifyNow(receipt),
+    finishDestinationImport(operationId,compose){
+      const operation=store.getAgentCreationOperation(operationId),result=operation?.result as ImportAgentPackageResponse&{branchDestinationPrepared?:boolean};
+      if(!store.sqlite.inTransaction||operation?.status!=='canonical_committed'||operation.kind!=='import'||!result?.branchDestinationPrepared
+        ||operation.agentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Exact prepared destination import required');
+      const composed:unknown=compose(result,()=>{store.updateAgentCreationOperation(operationId,{status:'completed',lastError:null});});
+      if(composed&&typeof composed==='object'&&'then' in composed||store.getAgentCreationOperation(operationId)?.status!=='completed'||operation.agentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Destination composition did not commit exact import readiness');
+      // This set is a process-local quarantine. SQLite remains the readiness authority.
+      for(const id of operation.agentIds)deletingAgentIds.delete(id);
+    },
+    releaseCheckpoint:receipt=>checkpointCustody.release(receipt),
+    composeAgents:composeAgentPackages,
+    reviewAccess,
+    setOutputApps(owner:OutputAgentApps){outputApps=owner;},
+    validateAgent(pkg,mapping) {
+      if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Package contains memory; configure destination local memory before importing');for(const entry of pkg.memory)validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}
+      for (const node of validatePortableAgentPackage(pkg).package.agents) {
+        const target=mapping[node.engine]?.trim(), registration=target?engines.get(target):undefined;
+        if(!registration)throw new Error(`Choose an available Engine for ${node.engine}`);
+        const error=runtimeSelectionError(registration.adapter,node.model?.trim()||undefined,node.effort?.trim()||undefined,cachedModelOptions(registration.adapter)) ?? runtimeSpeedSelectionError(registration.adapter,node.model?.trim()||undefined,node.speed,cachedModelOptions(registration.adapter));
+        if(error)throw new Error(`${node.title}: ${error}`);
+      }
+    },
+    exportMemory:async(chatId,agentIds)=>{const memory=localMemoryFor(app);if(!memory)throw new Error('Configure destination local memory before reviewing memory updates');return memory.exportPackageMemory(chatId,agentIds);},
+    verifyStagedMemory:async(id,pkg)=>{if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for staged import verification');await memory.verifyStagedMemory(id,pkg);}},
+    rollbackStagedMemory:async id=>{const memory=localMemoryFor(app);const plan=(store.getAgentCreationOperation(id)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(plan?.length){if(!memory)throw new Error('Local memory configuration required for staged import cleanup');await memory.rollbackImportMemory(id);}},
+    exportAgentSet:(ids,mode,selections)=>withAgentImportAdmission(async()=>{
+      if(new Set(ids).size!==ids.length||Object.keys(selections).some(id=>!ids.includes(id)))throw new Error('Branch export requires exact distinct owned Agent identities');
+      const agents:Record<string,AgentPortablePackageDto>={},whole=ids.filter(id=>selections[id]?.wholeWorkingFolder);
+      const gitBindings=collectBranchGitStorageSelections(selections);
+      if(gitBindings.some(binding=>!whole.includes(binding.worktreeAgentId)||!whole.includes(binding.storageAgentId)))throw new Error('Git storage bindings require every source/storage root in the selected whole-folder closure');
+      let working:AgentPortablePackageDto|undefined;
+      if(whole.length){
+        if(mode!=='full')throw new Error('Working-root closure requires full export');
+        const nodes=whole.map(id=>{const node=store.getAgent(id);if(!node)throw new Error('Selected Branch Agent disappeared');return node;});
+        working=await buildPortablePackage(whole[0]!,mode,true,[],false,true,selections[whole[0]!]!.reviewedUserData,gitBindings.length?gitBindings:undefined,{nodes,selections});
+      }
+      for(const id of ids){
+        const options=selections[id];
+        agents[id]=await buildPortablePackage(id,mode,false,options?.wholeWorkingFolder?[]:options?.selectedWorkingFiles??[],false,false,undefined,undefined,undefined,whole.includes(id));
+        if(whole.includes(id)){
+          const node=agents[id]!.agents[0]!;delete node.workingFiles;delete node.workingFolder;delete node.workingRootRef;delete agents[id]!.gitStorageBindings;node.workingCopyMode='shared';
+        }
+        validatePortableAgentPackage(agents[id]);
+      }
+      return {agents,...(working?{working}:{})};
+    }),
+    exportAgent:(id,mode,options)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,options?.organization??false,options?.selectedWorkingFiles??[],options?.wholeWorkingFolder??false,options?.organizationWorkingFolders??false,options?.reviewedUserData,options?.gitStorageBindings)),
+    importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
+      let status=200,body:unknown;
+      const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingCopyMode!==undefined?{workingCopyMode:options.workingCopyMode}:{}),...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.reviewedUserDataActivation?{reviewedUserDataActivation:options.reviewedUserDataActivation}:{}),...(options?.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:options.reviewedMetadataActivation}:{}),...(options?.workingFilesActivation?{workingFilesActivation:options.workingFilesActivation}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      if(status>=400){
+        const accessSettingsReview=status===409&&typeof body==='object'&&body&&'reviewSha256' in body
+          ? {reviewSha256:(body as AgentAccessImportReviewDto).reviewSha256,source:(body as AgentAccessImportReviewDto).source,destination:(body as AgentAccessImportReviewDto).destination}:undefined;
+        throw Object.assign(new Error(typeof body==='object'&&body&&'error' in body?String(body.error):'Agent import failed'),{statusCode:status,provisionRejected:status===400||status===404,...(accessSettingsReview?{accessSettingsReview}:{})});
+      }
+      return body as ImportAgentPackageResponse;
+    }),
+  }};
+
 }

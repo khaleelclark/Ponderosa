@@ -3,6 +3,15 @@ export interface SpeechTextInsertion {
   text: string;
 }
 
+/** Supplement native echo cancellation with known, actually spoken spans only.
+ * ponytail: identical human repetition is acoustically ambiguous here; qualify
+ * double-talk on real devices before claiming reliable speaker interruption. */
+export function isSpokenEcho(words: string, spoken: readonly string[]): boolean {
+  const normalize = (text: string) => text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const candidate = normalize(words);
+  return Boolean(candidate && spoken.some(phrase => ` ${normalize(phrase)} `.includes(` ${candidate} `)));
+}
+
 function needsLeadingSpace(before: string, spoken: string): boolean {
   return Boolean(
     before &&

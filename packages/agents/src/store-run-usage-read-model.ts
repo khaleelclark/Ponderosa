@@ -1,3 +1,4 @@
+import {activeAgentProductSql,type ProductScope} from './product-scope-sql.js';
 import type Database from "better-sqlite3";
 import { asc, eq } from "drizzle-orm";
 import type {
@@ -30,9 +31,7 @@ type DecodeHistoryCursor = (
   stream: string,
   scope: string,
 ) => HistoryCursor;
-type UsageScope =
-  | { type: "overall" }
-  | { type: "project" | "agent" | "conversation"; id: string };
+type UsageScope = ({ type: "overall" } | { type: "project" | "agent" | "conversation" | "branch"; id: string }) & {productScope?:ProductScope};
 
 export class AgentRunUsageReadModel {
   constructor(
@@ -463,26 +462,6 @@ export class AgentRunUsageReadModel {
     const reportedRuns = rows.filter(
       row => row.totalTokens !== undefined,
     ).length;
-    const providerRequests = rows.reduce((total, row) => {
-      if (!row.providerRequestUsageJson) return total;
-      try {
-        const parsed = JSON.parse(row.providerRequestUsageJson) as unknown;
-        return total + (Array.isArray(parsed) ? parsed.length : 0);
-      } catch {
-        return total;
-      }
-    }, 0);
-    const durationMs = rows.reduce((total, row) => {
-      if (!row.completedAt) return total;
-      return (
-        total +
-        Math.max(
-          0,
-          new Date(row.completedAt).getTime() -
-            new Date(row.startedAt).getTime(),
-        )
-      );
-    }, 0);
     const keys: TokenUsageMetric[] = [
       "inputTokens",
       "cachedInputTokens",
@@ -491,11 +470,51 @@ export class AgentRunUsageReadModel {
       "reasoningOutputTokens",
       "totalTokens",
     ];
+    // A scope-wide request count is exact only when every finalized Run has
+    // valid explicit per-request receipts. Missing telemetry is not zero.
+    let providerRequests: number | undefined = 0;
+    for (const row of rows) {
+      try {
+        const parsed: unknown = row.providerRequestUsageJson === null
+          ? undefined : JSON.parse(row.providerRequestUsageJson);
+        if (!Array.isArray(parsed) || parsed.some(entry =>
+          !entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.entries(entry).some(([key, value]) =>
+            !keys.includes(key as TokenUsageMetric) ||
+            !Number.isSafeInteger(value) || (value as number) < 0))) {
+          providerRequests = undefined;
+          break;
+        }
+        providerRequests += parsed.length;
+        if (!Number.isSafeInteger(providerRequests)) {
+          providerRequests = undefined;
+          break;
+        }
+      } catch {
+        providerRequests = undefined;
+        break;
+      }
+    }
+    // These are recorded wall-clock intervals. Missing/reversed timestamps
+    // cannot establish elapsed time and must not become a partial or zero total.
+    let durationMs: number | undefined = 0;
+    for (const row of rows) {
+      const start = Date.parse(row.startedAt);
+      const end = row.completedAt === undefined ? NaN : Date.parse(row.completedAt);
+      const interval = end - start;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          !Number.isSafeInteger(interval) || interval < 0 ||
+          !Number.isSafeInteger(durationMs + interval)) {
+        durationMs = undefined;
+        break;
+      }
+      durationMs += interval;
+    }
     const totals: TokenUsage = {};
     const metricAvailability = Object.fromEntries(
       keys.map(key => [
         key,
-        rows.some(row => row.usage[key] !== undefined)
+        rows.length > 0 && rows.every(row => row.usage[key] !== undefined)
           ? "available"
           : "unavailable",
       ]),
@@ -545,8 +564,8 @@ export class AgentRunUsageReadModel {
       finalizedRuns,
       reportedRuns,
       unreportedRuns: finalizedRuns - reportedRuns,
-      providerRequests,
-      durationMs,
+      ...(providerRequests !== undefined ? { providerRequests } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
       coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
       ...(range.from || range.to ? { range } : {}),
       metricAvailability,
@@ -632,6 +651,11 @@ export class AgentRunUsageReadModel {
       "runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')",
     ];
     const params: string[] = [];
+    if(scope.productScope)predicates.push(activeAgentProductSql('agents',scope.productScope));
+    if(scope.type==='branch'){
+      predicates.push("EXISTS(SELECT 1 FROM conversations owner WHERE owner.id=agents.conversation_id AND owner.branch_id=?)");
+      params.push(scope.id);
+    }
     if (scope.type === "project") {
       predicates.push("agents.project_id = ?");
       params.push(scope.id);

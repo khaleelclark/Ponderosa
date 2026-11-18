@@ -1,4 +1,4 @@
-import { Alert, Box, Button, LinearProgress, Snackbar } from "@mui/material";
+import { Alert, Box, Button, LinearProgress, Portal, Snackbar } from "@mui/material";
 import { prepareDownload, type DownloadProgress } from "../downloads";
 import {
   createContext,
@@ -15,11 +15,17 @@ export type MutationNoticeSeverity = "success" | "error" | "warning" | "info";
 
 export interface MutationNoticeInput {
   message: string;
+  description?: string;
+  details?: string;
   severity?: MutationNoticeSeverity;
   /** Stable operation key used to replace/coalesce repeated feedback. */
   key?: string;
+  /** Exact action attempt/meaningful outcome; repeats stay dismissed. Not a retry authority. */
+  incident?: string;
   /** Errors and durable background outcomes stay visible until dismissed. */
   persistent?: boolean;
+  /** Retire only feedback for a confirmed operation; never clear action state. */
+  dismiss?: boolean;
   progress?: DownloadProgress;
   onCancel?(): void;
 }
@@ -29,28 +35,63 @@ interface MutationNotice extends MutationNoticeInput {
   severity: MutationNoticeSeverity;
 }
 
-type MutationNotifier = (notice: MutationNoticeInput | string) => void;
+export type MutationNotifier = (notice: MutationNoticeInput | string) => void;
 
 const MutationNotificationContext = createContext<MutationNotifier | undefined>(undefined);
 
 export function MutationNotificationProvider({
   children,
+  notifier,
 }: {
   children: ReactNode;
+  /** Embedded roots forward into the host's existing queue and Portal. */
+  notifier?: MutationNotifier;
 }): JSX.Element {
   const nextId = useRef(1);
+  const incidents = useRef(new Map<string, true>());
   const [notices, setNotices] = useState<MutationNotice[]>([]);
   const active = notices[0];
+  const [portalContainer, setPortalContainer] = useState<HTMLElement>();
+  useEffect(() => {
+    if (notifier || !active) { setPortalContainer(undefined); return; }
+    const placeNotice = () => {
+      // ModalManager hides body siblings. Keep the existing notice inside the
+      // actual top modal's focus trap so Close stays announced and reachable.
+      const modal = [...document.querySelectorAll<HTMLElement>(".MuiModal-root")].reverse().find(element =>
+        !element.closest('[aria-hidden="true"]') && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
+      const container = modal?.querySelector<HTMLElement>(".MuiDialog-paper, .MuiPopover-paper, .MuiDrawer-paper") ?? undefined;
+      setPortalContainer(previous => previous === container ? previous : container);
+    };
+    placeNotice();
+    const containsModal = (node: Node) => node instanceof Element && (node.matches(".MuiModal-root") || node.querySelector(".MuiModal-root"));
+    const observer = new MutationObserver(records => {
+      if (records.some(record => record.type === "attributes"
+        ? record.attributeName === "aria-hidden" || record.target instanceof Element && record.target.matches(".MuiModal-root")
+        : record.target === document.body || [...record.addedNodes, ...record.removedNodes].some(containsModal))) placeNotice();
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-hidden", "class", "style"] });
+    return () => observer.disconnect();
+  }, [notifier, active?.id]);
   const notify = useCallback<MutationNotifier>((input) => {
     const normalized = typeof input === "string" ? { message: input } : input;
     const severity = normalized.severity ?? "success";
-    const key = normalized.key ?? `${severity}:${normalized.message}`;
+    const id=normalized.dismiss?0:nextId.current++;
+    const key = normalized.key ?? (severity === "error" || severity === "warning" ? `${severity}:${id}` : `${severity}:${normalized.message}`);
+    if (!normalized.dismiss && normalized.incident) {
+      const identity=JSON.stringify([key,normalized.incident]);
+      if (incidents.current.has(identity)) return;
+      incidents.current.set(identity,true);
+      // ponytail: retain the last 512 operation outcomes per mounted host; a
+      // persistent multi-session inbox belongs to canonical notifications.
+      if (incidents.current.size > 512) incidents.current.delete(incidents.current.keys().next().value!);
+    }
     setNotices((current) => {
+      if(normalized.dismiss)return current.filter(notice=>notice.key!==key);
       const notice: MutationNotice = {
         ...normalized,
         key,
         severity,
-        id: nextId.current++,
+        id,
       };
       const matching = current.findIndex((candidate) => candidate.key === key);
       if (matching < 0) return normalized.progress ? [notice, ...current] : [...current, notice];
@@ -60,8 +101,9 @@ export function MutationNotificationProvider({
       return next;
     });
   }, []);
-  const value = useMemo(() => notify, [notify]);
+  const value = useMemo(() => notifier ?? notify, [notify, notifier]);
   useEffect(() => {
+    if (notifier) return;
     const pending = new Map<string, { controller: AbortController; report(message?: string): void }>();
     let mounted = true;
     const announceDownload = (event: MouseEvent) => {
@@ -123,13 +165,44 @@ export function MutationNotificationProvider({
     };
     document.addEventListener("click", announceDownload, true);
     return () => { mounted = false; document.removeEventListener("click", announceDownload, true); for (const download of pending.values()) download.controller.abort(); };
-  }, [notify]);
-  const dismiss = () => setNotices((current) => current.slice(1));
+  }, [notify, notifier]);
+  const dismiss = useCallback(() => setNotices((current) => current.slice(1)), []);
+  const activeNotice = useRef(active);
+  activeNotice.current = active;
+  const escapeHeld = useRef(false);
+  useEffect(() => {
+    if (notifier) return;
+    // Embedded dialogs have their own React root. Own this Escape gesture
+    // through keyup, even after the last notice disappears, before either
+    // root can interpret feedback dismissal as closing a draft.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      const notice = activeNotice.current;
+      if (!escapeHeld.current && (!notice || notice.progress)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!escapeHeld.current && !event.repeat) {
+        escapeHeld.current = true;
+        dismiss();
+      }
+    };
+    const release = (event: KeyboardEvent) => { if (event.key === "Escape") escapeHeld.current = false; };
+    const blur = () => { escapeHeld.current = false; };
+    document.addEventListener("keydown", escape, true);
+    document.addEventListener("keyup", release, true);
+    window.addEventListener("blur", blur);
+    return () => {
+      document.removeEventListener("keydown", escape, true);
+      document.removeEventListener("keyup", release, true);
+      window.removeEventListener("blur", blur);
+      escapeHeld.current = false;
+    };
+  }, [notifier, dismiss]);
 
   return (
     <MutationNotificationContext.Provider value={value}>
       {children}
-      <Snackbar
+      {!notifier && <Portal container={portalContainer}><Snackbar
         key={active?.id}
         open={Boolean(active)}
         autoHideDuration={active?.persistent || active?.severity === "error" ? null : 3_000}
@@ -137,17 +210,24 @@ export function MutationNotificationProvider({
           if (reason !== "clickaway" && !active?.progress) dismiss();
         }}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{
+          bottom: {xs: "calc(max(0px, 100% - var(--ponderosa-app-viewport-block-size, 100%) - var(--ponderosa-app-viewport-top, 0px)) + max(8px, env(safe-area-inset-bottom)))", sm: "calc(max(0px, 100% - var(--ponderosa-app-viewport-block-size, 100%) - var(--ponderosa-app-viewport-top, 0px)) + max(24px, env(safe-area-inset-bottom)))"},
+          maxHeight: "calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 16px)",
+        }}
       >
         {active ? (
           <Alert
             severity={active.severity}
             variant="filled"
             onClose={active.progress ? undefined : dismiss}
-            action={active.onCancel ? <Button color="inherit" size="small" onClick={active.onCancel}>Cancel download</Button> : undefined}
+            action={active.onCancel ? <Button color="inherit" size="small" onClick={active.onCancel}>Cancel Download</Button> : undefined}
             sx={{
               width: "auto",
               minWidth: "min(88vw, 260px)",
               maxWidth: "min(92vw, 480px)",
+              maxHeight: "inherit",
+              overflowY: "auto",
+              overflowWrap: "anywhere",
               px: 1.25,
               py: 0.25,
               display: "grid",
@@ -163,15 +243,27 @@ export function MutationNotificationProvider({
             }}
           >
             {active.message}
-            {active.progress ? <Box sx={{ mt: 0.75 }}><LinearProgress aria-label="Download preparation progress"
+            {active.description ? <Box sx={{mt:0.25}}>{active.description}</Box> : null}
+            {active.details ? <Box component="details" sx={{textAlign:"start",mt:0.25}}><summary>Details</summary><Box component="pre" sx={{m:0,whiteSpace:"pre-wrap",overflowWrap:"anywhere",font:"inherit",maxHeight:180,overflowY:"auto"}}>{active.details}</Box></Box> : null}
+            {active.progress ? <Box sx={{ mt: 0.75 }}><LinearProgress aria-label="Download Preparation Progress"
               variant={active.progress.totalBytes ? "determinate" : "indeterminate"}
               value={active.progress.totalBytes ? Math.min(100, 100 * active.progress.receivedBytes / active.progress.totalBytes) : undefined}
               color="inherit" /></Box> : null}
           </Alert>
         ) : undefined}
-      </Snackbar>
+      </Snackbar></Portal>}
     </MutationNotificationContext.Provider>
   );
+}
+
+/** Persistent recovery explanation only; announcing/dismissing feedback never owns the action. */
+export function MutationErrorDetails({title, error, children}: {title:string; error:unknown; children?:ReactNode}): JSX.Element | null {
+  if (!error) return null;
+  return <Box component="details" sx={{fontSize:".8125rem",minWidth:0,"& > summary":{minHeight:44,alignContent:"center",cursor:"pointer"}}}>
+    <summary>{title}</summary>
+    <Box sx={{overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxHeight:180,overflowY:"auto"}}>{error instanceof Error ? error.message : String(error)}</Box>
+    {children}
+  </Box>;
 }
 
 export function useMutationNotification(): MutationNotifier {

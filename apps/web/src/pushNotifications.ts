@@ -2,6 +2,7 @@ import type { WebPushStatusDto } from "@ponderosa/core";
 import { api } from "./api";
 import { createClientId } from "./clientId";
 import { isIOSDevice } from "./browserPlatform";
+import { currentProductScope, isBranchesPath } from "./api/productScope";
 
 const DEVICE_KEY = "ponderosa.push.device.v1";
 const STATUS_SIGNAL_KEY = "ponderosa.push.status-changed.v1";
@@ -228,6 +229,14 @@ export async function disableWebPush(): Promise<WebPushState> {
  * canonical state instead of enumerating the complete active feed. */
 const DISPLAYED_PUSH_RETRY_DELAYS_MS = [150, 500] as const;
 
+function displayedPushInProduct(notification: Notification, product: ReturnType<typeof currentProductScope>): boolean {
+  const url=notification.data?.url;
+  if(typeof url!=="string")return false;
+  try { const target=new URL(url,location.origin);
+    return target.origin===location.origin&&(isBranchesPath(target.pathname)?"branches":"dev")===product;
+  }catch{return false;}
+}
+
 async function waitForDisplayedPushRetry(delayMs: number): Promise<void> {
   await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
 }
@@ -235,16 +244,19 @@ async function waitForDisplayedPushRetry(delayMs: number): Promise<void> {
 async function reconcileDisplayedPushChunk(
   registration: ServiceWorkerRegistration,
   notificationIds: readonly string[],
+  product: ReturnType<typeof currentProductScope>,
 ): Promise<boolean> {
   let remainingIds = [...notificationIds];
   for (let attempt = 0; attempt <= DISPLAYED_PUSH_RETRY_DELAYS_MS.length; attempt += 1) {
     if (remainingIds.length === 0) return true;
+    if (currentProductScope() !== product) return false;
     try {
       const activeIds = new Set(await api.activeNotificationIds(remainingIds));
       const displayed = await registration.getNotifications();
+      if (currentProductScope() !== product) return false;
       const candidates = new Set(remainingIds);
       for (const notification of displayed) {
-        if (notification.tag && candidates.has(notification.tag) && !activeIds.has(notification.tag)) {
+        if (notification.tag && candidates.has(notification.tag) && !activeIds.has(notification.tag) && displayedPushInProduct(notification,product)) {
           notification.close();
         }
       }
@@ -272,12 +284,15 @@ async function performDisplayedPushReconciliation(): Promise<boolean> {
   if (!("serviceWorker" in navigator)) return true;
   try {
     const registration = await navigator.serviceWorker.ready;
-    const displayed = await registration.getNotifications();
+    const product = currentProductScope();
+    // Unbound legacy pushes remain untouched; only their canonical destination
+    // establishes the product whose active-ID projection can close them.
+    const displayed = (await registration.getNotifications()).filter(notification=>displayedPushInProduct(notification,product));
     let reconciled = true;
     for (let index = 0; index < displayed.length; index += 100) {
       const chunk = displayed.slice(index, index + 100);
       const ids = [...new Set(chunk.map((notification) => notification.tag).filter(Boolean))];
-      if (!await reconcileDisplayedPushChunk(registration, ids)) reconciled = false;
+      if (!await reconcileDisplayedPushChunk(registration, ids, product)) reconciled = false;
     }
     return reconciled;
   } catch {

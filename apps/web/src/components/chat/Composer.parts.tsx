@@ -1,3 +1,8 @@
+import PauseIcon from "@mui/icons-material/Pause";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutline";
+import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
+import {CircularProgress,ListItemIcon,Menu,MenuItem} from "@mui/material";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import ScheduleSendOutlinedIcon from "@mui/icons-material/ScheduleSendOutlined";
@@ -10,7 +15,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -50,14 +55,14 @@ export function ComposerProjectDestinationAction({
 }: ComposerProjectDestinationActionProps): JSX.Element {
   if (replyDestination) {
     return (
-      <Tooltip title="Switch to a new Agent">
+      <Tooltip title="Switch To A New Agent">
         <Button
           disabled={disabled}
           size="small"
           variant="text"
           color="primary"
           onClick={toggleNewAgent}
-          aria-label={`Reply to ${replyDestination}; switch to a new Agent`}
+          aria-label={`Reply To ${replyDestination}; switch to a new Agent`}
           sx={{
             minWidth: { xs: 58, md: 64 },
             gap: { xs: 0.5, md: 0 },
@@ -69,7 +74,7 @@ export function ComposerProjectDestinationAction({
         >
           <PersonAddAltOutlinedIcon sx={{ display: { xs: "block", md: "none" } }} />
           <Box component="span" sx={{ display: { xs: "inline", md: "none" }, "@media (max-width: 340px)": { display: "none" } }}>New</Box>
-          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply to {replyDestination}</Box>
+          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply To {replyDestination}</Box>
         </Button>
       </Tooltip>
     );
@@ -82,8 +87,8 @@ export function ComposerProjectDestinationAction({
       color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
-      aria-label="New Agent — send this message to create one"
-      title="Send your message to create a new Agent in this Chat"
+      aria-label="New Agent — Send This Message To Create One"
+      title="Send Your Message To Create A New Agent In This Chat"
       onClick={toggleNewAgent}
       sx={{
         minWidth: { xs: 58, md: 64 },
@@ -198,6 +203,8 @@ export function ComposerMentionStatus({
 }
 
 interface ComposerSendActionsProps {
+  runControl?: ComposerProps["runControl"];
+  steeringOnly?: boolean;
   allowSendWhileRunning: boolean;
   canCancel: boolean;
   cancelPending: boolean;
@@ -217,6 +224,8 @@ interface ComposerSendActionsProps {
 }
 
 export function ComposerSendActions({
+  runControl,
+  steeringOnly = false,
   allowSendWhileRunning,
   canCancel,
   cancelPending,
@@ -234,44 +243,59 @@ export function ComposerSendActions({
   steer,
   targetRequiredRecipientTagged,
 }: ComposerSendActionsProps): JSX.Element {
+  const [runMenu,setRunMenu]=useState<HTMLElement|null>(null);
+  const [sendMenu,setSendMenu]=useState<HTMLElement|null>(null);
+  const longPress=useRef<number>(),suppressClick=useRef(false);
+  // A Run that ends, or a draft that can no longer queue, closes its menu without acting.
+  useEffect(()=>{if(!canCancel)setRunMenu(null)},[canCancel]);
+  useEffect(()=>{if(!showQueue||!canSend)setSendMenu(null)},[showQueue,canSend]);
+  useEffect(()=>()=>window.clearTimeout(longPress.current),[]);
+  const runBusy=cancelPending||Boolean(runControl?.pending);
+  const clearPress=()=>window.clearTimeout(longPress.current);
+  // Queue lives behind the Send/Steer button's context menu. Opening it never submits.
+  const queueMenuProps=(primary:()=>void)=>({
+    onClick:()=>{if(suppressClick.current){suppressClick.current=false;return;}primary();},
+    ...(showQueue?{
+      "aria-haspopup":"menu" as const,
+      onContextMenu:(event:MouseEvent<HTMLElement>)=>{event.preventDefault();if(canSend)setSendMenu(event.currentTarget);},
+      onKeyDown:(event:KeyboardEvent<HTMLElement>)=>{if(event.key==="ContextMenu"||event.key==="F10"&&event.shiftKey){event.preventDefault();if(canSend)setSendMenu(event.currentTarget);}},
+      onPointerDown:(event:PointerEvent<HTMLElement>)=>{suppressClick.current=false;if(event.pointerType!=="touch"||!canSend)return;const target=event.currentTarget;clearPress();longPress.current=window.setTimeout(()=>{suppressClick.current=true;setSendMenu(target);},500);},
+      onPointerUp:clearPress,onPointerCancel:clearPress,onPointerLeave:clearPress,
+    }:{}),
+  });
   return (
     <>
-      {canCancel ? (
-        <Tooltip title={cancelPending ? "Cancelling…" : "Cancel Run"}>
-          <span>
-            <IconButton
-              color="error"
-              disabled={cancelPending}
-              onClick={onCancel}
-              aria-label={cancelPending ? "Cancelling…" : "Cancel run"}
-            >
-              <StopCircleIcon />
-            </IconButton>
-          </span>
+      {canCancel ? <>
+        <Tooltip disableInteractive title={cancelPending?(runControl?"Stopping…":"Cancelling…"):runControl?.pending?"Waiting…":"Run Controls"}>
+          <span><IconButton aria-label="Run Controls" aria-haspopup="menu" aria-expanded={runMenu?"true":undefined} disabled={runBusy} onClick={event=>setRunMenu(event.currentTarget)} sx={{width:44,height:44}}>
+            {runBusy?<CircularProgress size={20}/>:runControl?.paused?<PlayCircleOutlineIcon/>:<PauseCircleOutlineIcon/>}
+          </IconButton></span>
         </Tooltip>
-      ) : null}
+        <Menu anchorEl={runMenu} open={Boolean(runMenu)} onClose={()=>setRunMenu(null)} MenuListProps={{"aria-label":"Run Controls"}}>
+          {runControl?<MenuItem disabled={runBusy||runControl.resumeDisabled} onClick={()=>{setRunMenu(null);runControl.onPauseResume();}}>
+            <ListItemIcon>{runControl.paused?<PlayArrowIcon fontSize="small"/>:<PauseIcon fontSize="small"/>}</ListItemIcon>
+            {runControl.paused?(runControl.resumeDisabled?"Resume Unavailable While Access Is Restricted":"Resume"):"Pause"}
+          </MenuItem>:null}
+          <MenuItem disabled={runBusy} onClick={()=>{setRunMenu(null);onCancel?.();}} sx={{color:"error.main"}}>
+            <ListItemIcon><StopCircleIcon fontSize="small" color="error"/></ListItemIcon>{runControl?"Stop":"Cancel Run"}
+          </MenuItem>
+        </Menu>
+      </> : null}
+      {showQueue ? <Menu anchorEl={sendMenu} open={Boolean(sendMenu)} onClose={()=>setSendMenu(null)} MenuListProps={{"aria-label":"Send Options"}}>
+        <MenuItem disabled={!canSend} onClick={()=>{setSendMenu(null);queue();}}>
+          <ListItemIcon><ScheduleSendOutlinedIcon fontSize="small"/></ListItemIcon>Queue After Active Response
+        </MenuItem>
+      </Menu> : null}
       {showQueue ? (
-        <Tooltip title="Queue after the active response">
-          <span>
-            <IconButton
-              disabled={!canSend}
-              onClick={queue}
-              aria-label="Queue message"
-            >
-              <ScheduleSendOutlinedIcon />
-            </IconButton>
-          </span>
-        </Tooltip>
-      ) : null}
-      {showQueue ? (
-        <Tooltip title="Steer the active response">
+        <Tooltip disableInteractive title="Steer The Active Response">
           <span>
             {compact ? (
               <IconButton
                 color="primary"
                 disabled={!canSend}
-                onClick={steer}
-                aria-label="Steer active response"
+                {...queueMenuProps(steer)}
+                aria-label="Steer Active Response"
+                sx={{width:44,height:44}}
               >
                 <ArrowUpwardIcon />
               </IconButton>
@@ -280,8 +304,8 @@ export function ComposerSendActions({
                 size="small"
                 variant="contained"
                 disabled={!canSend}
-                onClick={steer}
-                aria-label="Steer active response"
+                {...queueMenuProps(steer)}
+                aria-label="Steer Active Response"
                 endIcon={<ArrowUpwardIcon sx={{ fontSize: 18 }} />}
                 sx={{ minHeight: 40, px: 1.5, borderRadius: 999, boxShadow: "none" }}
               >
@@ -291,7 +315,7 @@ export function ComposerSendActions({
           </span>
         </Tooltip>
       ) : (!canCancel || allowSendWhileRunning) ? (
-        <Tooltip
+        <Tooltip disableInteractive
           title={
             !canSend &&
             (destinationError ||
@@ -310,9 +334,10 @@ export function ComposerSendActions({
               color="primary"
               disabled={!canSend}
               onClick={send}
-              aria-label={mentionedBusyHandles.length > 0
-                ? "Queue message"
-                : "Send message"}
+              sx={{width:44,height:44}}
+              aria-label={!steeringOnly && mentionedBusyHandles.length > 0
+                ? "Queue Message"
+                : "Send Message"}
             >
               <ArrowUpwardIcon />
             </IconButton>

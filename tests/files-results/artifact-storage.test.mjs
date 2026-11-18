@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, linkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -123,4 +123,43 @@ test('a restarted Node process reads the same logical artifact identity and byte
   assert.equal(restored.id, id); assert.equal(restored.path, published.path);
   assert.equal(restored.sha256, hash(body)); assert.equal(restored.size, body.length);
   assert.deepEqual(Buffer.from(restored.bytes, 'base64'), body);
+});
+
+import {AgentStore} from '@ponderosa/agents';
+import {withFixture} from '../shared/fixture.mjs';
+test('inline HTML previews bind exact canonical publication and Chat while downloads stay immutable',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Inline panel'),other=await f.createChat('Other Chat'),agent=await f.createIdleAgent(chat,'Panel author');
+  const session=await f.hold(agent.id),body='<!doctype html><title>Panel</title><button onclick="this.textContent=42">Count</button>';
+  const publish=async(name,bytes)=>{writeFileSync(path.join(chat.workingDirectory,name),bytes);return f.ok(await f.tool(session,'ponderosa_import_file',{path:name})).artifact;};
+  const artifact=await publish('panel.html',body),base=`/api/projects/${chat.projectId}/artifacts/${artifact.id}`;
+  const send=async artifact=>{const text='```ponderosa\n'+JSON.stringify({version:1,type:'visualization',title:'Panel',artifactId:artifact.id})+'\n```';
+   f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text,artifactIds:[artifact.id],idempotencyKey:randomUUID()}));
+   return store.readCommunicationEvents(chat.projectId).find(event=>event.sender.kind==='agent'&&event.artifactIds?.includes(artifact.id));};
+  const event=await send(artifact),reference=new URLSearchParams({communicationEventId:event.eventId,conversationId:chat.id});
+  const metadata=f.ok(await f.api('GET',base+'?'+reference));assert.equal(metadata.id,artifact.id);assert.match(metadata.previewUrl,/communicationEventId=/);
+  const preview=await f.api('GET',metadata.previewUrl+'&visualizationNonce=exact-frame');assert.equal(preview.status,200,JSON.stringify(preview.body));
+  assert.match(preview.body,/ponderosa:visualization-theme/);assert.ok(preview.body.endsWith(body));
+  assert.match(preview.headers['content-security-policy'],/sandbox allow-scripts/);assert.doesNotMatch(preview.headers['content-security-policy'],/allow-same-origin|allow-forms|allow-popups/);assert.match(preview.headers['content-security-policy'],/connect-src 'none'/);
+  const download=await f.api('GET',artifact.downloadUrl);assert.equal(download.body,body);assert.equal(hash(download.rawBody),artifact.sha256);
+  const ordinary=await f.api('GET',base+'/preview');assert.equal(ordinary.body,body,'General HTML previews/download bytes gain no injected runtime');
+  for(const query of [new URLSearchParams({communicationEventId:event.eventId}),new URLSearchParams({conversationId:chat.id}),
+   new URLSearchParams({communicationEventId:event.eventId,conversationId:other.id}),new URLSearchParams({communicationEventId:'foreign',conversationId:chat.id})]){
+   assert.equal((await f.api('GET',base+'?'+query)).status,404,'Partial or foreign mode never falls back to ordinary metadata');
+   assert.equal((await f.api('GET',base+'/preview?'+query+'&visualizationNonce=exact-frame')).status,404);
+  }
+  assert.equal((await f.api('GET',metadata.previewUrl)).status,404,'Bound frame requires its instance nonce');
+  assert.equal((await f.api('GET',metadata.previewUrl+'&visualizationNonce=https://foreign')).status,404);
+  assert.equal((await f.api('GET','/api/branches/engine'+base.slice(4)+'?'+reference)).status,404,'Product remains an owner boundary');
+  const unattached=await publish('unattached.html',body);
+  assert.equal((await f.api('GET',`/api/projects/${chat.projectId}/artifacts/${unattached.id}?${reference}`)).status,404,'Known artifact ID alone is not message publication');
+  const invalid=await publish('invalid.html',Buffer.concat([Buffer.from(body),Buffer.from([0xff])]));const invalidEvent=await send(invalid),invalidReference=new URLSearchParams({communicationEventId:invalidEvent.eventId,conversationId:chat.id});
+  const invalidMeta=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/artifacts/${invalid.id}?${invalidReference}`));
+  assert.equal((await f.api('GET',invalidMeta.previewUrl+'&visualizationNonce=invalid-frame')).status,415,'Malformed UTF-8 never executes as partial HTML');
+  const oversized=await publish('large.html',body+' '.repeat(2*1024*1024));const largeEvent=await send(oversized),largeReference=new URLSearchParams({communicationEventId:largeEvent.eventId,conversationId:chat.id});
+  const largeMeta=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/artifacts/${oversized.id}?${largeReference}`));
+  assert.equal((await f.api('GET',largeMeta.previewUrl+'&visualizationNonce=large-frame')).status,413,'Truncated HTML never executes as a panel');
+  assert.equal((await f.api('GET',oversized.downloadUrl)).rawBody.length,Buffer.byteLength(body)+2*1024*1024);
+ },{storeFactory:root=>store=new AgentStore(root)});
 });

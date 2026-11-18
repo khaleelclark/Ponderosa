@@ -6,7 +6,7 @@ const pause = document.querySelector<HTMLButtonElement>("#pause")!;
 const resume = document.querySelector<HTMLButtonElement>("#resume")!;
 async function refresh() {
   const result = await chrome.runtime.sendMessage({ action: "status" }) as { connected?: boolean; paused?: boolean; revoked?: boolean; site?: string; error?: string };
-  status.textContent = result.error ?? (result.connected ? result.paused ? `Paired with ${result.site}. Browser control is detached. Sign in or browse normally, then choose Resume browser access.` : `Connected to ${result.site}. Pause for manual control whenever you need it.` : "Connect this window whenever you want, including before signing in.");
+  status.textContent = result.error ?? (result.connected ? result.paused ? `Paused · paired with ${result.site}` : `Connected to ${result.site}` : "Not connected");
   connect.disabled = Boolean(result.connected);
   disconnect.hidden = !result.connected;
   disconnect.textContent = result.revoked ? "Retry disconnect" : "Disconnect";

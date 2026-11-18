@@ -1,3 +1,5 @@
+import type {BrowserConsoleQuery, BrowserConsoleResult, BrowserRecordingStatus, BrowserRecordingArtifact, BrowserOperatorObservationContext, BrowserOperatorRecordingState, BrowserRecordingDestination} from "@ponderosa/core";
+import type {LogEvent} from "@ponderosa/agents";
 import { browserOwnerId, type BrowserOwner } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs, mkdirSync, writeFileSync, renameSync } from "@ponderosa/native-host/fs";
@@ -156,6 +158,13 @@ export type BrowserUploadArtifactResolver = (
   artifactId: string,
 ) => Promise<BrowserUploadArtifact | undefined>;
 
+export interface BrowserOperatorRecordingAuthority {
+  destination(scope: BrowserScope, conversationId?: string): BrowserRecordingDestination;
+  publish(scope: BrowserScope, destination: BrowserRecordingDestination, artifact: {
+    id: string; path: string; createdAt: string; size: number; sha256: string;
+  }): void;
+}
+
 export interface BrowserScope {
   owner?: BrowserOwner;
   /** Host-only bounded handoff/cleanup; never accepted from a request body. */
@@ -172,9 +181,10 @@ export interface BrowserScope {
 
 type BrowserAuditEvent = Extract<AgentEvent, {
   type: "browser_session" | "browser_action" | "browser_console" | "browser_screenshot";
-}>;
+}> | Extract<LogEvent, {type: "generated_artifact"}>;
 
 interface ManagedSession {
+  recording?: {status: BrowserRecordingStatus; destination?: BrowserRecordingDestination; owner: BrowserControlOwner; runId: string; epoch: number; artifact?: BrowserRecordingArtifact};
   cleanupSource?: RetainedBrowserScope;
   observedTermination?: boolean;
   safeForRestart?: boolean;
@@ -272,6 +282,7 @@ export class BrowserSessionManager {
     private readonly launchAuthority?: Pick<BrowserProfileAuthority, "description" | "acquire"> & Partial<Pick<BrowserProfileAuthority, "retainedBrowsers">>,
     private readonly admissionAllowed: (scope: BrowserScope) => boolean = () => true,
     private readonly retainShared = false,
+    private readonly operatorRecordingAuthority?: BrowserOperatorRecordingAuthority,
   ) {
     this.retainedBrowsers = launchAuthority?.retainedBrowsers ?? new BrowserRetainedInventory(dataDir);
   }
@@ -740,6 +751,32 @@ export class BrowserSessionManager {
     }, affectsRestartReadiness);
   }
 
+  private async failReadiness(
+    scope: BrowserScope,
+    session: ManagedSession,
+    createdDriver: BrowserDriver | undefined,
+    error: unknown,
+  ): Promise<never> {
+    if (createdDriver) session.closingDriver = createdDriver;
+    let cleanupError: unknown;
+    try {
+      await this.closeRetainedHandles(session);
+    } catch (closeError) {
+      cleanupError = closeError;
+    }
+    if (session.driver === createdDriver) session.driver = undefined;
+    const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
+    if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
+      session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
+      this.lifecycle(session, failure);
+    }
+    if (cleanupError) {
+      throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
+    }
+    if (error instanceof BrowserSessionError) throw error;
+    throw new BrowserSessionError(failure, 503);
+  }
+
   open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false, connectOnOpen = false): Promise<BrowserSessionDto> {
     this.assertAdmission(scope);
     if (connectOnOpen && !nativeManual) throw new BrowserSessionError("An initial Chrome connection requires an owned native browser.", 409);
@@ -874,24 +911,7 @@ export class BrowserSessionManager {
       } catch (error) {
         publication.finish();
         if (!installed) throw error;
-        if (createdDriver) session.closingDriver = createdDriver;
-        let cleanupError: unknown;
-        try {
-          await this.closeRetainedHandles(session);
-        } catch (closeError) {
-          cleanupError = closeError;
-        }
-        if (session.driver === createdDriver) session.driver = undefined;
-        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
-        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
-          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-          this.lifecycle(session, failure);
-        }
-        if (cleanupError) {
-          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
-        }
-        if (error instanceof BrowserSessionError) throw error;
-        throw new BrowserSessionError(failure, 503);
+        return await this.failReadiness(scope, session, createdDriver, error);
       } finally {
         if (session.opening === opening) session.opening = undefined;
         if (session.spawnPublication === publication) session.spawnPublication = undefined;
@@ -989,24 +1009,7 @@ export class BrowserSessionManager {
         return publicDto(session);
       } catch (error) {
         publication.finish();
-        if (createdDriver) session.closingDriver = createdDriver;
-        let cleanupError: unknown;
-        try {
-          await this.closeRetainedHandles(session);
-        } catch (closeError) {
-          cleanupError = closeError;
-        }
-        if (session.driver === createdDriver) session.driver = undefined;
-        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
-        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
-          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-          this.lifecycle(session, failure);
-        }
-        if (cleanupError) {
-          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
-        }
-        if (error instanceof BrowserSessionError) throw error;
-        throw new BrowserSessionError(failure, 503);
+        return await this.failReadiness(scope, session, createdDriver, error);
       } finally {
         if (session.opening === reconnecting) session.opening = undefined;
         if (session.spawnPublication === publication) session.spawnPublication = undefined;
@@ -1159,6 +1162,8 @@ export class BrowserSessionManager {
         throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
       }
       if (session.dto.controlOwner !== owner) {
+        await session.driver!.recordingDiscard?.();
+        session.recording = undefined;
         session.agentActivity = undefined;
         session.lastFrame = undefined;
         // A control handoff is not navigation or teardown. Keep attached files
@@ -1184,6 +1189,7 @@ export class BrowserSessionManager {
    * command cannot continue into the operator's private session. */
   async revokeAgentControl(scope: BrowserScope): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    session.recording = undefined;
     this.markActivity(session);
     if (session.dto.controlOwner === "agent") {
       session.dto = {
@@ -1202,6 +1208,7 @@ export class BrowserSessionManager {
     }
     if (!session.controlRevocationPending) return publicDto(session);
     try {
+      await session.driver.recordingDiscard?.();
       if (session.driver.pauseAutomation && session.driver.manualState?.() !== "manual") {
         await session.driver.pauseAutomation();
       }
@@ -1771,6 +1778,7 @@ export class BrowserSessionManager {
 
   async newPage(scope: BrowserScope, expectedControlEpoch: number, owner: BrowserControlOwner = "operator"): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    if (!session.dto.capabilities?.multiPage) throw new BrowserSessionError("New tabs are unavailable in this browser.", 409);
     return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
       if (!driver.newPage) throw new BrowserSessionError("New tabs are unavailable.");
       return driver.newPage();
@@ -1870,6 +1878,139 @@ export class BrowserSessionManager {
       if (session.dto.frameRevision === revision) return frame;
     }
     return this.pageAction(scope, session, undefined, undefined, preview, result => result, false);
+  }
+
+  private operatorObservation(scope: BrowserScope, context: BrowserOperatorObservationContext): ManagedSession & {driver: BrowserDriver} {
+    if (!context || typeof context.sessionId !== "string" || !context.sessionId || !Number.isSafeInteger(context.expectedControlEpoch) || context.expectedControlEpoch < 0) {
+      throw new BrowserSessionError("sessionId and expectedControlEpoch are required.", 400);
+    }
+    const session = this.ready(scope);
+    if (session.dto.id !== context.sessionId) throw new BrowserSessionError("Browser session changed; refresh before observing.", 409);
+    this.assertControl(session, "operator", context.expectedControlEpoch);
+    return session;
+  }
+
+  async operatorConsole(scope: BrowserScope, context: BrowserOperatorObservationContext, query: BrowserConsoleQuery): Promise<BrowserConsoleResult> {
+    const session = this.operatorObservation(scope, context);
+    if (!query || typeof query.pageId !== "string" || !session.dto.pages.some(page => page.id === query.pageId)) {
+      throw new BrowserSessionError("Select an admitted page from the current browser session.", 409);
+    }
+    return this.consoleQuery(scope, query, "operator", context.expectedControlEpoch);
+  }
+
+  async operatorRecordingStart(scope: BrowserScope, context: BrowserOperatorObservationContext, pageId: string): Promise<BrowserRecordingStatus> {
+    const session = this.operatorObservation(scope, context);
+    const destination = this.sharedOperatorDestination(scope, context);
+    if (!pageId || pageId !== session.dto.activePageId || !session.dto.pages.some(page => page.id === pageId)) {
+      throw new BrowserSessionError("Refresh and select the current inspected page before recording.", 409);
+    }
+    return this.startRecording(scope, pageId, "operator", context.expectedControlEpoch, destination);
+  }
+
+  private sharedOperatorDestination(scope: BrowserScope, context: BrowserOperatorObservationContext): BrowserRecordingDestination | undefined {
+    if (scope.agentId !== "project-browser:saved-browser" && (!scope.owner || scope.agentId !== browserOwnerId(scope.owner))) {
+      if (context.destination && context.destination.conversationId !== scope.conversationId) throw new BrowserSessionError("Recording destination does not match this private browser's Chat.", 403);
+      return undefined;
+    }
+    if (!this.operatorRecordingAuthority) throw new BrowserSessionError("Operator recording publication is unavailable for this browser.", 409, "operator_recording_unavailable");
+    return this.operatorRecordingAuthority.destination(scope, context.destination?.conversationId);
+  }
+
+  private assertRecordingDestination(session: ManagedSession, destination: BrowserRecordingDestination | undefined): void {
+    const bound = session.recording?.destination;
+    if (session.recording && (bound?.projectId !== destination?.projectId || bound?.conversationId !== destination?.conversationId)) throw new BrowserSessionError("Recording belongs to its original destination Chat.", 409);
+  }
+
+  async operatorRecordingStop(scope: BrowserScope, context: BrowserOperatorObservationContext, id: string): Promise<BrowserRecordingArtifact> {
+    const session = this.operatorObservation(scope, context);
+    this.assertRecordingDestination(session, this.sharedOperatorDestination(scope, context));
+    if (typeof id !== "string" || !id || id.length > 200) throw new BrowserSessionError("recordingId is required.", 400);
+    return this.stopRecording(scope, id, "operator", context.expectedControlEpoch);
+  }
+
+  async operatorRecordingStatus(scope: BrowserScope, context: BrowserOperatorObservationContext): Promise<BrowserOperatorRecordingState> {
+    const session = this.operatorObservation(scope, context);
+    const destination = this.sharedOperatorDestination(scope, context);
+    return this.pageAction(scope, session, "operator", context.expectedControlEpoch, async () => {
+      this.assertRecordingDestination(session, destination ? this.operatorRecordingAuthority!.destination(scope, destination.conversationId) : undefined);
+      const recording = session.recording;
+      if (!recording || recording.owner !== "operator" || recording.epoch !== context.expectedControlEpoch || recording.runId !== (scope.actorRunId ?? scope.runId)) return {};
+      return {recording: {...recording.status}, ...(recording.destination ? {destination: {...recording.destination}} : {}), ...(recording.artifact ? {artifact: {...recording.artifact}} : {})};
+    }, value => value, false);
+  }
+
+  async consoleQuery(scope: BrowserScope, query: BrowserConsoleQuery = {}, owner: BrowserControlOwner = "agent", expectedControlEpoch?: number): Promise<BrowserConsoleResult> {
+    const session = this.ready(scope);
+    return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
+      if (!driver.consoleQuery) throw new BrowserSessionError("Console queries are unavailable for this browser driver.", 409);
+      if (owner === "operator" && !(await driver.pages()).pages.some(page => page.pageId === query.pageId)) throw new BrowserSessionError("The selected page is no longer admitted.", 409);
+      return driver.consoleQuery(query);
+    }, value => value, false);
+  }
+
+  async startRecording(scope: BrowserScope, pageId: string, owner: BrowserControlOwner = "agent", expectedControlEpoch?: number, destination?: BrowserRecordingDestination): Promise<BrowserRecordingStatus> {
+    if (typeof pageId !== "string" || !pageId || pageId.length > 200) throw new BrowserSessionError("An inspected page_id is required.", 400);
+    const session = this.ready(scope);
+    return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
+      if (!driver.recordingStart) throw new BrowserSessionError("Recording is unavailable for this browser driver.", 409);
+      if (owner === "operator") {
+        const pages = await driver.pages();
+        if (pages.activePageId !== pageId || !pages.pages.some(page => page.pageId === pageId)) throw new BrowserSessionError("Active page changed; refresh before recording.", 409);
+        if (this.ready(scope) !== session) throw new BrowserSessionError("Browser session changed before recording.", 409);
+        this.assertControl(session, owner, expectedControlEpoch);
+      }
+      if (!session.recording || session.recording.owner !== owner || session.recording.runId !== (scope.actorRunId ?? scope.runId) || session.recording.epoch !== session.dto.controlEpoch) {
+        await driver.recordingDiscard?.(); session.recording = undefined;
+      }
+      const status = await driver.recordingStart(pageId);
+      if (destination) {
+        try {
+          const fresh = this.operatorRecordingAuthority!.destination(scope, destination.conversationId);
+          if (fresh.projectId !== destination.projectId) throw new BrowserSessionError("Recording destination ownership changed.", 409);
+        } catch (error) { await driver.recordingDiscard?.(); throw error; }
+      }
+      return status;
+    }, status => {
+      session.recording = {status, owner, ...(destination ? {destination: {...destination}} : {}), runId: scope.actorRunId ?? scope.runId, epoch: session.dto.controlEpoch};
+      if (!destination) this.emit(scope, {type: "browser_action", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
+        actor: owner, action: "inspect", summary: "Started explicit page-frame recording (60 seconds / 120 frames / 8 MiB maximum)."});
+      return status;
+    }, false);
+  }
+
+  async stopRecording(scope: BrowserScope, id: string, owner: BrowserControlOwner = "agent", expectedControlEpoch?: number): Promise<BrowserRecordingArtifact> {
+    const session = this.ready(scope);
+    // Join the same action queue and retain authority through artifact publication.
+    return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
+      const recording = session.recording;
+      if (!recording || recording.owner !== owner || recording.status.id !== id || recording.runId !== (scope.actorRunId ?? scope.runId) || recording.epoch !== session.dto.controlEpoch) {
+        throw new BrowserSessionError("Recording requires its original Run and control grant.", 409);
+      }
+      if (recording.destination) this.assertRecordingDestination(session, this.operatorRecordingAuthority!.destination(scope, recording.destination.conversationId));
+      if (recording.artifact) return recording.artifact;
+      if (!driver.recordingStop) throw new BrowserSessionError("Recording is unavailable for this browser driver.", 409);
+      const data = await driver.recordingStop(id);
+      if (!data.frames.length) {
+        await driver.recordingDiscard?.(); session.recording = undefined;
+        throw new BrowserSessionError("The recording has no frames; no empty artifact was published. Start a new recording after the page paints.", 409);
+      }
+      const body = Buffer.from(JSON.stringify(data));
+      if (body.length > 9 * 1024 * 1024) throw new BrowserSessionError("Recording exceeded its byte limit.", 413);
+      const artifactId = randomUUID(), relative = path.posix.join("browser", `${artifactId}.recording.json`);
+      const published = await publishManagedArtifactContentAsync(this.dataDir, recording.destination?.projectId ?? scope.artifactProjectId ?? scope.projectId, artifactId, body);
+      if (this.ready(scope) !== session || session.recording !== recording || recording.epoch !== session.dto.controlEpoch) throw new BrowserSessionError("Browser authority changed before recording publication.", 409);
+      this.assertControl(session, owner, expectedControlEpoch);
+      if (recording.destination) {
+        const fresh = this.operatorRecordingAuthority!.destination(scope, recording.destination.conversationId);
+        this.assertRecordingDestination(session, fresh);
+        this.operatorRecordingAuthority!.publish(scope, fresh, {id: artifactId, path: relative, createdAt: new Date().toISOString(), size: published.size, sha256: published.sha256});
+      } else await this.emit(scope, {type: "generated_artifact", artifactId, executionId: scope.actorRunId ?? scope.runId,
+        path: relative, sourcePath: relative, name: "Browser recording (timestamped JPEG frames)", mediaType: "application/json",
+        size: published.size, sha256: published.sha256, visibility: "project"});
+      recording.artifact = {...(recording.destination ? {destination: {...recording.destination}} : {}), artifactId, artifactRef: `ponderosa://artifact/${artifactId}`, path: relative, mediaType: "application/json", frames: data.frames.length, reason: data.reason};
+      await driver.recordingDiscard?.();
+      return recording.artifact;
+    }, value => value, false);
   }
 
   async captureArtifact(scope: BrowserScope): Promise<{

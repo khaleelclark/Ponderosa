@@ -2,14 +2,24 @@ import type Database from "better-sqlite3";
 
 // Shared ordinary/offline read accounting. No converter, native host, new
 // database, profile cache, or caller admission witness belongs in this module.
-export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 512,
+// Canonical initialization adds two memory receipt tables and their indexes
+// to the prior 603-object schema. A fixed 609-object envelope admits these
+// four objects and retains a hard excess guard.
+// Ordinary row, byte, column and work limits are unchanged.
+export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 609,
   columns: 256, metadataBytes: 1024 ** 2, rowBytes: 64 * 1024 ** 2 });
 const fail: (code: string) => never = code => { throw new Error(`bounded state read refused (${code})`); };
 export const stateQuote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 export type Bind = string | number | bigint | Buffer | null;
+// Startup admission already reads every byte of its copied state, so its work
+// bound grows with that size instead of a fixed count. A row charges its count
+// plus one unit per table/index entry, and each entry is a b-tree cell of at
+// least 6 bytes, so real state never needs more than one unit per 3 bytes.
+const ADMITTED_BYTES_PER_ROW = 2;
 export class StateReadBudget {
   #rows = 0;
   #bytes = 0;
+  #rowLimit: number = STATE_READ_LIMITS.rows;
   constructor(private storage?: { charge(bytes: number): void }) {}
   /** Bind invocation storage once, charging already reserved fixed setup bytes.
    * No counter reset/refund; this cost sink supplies no admission authority. */
@@ -27,18 +37,24 @@ export class StateReadBudget {
     try { this.storage?.charge(bytes); } catch (error) { this.exhausted = true; throw error; }
   }
   get rows(): number { return this.#rows; }
+  get rowLimit(): number { return this.#rowLimit; }
+  /** Raise-only: never below the fixed floor for ordinary reads. */
+  scaleRowsToBytes(bytes: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) fail("row-scale");
+    this.#rowLimit = Math.max(this.#rowLimit, Math.ceil(bytes / ADMITTED_BYTES_PER_ROW));
+  }
   exhausted = false;
   // Reservations survive prepare/query/iteration exceptions; only successful
   // bounded scalar discovery settles its unused allowance. No failed refund.
   reserve(rows: number): void {
-    if (!Number.isSafeInteger(rows) || rows < 0 || rows > STATE_READ_LIMITS.rows - this.rows) {
+    if (!Number.isSafeInteger(rows) || rows < 0 || rows > this.#rowLimit - this.rows) {
       this.exhausted = true; fail("work");
     }
     this.#rows += rows;
   }
   discoverPopulation(read: (limit: number) => number, unitsPerRow = 1): number {
     if (!Number.isSafeInteger(unitsPerRow) || unitsPerRow < 1) fail("population-unit-cost");
-    const allowance = Math.floor((STATE_READ_LIMITS.rows - this.#rows) / unitsPerRow);
+    const allowance = Math.floor((this.#rowLimit - this.#rows) / unitsPerRow);
     if (allowance < 2) { this.exhausted = true; fail("population-work"); }
     this.reserve(allowance * unitsPerRow);
     const n = read(allowance - 1);
@@ -57,7 +73,6 @@ export class StateReadBudget {
 const budgets = new WeakMap<Database.Database, StateReadBudget>();
 const scopes = new WeakMap<Database.Database, StateReads>();
 let invocation: StateReadBudget | undefined;
-export const currentStateReadInvocation = (): StateReadBudget | undefined => invocation;
 /** Accounting context only: never schema, admission or publication authority. */
 export function withStateReadInvocation<T>(budget: StateReadBudget, action: () => T): T {
   if (invocation && invocation !== budget) fail("foreign-invocation");
@@ -74,19 +89,6 @@ export function stateReadBudget(db: Database.Database): StateReadBudget {
   if (invocation && invocation !== selected) fail("foreign-invocation-handle");
   if (invocation) budgets.set(db, selected);
   return selected;
-}
-/** Lazy consumers retain their internally owned snapshot through iterator close,
- * including early break/errors. No iterator/population cache is constructed. */
-export function* iterateStateReads<T>(db: Database.Database, action: (reads: StateReads) => Iterable<T>): Generator<T> {
-  const active = scopes.get(db);
-  if (active) { yield* action(active); return; }
-  if (db.inTransaction) fail("foreign-transaction");
-  const budget = stateReadBudget(db); budget.allocate(512);
-  const reads = new StateReads(db, budget);
-  reads.budget.reserve(2); db.exec("BEGIN"); scopes.set(db, reads);
-  let complete = false;
-  try { yield* action(reads); complete = true; }
-  finally { scopes.delete(db); db.exec(complete ? "COMMIT" : "ROLLBACK"); }
 }
 /** All measurement and consumption are in the same internally owned snapshot.
  * Nested helpers reuse this scope. A foreign transaction is never a witness. */

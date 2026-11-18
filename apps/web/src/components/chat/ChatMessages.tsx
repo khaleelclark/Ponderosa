@@ -1,4 +1,4 @@
-import CheckIcon from "@mui/icons-material/Check";
+import {productApiPath,productWorkspacePath} from "../../api/productScope.js";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -7,15 +7,17 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useState, useCallback, memo,createContext,useContext,useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { remarkMessageFormatting } from "./messageMarkdown";
+import { remarkMessageFormatting, hasMessageVisualization } from "./messageMarkdown";
+import type {VisualizationScope} from "./VisualizationDisplay";
 import { RichMessageDisplay } from "./RichMessageDisplay";
 import { ScrollableMessageTable } from "./ScrollableMessageTable";
 import { copyText } from "../../clipboard";
 import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
+import { useMutationNotification } from "../MutationNotifications";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
 import {
@@ -25,6 +27,12 @@ import {
 } from "./chatMarkdownLink";
 export { resolveMessageMentionText } from "./messageMentionPresentation";
 import { messageProseTagTokens, resolveMessageMentionText } from "./messageMentionPresentation";
+
+/** Live and completed prose keep the same responsive geometry. */
+export const messageProseTypography = {
+  normal: { fontSize: "1rem", lineHeight: 1.65 },
+  small: { fontSize: "0.9375rem", lineHeight: 1.55 },
+} as const;
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -86,6 +94,7 @@ export function communicationVisibleText(input: {
   intent?: CommunicationIntent;
   fromAgent: boolean;
   agentMentions?: readonly AgentMentionBindingDto[];
+  fixedRecipientAgentId?:string;
 }): string {
   if (input.intent === "collaboration") return input.text;
   const routedText = input.intent === "broadcast"
@@ -93,6 +102,7 @@ export function communicationVisibleText(input: {
     : input.text;
   const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
   const prefix = !input.fromAgent &&
+    (!input.fixedRecipientAgentId || input.agentMentions?.some(mention=>mention.agentId!==input.fixedRecipientAgentId)) &&
     (input.intent === "user_dm" ||
       input.agentMentions?.some(mention => mention.handle === "new-agent"))
     ? canonicalRecipientPrefix(input.text, input.agentMentions)
@@ -146,7 +156,7 @@ function projectFileHref(projectId: string | undefined, href: string | undefined
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`;
+  return productApiPath(`/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`);
 }
 
 function projectFileViewerHref(projectId: string | undefined, href: string | undefined, fileScope?: WorkspaceFileOwnerDto): string | undefined {
@@ -155,7 +165,7 @@ function projectFileViewerHref(projectId: string | undefined, href: string | und
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/projects/${encodeURIComponent(projectId)}/files/view?${query}`;
+  return productWorkspacePath(`/projects/${encodeURIComponent(projectId)}/files/view?${query}`);
 }
 
 /** Working-file ownership survives the Run-specific live-app preview grant. */
@@ -187,7 +197,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
 
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (isLocalWorkspaceHref(href)) return <Box component="span">{children}</Box>;
-  if (!link) return <a className="chat-text-navigation" href={href} download={/^\/api\/projects\/[^/]+\/artifacts\/[^/?#]+\/download$/u.test(href) || undefined}>{children}</a>;
+  if (!link) return <a className="chat-text-navigation" href={href} download={/^\/api\/(?:branches\/engine\/)?projects\/[^/]+\/artifacts\/[^/?#]+\/download$/u.test(href) || undefined}>{children}</a>;
   const activate = (event: React.MouseEvent) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     if (!link.loopback && projectBrowser.projectId) {
@@ -202,7 +212,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     setOpening(true); setError(undefined);
     try {
       if (!previewScope) throw new Error("This localhost app is not associated with an active run.");
-      const response = await fetch("/api/link-previews", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
+      const response = await fetch(productApiPath("/api/link-previews"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
       if (!response.ok) throw new Error("Ponderosa could not open this localhost app.");
       const preview = await response.json() as { openUrl: string };
       window.open(preview.openUrl, "_blank", "noopener,noreferrer");
@@ -211,16 +221,16 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     finally { setOpening(false); }
   };
   return <>
-    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open Link To ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       <Box component="span" title={link.url.href} sx={{ minWidth: 0, maxWidth: "18rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{children}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
     <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
-      <DialogTitle id="link-open-title">Open link</DialogTitle>
+      <DialogTitle id="link-open-title">Open Link</DialogTitle>
       <DialogContent><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{link.url.href}</Typography>{error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}</DialogContent>
       <DialogActions>
         <Button onClick={() => setChooserOpen(false)}>Cancel</Button>
-        {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open in Ponderosa</Button> : null}
+        {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open In Ponderosa</Button> : null}
         {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open Live App Preview</Button> : null}
         <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open Externally</Button>
       </DialogActions>
@@ -294,36 +304,19 @@ function fencedCodeLanguage(children: ReactNode): string {
 }
 
 function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+  const notify = useMutationNotification();
   const code = codeBlockText(children).replace(/\n$/, "");
   const language = fencedCodeLanguage(children);
   const highlighted = !["text", "txt", "plaintext", "none", "ponderosa"].includes(language);
 
-  useEffect(
-    () => () => {
-      if (resetTimer.current !== undefined) {
-        globalThis.clearTimeout(resetTimer.current);
-      }
-    },
-    [],
-  );
-
   async function copyCode(): Promise<void> {
     try {
       await copyText(code);
-      setCopyState("copied");
+      notify({ key: "copy-code", message: "Copied" });
     } catch {
-      setCopyState("error");
+      notify({ key: "copy-code", message: "Code could not be copied. Check your browser clipboard permissions and try again.", severity: "error" });
     }
-    if (resetTimer.current !== undefined) {
-      globalThis.clearTimeout(resetTimer.current);
-    }
-    resetTimer.current = globalThis.setTimeout(() => setCopyState("idle"), 2000);
   }
-
-  const label =
-    copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
 
   const plainCode = ({ status, retry }: {
     status: "pending" | "failed";
@@ -336,8 +329,8 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
       spacing={1}
       sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
     >
-      <Typography variant="caption">Syntax highlighting unavailable. Plain code is still readable.</Typography>
-      <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+      <Typography variant="caption">Syntax highlighting unavailable · plain code retained</Typography>
+      <Button size="small" color="inherit" onClick={retry}>Retry Highlighting</Button>
     </Stack> : null}
     <Box
       component="pre"
@@ -346,12 +339,12 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   </>;
 
   return (
-    <Box sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
+    <Box className="chat-code-block" sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
         <Typography variant="caption" sx={{ fontFamily: "monospace", textTransform: "lowercase" }}>{language}</Typography>
-        <Tooltip title={label}>
-          <IconButton aria-label={label} size="small" onClick={() => void copyCode()}>
-            {copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
+        <Tooltip title="Copy Code">
+          <IconButton aria-label="Copy Code" size="small" onClick={() => void copyCode()}>
+            <ContentCopyIcon fontSize="inherit" />
           </IconButton>
         </Tooltip>
       </Stack>
@@ -370,11 +363,14 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   );
 }
 
+const VisualizationContext=createContext<VisualizationScope|undefined>(undefined);
+
 function MessageCodeBlock({ node, children }: { node?: unknown; children?: ReactNode }): JSX.Element {
   const code = (node as { children?: { properties?: Record<string, unknown> }[] })?.children?.[0];
   const block = code?.properties?.["data-ponderosa-closed"] === "true"
     ? parseRichMessageBlock(codeBlockText(children).replace(/\n$/, "")) : undefined;
-  return block ? <RichMessageDisplay block={block} /> : <CopyableCodeBlock>{children}</CopyableCodeBlock>;
+  const visualizationScope=useContext(VisualizationContext);
+  return block ? <RichMessageDisplay block={block} visualizationScope={visualizationScope} /> : <CopyableCodeBlock>{children}</CopyableCodeBlock>;
 }
 
 function MessageTableHeader({ node: _node, ...props }: ComponentPropsWithoutRef<"th"> & { node?: unknown }): JSX.Element {
@@ -416,7 +412,7 @@ export function AgentMention({ agentId, label, title, onOpenAgent }: {
 }): JSX.Element {
   if (!onOpenAgent) return <Box component="span" title={title} sx={messageHandleSx}>#{label}</Box>;
   return <Box className="chat-text-navigation" component="button" type="button" title={title}
-    aria-label={`Open agent ${label}${title ? `. ${title}` : ""}`} onClick={() => onOpenAgent(agentId)}
+    aria-label={`Open Agent ${label}${title ? `. ${title}` : ""}`} onClick={() => onOpenAgent(agentId)}
     sx={{ ...messageHandleSx, cursor: "pointer", maxWidth: "100%", overflowWrap: "anywhere" }}>#{label}</Box>;
 }
 
@@ -442,7 +438,7 @@ function remarkMessageTags(options: { tokens: ReturnType<typeof messageProseTagT
   };
 }
 
-function ChatMarkdown({
+const ChatMarkdown = memo(function ChatMarkdown({
   children,
   collaborationRecipients,
   agentMentions,
@@ -471,7 +467,18 @@ function ChatMarkdown({
   compact?: boolean;
   small?: boolean;
 }): JSX.Element {
-  const tokens = messageProseTagTokens(children);
+  // An unbound, unreserved hash is rendered as ordinary Markdown text. Avoid
+  // an extra AST parse when no raw handle can affect that presentation. Keep
+  // recipient-prefix accounting on the existing full prose/opaque-region path.
+  const needsTagProjection = Boolean(collaborationRecipients?.length) || messageTagTokens(children).some(({ handle }) => {
+    const normalized = handle.toLocaleLowerCase();
+    return ["user", "pto", "broadcast", "everyone", "new-agent"].includes(normalized)
+      || Boolean(operatorHandle && normalized === operatorHandle.toLocaleLowerCase())
+      || Boolean(agentMentionForHandle?.(handle))
+      || Boolean(agentIdForHandle?.(handle))
+      || Boolean(agentMentions?.some(mention => [mention.handle, mention.currentHandle].some(label => label.toLocaleLowerCase() === normalized)));
+  });
+  const tokens = needsTagProjection ? messageProseTagTokens(children) : [];
   // Insert links at authored source offsets before Markdown decodes entities
   // and escapes. Copy/source text stays untouched; literal regions are excluded.
   let taggedText = children;
@@ -479,41 +486,7 @@ function ChatMarkdown({
     taggedText = taggedText.slice(0, start) + `[#${handle}](${MESSAGE_TAG_PREFIX}${encodeURIComponent(handle)})` + taggedText.slice(end);
   }
   return (
-    <Box
-      sx={{
-        width: "100%",
-        maxWidth: "100%",
-        minWidth: 0,
-        overflowWrap: "anywhere",
-        // The prose transform preserves authored breaks without exposing parser separators.
-        whiteSpace: "normal",
-        "& > :first-of-type": { mt: 0 },
-        "& > :last-child": { mb: 0 },
-        fontSize: small
-          ? { xs: "0.9375rem", md: "0.82rem" }
-          : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
-        lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
-        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
-        "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
-        "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
-        "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
-        "& h3, & h4": { fontSize: { xs: "1rem", sm: "1.05rem" } },
-        "& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75, whiteSpace: "normal" },
-        "& li": { maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
-        "& li + li": { mt: compact ? 0.05 : 0.15 },
-        "& blockquote": { my: 0.65, mx: 0, pl: 1.5, whiteSpace: "normal", borderLeft: 3, borderColor: "divider" },
-        "& code": { fontFamily: "monospace", fontSize: "0.875em" },
-        "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
-        "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
-        "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
-        "& table": { width: "100%", borderCollapse: "collapse", fontVariantNumeric: "tabular-nums" },
-        "& th, & td": { px: 1.25, py: 0.875, borderBottom: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
-        "& th": { textAlign: "left", fontWeight: 700, bgcolor: "action.hover" },
-        "& th:first-child, & td:first-child": { minWidth: "3rem" },
-        "& td a, & th a": { maxWidth: "16rem" },
-        "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
-      }}
-    >
+    <div className={`chat-prose${compact ? " chat-prose-compact" : ""}${small ? " chat-prose-small" : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageFormatting, [remarkMessageTags, { tokens, recipients: collaborationRecipients, mentions: agentMentions }]]}
         urlTransform={(url, key) => chatMarkdownUrlTransform(url, key, projectId)}
@@ -526,7 +499,7 @@ function ChatMarkdown({
             if (src && isLocalWorkspaceHref(src) && !projectPreview) return <Box component="span">{alt ?? "Image unavailable"}</Box>;
             const image = <Box component="img" src={projectPreview ?? src} alt={alt ?? "Agent-provided image"} loading="lazy" sx={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: { xs: 320, md: 520 }, objectFit: "contain", borderRadius: 1.5 }} />;
             return projectPreview
-              ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "agent-provided image"} full size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
+              ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "Agent-Provided Image"} Full Size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
               : image;
           },
           a: ({ href, children: label, node }) => {
@@ -535,7 +508,7 @@ function ChatMarkdown({
             const recipientId = node?.properties["data-ponderosa-recipient"];
             const recipient = collaborationRecipients?.find(candidate => candidate.id === recipientId);
             if (recipient) return recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
-              title={!recipient.available ? "Agent no longer available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
+              title={!recipient.available ? "Agent No Longer Available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
               onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>;
             const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
@@ -588,7 +561,7 @@ function ChatMarkdown({
             const handle = messageTagHandle(href);
             if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
-              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open Originating Broadcast In Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
@@ -618,16 +591,17 @@ function ChatMarkdown({
       >
         {taggedText}
       </ReactMarkdown>
-    </Box>
+    </div>
   );
-}
+});
 
 export function CommunicationDocumentCard({ document, projectId, fileScope }: { document: CommunicationDocumentReference; projectId?: string; fileScope?: WorkspaceFileOwnerDto }): JSX.Element {
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown projectId={projectId} fileScope={fileScope}>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false }: {
+export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, artifactSource }: {
   text: string;
+  artifactSource?:Pick<MessageDto,"communicationEventId"|"conversationId"|"artifactIds">;
   collaborationRecipients?: readonly CollaborationRecipientDto[];
   agentMentions?: readonly AgentMentionBindingDto[];
   citations?: VerifiedCitationDto[];
@@ -643,33 +617,24 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   compactMarkdown?: boolean;
   smallText?: boolean;
 }): JSX.Element {
-  const collaborationMention = (handle: string) => {
+  const collaborationMention = useCallback((handle: string) => {
     const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
     if (matches.length !== 1) return undefined;
     const binding = matches[0]!;
     return { agentId: binding.agentId, label: handle, available: binding.available,
       title: binding.available === false ? "Agent no longer available" : binding.currentHandle !== handle ? `Currently ${binding.currentTitle}` : undefined };
-  };
-  const collapsible = collapseLongMessage && isLongChatMessage(text);
+  }, [agentMentions]);
+  const collapsible = useMemo(() => collapseLongMessage && isLongChatMessage(text) && !hasMessageVisualization(text), [collapseLongMessage, text]);
   const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0 }}>
-      <Box
-        sx={{
-          width: "100%",
-          maxWidth: "100%",
-          minWidth: 0,
-          ...(collapsible && !expanded ? {
-            maxHeight: "22rem",
-            overflow: "hidden",
-            maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
-          } : {}),
-        }}
-      >
+    <div className="MuiBox-root chat-message-content">
+      <div className={`MuiBox-root chat-message-content${collapsible && !expanded ? " chat-message-content-collapsed" : ""}`}>
+        <VisualizationContext.Provider value={projectId&&artifactSource?.conversationId&&artifactSource.communicationEventId?{projectId,conversationId:artifactSource.conversationId,communicationEventId:artifactSource.communicationEventId,artifactIds:artifactSource.artifactIds??[]}:undefined}>
         <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
-      </Box>
+        </VisualizationContext.Provider>
+      </div>
       {collapsible ? (
         <Button
           className="chat-text-navigation"
@@ -684,6 +649,6 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
         </Button>
       ) : null}
       {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><ChatLink href={citation.url} projectId={projectId} fileScope={fileScope} previewScope={previewScope}>{citation.title}</ChatLink></Typography>)}</Box> : null}
-    </Box>
+    </div>
   );
 }

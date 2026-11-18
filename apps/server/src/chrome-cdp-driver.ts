@@ -1,3 +1,5 @@
+import {BrowserObservationBuffer} from "./browser-observation-buffer.js";
+import type {BrowserConsoleQuery, BrowserConsoleResult, BrowserRecordingStatus, BrowserRecordingData} from "@ponderosa/core";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "@ponderosa/native-host/fs";
@@ -123,6 +125,10 @@ export interface BrowserTerminationHandle {
 }
 
 export interface BrowserDriver extends BrowserTerminationHandle {
+  consoleQuery?(query: BrowserConsoleQuery): Promise<BrowserConsoleResult>;
+  recordingStart?(pageId: string): Promise<BrowserRecordingStatus>;
+  recordingStop?(id: string): Promise<BrowserRecordingData>;
+  recordingDiscard?(): Promise<void>;
   setOwner?(owner: import("@ponderosa/core").BrowserOwner): Promise<void>;
   /** Release app access while a separately supervised service retains Chrome. */
   suspend?(chooserAlreadyCancelled?: boolean): Promise<void>;
@@ -402,6 +408,8 @@ interface BrowserPreviewStream {
 }
 
 export class ChromeCdpDriver implements BrowserDriver {
+  private readonly observations = new BrowserObservationBuffer();
+  private recordingTimer?: NodeJS.Timeout;
   private readonly previewStreams = new Map<string, BrowserPreviewStream>();
   private readonly previewStops = new Map<string, Promise<void>>();
   private previewSequence = 0;
@@ -417,6 +425,9 @@ export class ChromeCdpDriver implements BrowserDriver {
     const stream = pageId ? this.previewStreams.get(pageId) : undefined;
     const data = message.params?.data;
     if (!stream || stream.sessionId !== sessionId || typeof data !== "string" || data.length > 16 * 1024 * 1024) return true;
+    const wasRecording = this.observations.active(pageId!);
+    this.observations.frame(pageId!, data);
+    if (wasRecording && !this.observations.active(pageId!)) void this.stopPreview(pageId!);
     stream.data = data;
     stream.sequence = ++this.previewSequence;
     for (const wake of stream.waiters) wake();
@@ -468,7 +479,7 @@ export class ChromeCdpDriver implements BrowserDriver {
     }
     const current = stream;
     if (current.idleTimer) clearTimeout(current.idleTimer);
-    current.idleTimer = setTimeout(() => { void this.stopPreview(page.pageId); }, 3_000);
+    current.idleTimer = setTimeout(() => { if (!this.observations.active(page.pageId)) void this.stopPreview(page.pageId); }, 3_000);
     current.idleTimer.unref();
     try {
       await current.starting;
@@ -488,6 +499,37 @@ export class ChromeCdpDriver implements BrowserDriver {
       throw error;
     }
   }
+  async consoleQuery(query: BrowserConsoleQuery): Promise<BrowserConsoleResult> { return this.observations.query(query); }
+
+  async recordingStart(pageId: string): Promise<BrowserRecordingStatus> {
+    const page = this.pagesById.get(pageId);
+    if (!page?.initialized || this.closing) throw new BrowserDriverActionError("page_not_found");
+    const status = this.observations.start(pageId);
+    try { await this.preview(pageId); }
+    catch (error) { this.observations.discard(); throw error; }
+    this.recordingTimer = setTimeout(() => {
+      this.observations.finish("duration_limit");
+      void this.stopPreview(pageId);
+    }, 60_000);
+    this.recordingTimer.unref();
+    return status;
+  }
+
+  async recordingStop(id: string): Promise<BrowserRecordingData> {
+    const result = this.observations.stop(id);
+    if (this.recordingTimer) clearTimeout(this.recordingTimer);
+    await this.stopPreview(result.pageId);
+    // Keep bounded bytes until managed publication is acknowledged or explicitly discarded.
+    return result;
+  }
+
+  async recordingDiscard(): Promise<void> {
+    if (this.recordingTimer) clearTimeout(this.recordingTimer);
+    const pageId = this.observations.recordingPage();
+    this.observations.discard();
+    if (pageId) await this.stopPreview(pageId);
+  }
+
   private readonly frameReferences = new Map<string, { frame: import("playwright-core").Frame; targetId: string; url: string }>();
 
   private async actionLocator(selector: string, check?: () => void) {
@@ -787,6 +829,8 @@ export class ChromeCdpDriver implements BrowserDriver {
   }
 
   detachMechanics(): void {
+    if (this.recordingTimer) clearTimeout(this.recordingTimer);
+    this.observations.discard();
     this.closing = true;
     this.lifecycleGeneration++;
     for (const pageId of this.previewStreams.keys()) void this.stopPreview(pageId);
@@ -867,6 +911,15 @@ export class ChromeCdpDriver implements BrowserDriver {
       if (pageId) this.removePage(pageId, "target_detached");
       return;
     }
+    if (message.method === "Runtime.exceptionThrown" && message.sessionId) {
+      const pageId = this.pageIdBySession.get(message.sessionId);
+      if (!pageId) return;
+      const details = params.exceptionDetails as {text?: string; exception?: {description?: string}} | undefined;
+      const text = details?.exception?.description ?? details?.text ?? "Uncaught JavaScript exception";
+      this.observations.console(pageId, "error", text);
+      this.onConsole("error", text);
+      return;
+    }
     if (message.method === "Runtime.consoleAPICalled" && message.sessionId) {
       const pageId = this.pageIdBySession.get(message.sessionId);
       if (!pageId) return;
@@ -879,6 +932,7 @@ export class ChromeCdpDriver implements BrowserDriver {
         const value = item.value ?? item.description;
         return typeof value === "string" ? value : JSON.stringify(value);
       }).join(" ");
+      this.observations.console(pageId, level, text);
       this.onConsole(level, text);
       return;
     }
@@ -1020,6 +1074,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   }
 
   private removePage(pageId: string, reason: string): void {
+    if (this.observations.active(pageId)) this.observations.finish("page_closed");
     const page = this.pagesById.get(pageId);
     if (!page) return;
     void this.stopPreview(pageId);
@@ -1817,6 +1872,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   }
 
   async close(): Promise<void> {
+    await this.recordingDiscard();
     this.closing = true; this.lifecycleGeneration += 1; this.clearPendingChooser("session_closed");
     await Promise.all([...this.previewStreams.keys()].map(pageId => this.stopPreview(pageId)));
     this.playwright?.close();

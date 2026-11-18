@@ -24,6 +24,10 @@ export abstract class AgentEventSessionFacade {
     return this.eventSession.readEventsSince(agentId, sinceSeq, limit);
   }
 
+  latestVoiceReply(agentId: string, messageId: string, runId: string): import("@ponderosa/core").VoiceReplySnapshot | undefined {
+    return this.eventSession.latestVoiceReply(agentId, messageId, runId);
+  }
+
   lastSeqOf(agentId: string): number {
     return this.eventSession.lastSeqOf(agentId);
   }

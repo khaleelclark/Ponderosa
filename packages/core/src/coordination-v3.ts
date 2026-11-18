@@ -50,6 +50,9 @@ export type CoordinationRequestUpdateKind =
 
 export type CoordinationActorClass = "recipient" | "recipient_or_supervisor" | "requester_or_user" | "system" | "supervisor_or_user";
 
+/** Read-only imported facts. These are deliberately absent from live update authorization. */
+export type CoordinationStoredRequestUpdateKind = CoordinationRequestUpdateKind | 'historical_question' | 'historical_answer';
+
 export const REQUEST_UPDATE_AUTHORIZATION: Readonly<Record<CoordinationRequestUpdateKind, CoordinationActorClass>> = {
   progress: "recipient",
   waiting_dependency: "recipient",

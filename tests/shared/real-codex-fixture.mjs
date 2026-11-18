@@ -61,7 +61,7 @@ export async function withRealCodex(t, run, { beforeTurn } = {}) {
   await app.ready();
   const api = async (method, url, payload, headers = {}) => {
     const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers });
-    assert.ok(response.statusCode >= 200 && response.statusCode < 300, `HTTP ${response.statusCode}`); return response.json();
+    assert.ok(response.statusCode >= 200 && response.statusCode < 300, `${method} ${url}: HTTP ${response.statusCode}: ${response.body}`); return response.json();
   };
   const wait = (id, previous = []) => until(async () => {
     const detail = await api('GET', `/api/agents/${id}`), runs = detail.runs.filter(x => !previous.includes(x.id));

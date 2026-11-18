@@ -1,3 +1,4 @@
+import {projectReplyToolEvent} from "@ponderosa/engines";
 import {
   type AgentStreamEvent,
   type SseEventEnvelope,
@@ -10,7 +11,7 @@ function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStrea
 
 function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
   if (!isAgentStreamEvent(stored.event)) return undefined;
-  return { agentId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
+  return { agentId, seq: stored.seq, ts: stored.ts, event: projectReplyToolEvent(stored.event), ...(replayed ? { replayed: true } : {}) };
 }
 
 const MAX_PENDING_SSE_EVENTS = 1_000;

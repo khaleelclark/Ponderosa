@@ -2,9 +2,11 @@ import { admitDataDirectory, type StateAdmission } from "./state-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "@ponderosa/native-host/fs";
 import { dirname } from "node:path";
-import { normalizeSpeechPreferences, draftPendingSubmissionError, draftPendingSubmissionRetired, LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
+import { decisionAnswersError, normalizeSpeechPreferences, draftPendingSubmissionError, draftPendingSubmissionRetired, LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
 import type {
   ConversationDraftDto,
+  ConversationMutationDto,
+  PortableChatTitleChangeDto,
   PutConversationDraftRequest,
   DecisionDto,
   ConversationDraftConflictDto,
@@ -24,8 +26,15 @@ import type {
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import {portableChatTitleHistoryError} from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
+
+/** A single materialized metadata relation lets SQLite index canonical ID joins. */
+export const workspaceRecencyCte = `recent_use AS MATERIALIZED (
+  SELECT CAST(json_extract(value, '$[0]') AS TEXT) id,
+    CAST(json_extract(value, '$[1]') AS TEXT) last_used_at FROM json_each(?)
+)`;
 
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
@@ -40,14 +49,16 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
         resolution: DraftConflictResolution;
       }
     | { kind: "draft_deleted"; draftId: string }
-    | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
+    | { kind: "quiet_activity"; item: WorkspaceNotificationDto }
+    | { kind: "quiet_activity_read"; communicationEventIds: string[] }
+    | { kind: "notification"; notification: WorkspaceNotificationDto; renewedFromNotificationId?: string; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "notifications_read_ids"; notificationIds: string[]; readAt: string }
     | { kind: "notifications_acknowledged_ids"; notificationIds: string[]; acknowledgedAt: string }
     | { kind: "notifications_read_all"; readAt: string }
     | { kind: "notifications_cleared"; notificationIds: string[] }
     | { kind: "notifications_dismissed"; notificationIds: string[]; at: string }
-    | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string }
+    | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string; preserveDismissal?: true }
     | { kind: "decision"; decision: DecisionDto; idempotencyKey: string }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
@@ -92,11 +103,13 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   chatSort: "last_used",
   agentOrder: [],
   agentSort: "last_used",
+  branchOrder:[],
+  branchSort:'last_used',
   starredResourceIds: [],
   starredProjectIds: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
-  notifications: { directResponses: true, broadcasts: true },
+  notifications: { directResponses: false, broadcasts: false },
   fontFamily: "inter",
   providerAvailability: {},
   engineDefaults: {},
@@ -113,12 +126,23 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
 
 export function draftRevisionConflicts(
   current: Pick<ConversationDraftDto, "revision" | "clientId">,
-  input: { expectedRevision: number; clientId: string },
+  input: { expectedRevision: number; clientId: string; captureMetadataOnly?: boolean },
 ): boolean {
   const provenSameIncarnation =
     /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
     && current.clientId === input.clientId;
-  return current.revision !== input.expectedRevision && !provenSameIncarnation;
+  return current.revision !== input.expectedRevision && (input.captureMetadataOnly === true || !provenSameIncarnation);
+}
+
+/** Coordination traces regroup; the canonical Request/Join owns its notice. */
+function notificationWorkKey(item: Pick<WorkspaceNotificationDto, "category" | "projectId" | "workContext">): string | undefined {
+  if (!item.projectId || !item.workContext) return undefined;
+  if (item.category === "communication" && item.workContext.kind === "activation")
+    return JSON.stringify([item.projectId, "communication", item.workContext.recordId]);
+  if (item.category === "coordination" && item.workContext.kind === "activation" && item.workContext.traceId?.startsWith("settings-transition:"))
+    return JSON.stringify([item.projectId, item.workContext.traceId]);
+  return item.category === "coordination" && ["request", "join"].includes(item.workContext.kind)
+    ? JSON.stringify([item.projectId, item.workContext.kind, item.workContext.recordId]) : undefined;
 }
 
 function isOpenAttentionNotification(item: WorkspaceNotificationDto): boolean {
@@ -220,11 +244,16 @@ export class WorkspaceStore {
   private readonly instance: string;
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
+  private readonly conversationMutationHistory = new Map<string, ConversationMutationDto[]>();
+  private readonly importedTitleHistoryReceipts = new Map<string,string>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
   private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
+  private readonly quietActivityByConversation = new Map<string, Set<string>>();
+  private readonly quietActivity = new Map<string, WorkspaceNotificationDto>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
+  private readonly notificationsByWork = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly activeNotifications: WorkspaceNotificationDto[] = [];
   private notificationOpenActionCount = 0;
@@ -250,6 +279,7 @@ export class WorkspaceStore {
   private readonly conversationDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
   private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
+  private readonly resourceRecencySnapshots = new Map<WorkspaceResourceKind, { json: string; revision: string }>();
   private readonly resourceRecencyLinks = new Map<
     string,
     { newer?: string; older?: string }
@@ -283,10 +313,15 @@ export class WorkspaceStore {
   }
 
   private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
-    return this.notificationAllowed(item) && notificationLiveKind(item) === "update";
+    // Reading a Communication must also clear alerts suppressed by scope settings.
+    return notificationLiveKind(item) === "update";
   }
 
-  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity">): boolean {
+  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity" | "category" | "projectId" | "workContext">, recoveredIncidentId?: string): boolean {
+    const workKey = notificationWorkKey(item);
+    const owner = workKey ? this.notificationsByWork.get(workKey) : undefined;
+    if (owner && (!("id" in item) || item.id !== owner.id) &&
+        !(owner.id === recoveredIncidentId && (owner.status === "resolved" || owner.recoveredAt))) return false;
     const scopes = this.preferences.notificationScopes ?? {};
     const agentId = item.sourceAgentId ?? item.agentId;
     const mode = (agentId ? scopes[`agent:${agentId}`] : undefined)
@@ -313,6 +348,17 @@ export class WorkspaceStore {
     }
   }
 
+  private unlinkNotificationIndexes(current: WorkspaceNotificationDto): void {
+    this.updateNotificationSearchIndex(current, false);
+    this.removeActiveNotification(current);
+    if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+      this.notificationsByDedupeKey.delete(current.dedupeKey);
+    }
+    if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+      this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
+    }
+  }
+
   private setNotification(item: WorkspaceNotificationDto): void {
     // A cleared alert cannot hide its still-open canonical question. Derive
     // question visibility here so historical dismissals reconcile on reopen too.
@@ -324,16 +370,21 @@ export class WorkspaceStore {
     }
     const current = this.notifications.get(item.id);
     if (current) {
-      this.updateNotificationSearchIndex(current, false);
-      this.removeActiveNotification(current);
-      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.notificationsByDedupeKey.delete(current.dedupeKey);
-      }
-      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
-      }
+      const previousKey = notificationWorkKey(current);
+      if (previousKey && previousKey !== notificationWorkKey(item) && this.notificationsByWork.get(previousKey)?.id === current.id) this.notificationsByWork.delete(previousKey);
+      this.unlinkNotificationIndexes(current);
     }
     this.notifications.set(item.id, item);
+    const workKey = notificationWorkKey(item);
+    if (workKey) {
+      const previous = this.notificationsByWork.get(workKey);
+      // A retained dismissal/closure wins over older regrouped open notices.
+      if (!previous || previous.id === item.id || item.status === "dismissed"
+        || (previous.status !== "dismissed" && (item.status === "resolved" || (previous.status ?? "open") === "open"))) {
+        if (previous && previous.id !== item.id) { this.updateNotificationSearchIndex(previous, false); this.removeActiveNotification(previous); }
+        this.notificationsByWork.set(workKey, item);
+      }
+    }
     if (item.dedupeKey) this.notificationsByDedupeKey.set(item.dedupeKey, item);
     if (item.kind === "operational" && item.dedupeKey && (item.status ?? "open") === "open") {
       this.openOperationalNotificationsByDedupeKey.set(item.dedupeKey, item);
@@ -345,16 +396,11 @@ export class WorkspaceStore {
   private deleteNotification(id: string): void {
     const current = this.notifications.get(id);
     if (current) {
-      this.updateNotificationSearchIndex(current, false);
-      this.removeActiveNotification(current);
-      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.notificationsByDedupeKey.delete(current.dedupeKey);
-      }
-      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
-      }
+      this.unlinkNotificationIndexes(current);
     }
     this.notifications.delete(id);
+    const workKey = current && notificationWorkKey(current);
+    if (workKey && this.notificationsByWork.get(workKey)?.id === id) this.notificationsByWork.delete(workKey);
   }
 
   private removeActiveNotification(item: WorkspaceNotificationDto): void {
@@ -390,6 +436,16 @@ export class WorkspaceStore {
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
+    if(record.event.type==="conversation_changed"&&record.event.importedTitleHistory){const e=record.event;this.importedTitleHistoryReceipts.set(JSON.stringify([e.projectId,e.conversationId,e.importedTitleHistory!.importId]),stableJson(e.importedTitleHistory));}
+    if (record.event.type === "conversation_changed" && record.event.action === "updated" && !record.event.importedTitleHistory) {
+      const event = record.event, key = `${event.projectId}\0${event.conversationId}`;
+      const history = this.conversationMutationHistory.get(key) ?? [];
+      history.push({ id: record.id, projectId: event.projectId, conversationId: event.conversationId, createdAt: record.ts,
+        ...(event.titleChange ? { titleChange: structuredClone(event.titleChange) } : {}) });
+      // Bounded projection only; older canonical events remain in the existing log.
+      if (history.length > 101) history.shift();
+      this.conversationMutationHistory.set(key, history);
+    }
     this.projectResourceRecency(record);
     this.projectDeletedProjectNotifications(record);
     if (record.event.type === "queued_message_changed") {
@@ -418,7 +474,9 @@ export class WorkspaceStore {
         chatSort: preferences.chatSort ?? "last_used",
         agentOrder: preferences.agentOrder ?? [],
         agentSort: preferences.agentSort ?? "last_used",
-        starredResourceIds: (preferences.starredResourceIds ?? []).filter(key => /^(?:project|conversation|agent):/u.test(key)),
+        branchOrder:preferences.branchOrder??[],
+        branchSort:preferences.branchSort??'last_used',
+        starredResourceIds: (preferences.starredResourceIds ?? []).filter(key => /^(?:project|conversation|agent|branch):/u.test(key)),
         starredProjectIds: preferences.starredProjectIds ?? [],
         providerAvailability: preferences.providerAvailability ?? {},
         engineDefaults: preferences.engineDefaults ?? {},
@@ -526,6 +584,8 @@ export class WorkspaceStore {
           resolvedAt: canonicalDecision.updatedAt,
         };
       }
+      const workKey = notificationWorkKey(notification), prior = workKey ? this.notificationsByWork.get(workKey) : undefined;
+      if (workKey && prior && prior.id === record.mutation.renewedFromNotificationId && (prior.status === "resolved" || prior.recoveredAt)) this.notificationsByWork.delete(workKey);
       this.setNotification(notification);
       for (const target of record.mutation.pushTargets ?? []) {
         if ((notification.status ?? "open") !== "open") continue;
@@ -539,6 +599,24 @@ export class WorkspaceStore {
           nextAttemptAt: record.ts,
         });
       }
+    }
+    if (record.mutation?.kind === "quiet_activity") {
+      const item = record.mutation.item;
+      this.quietActivity.set(item.id, item);
+      if (item.conversationId) {
+        const ids = this.quietActivityByConversation.get(item.conversationId) ?? new Set<string>();
+        ids.add(item.id);
+        this.quietActivityByConversation.set(item.conversationId, ids);
+      }
+    }
+    if (record.mutation?.kind === "quiet_activity_read") for (const id of record.mutation.communicationEventIds) {
+      const item = this.quietActivity.get(id);
+      if (item?.conversationId) {
+        const ids = this.quietActivityByConversation.get(item.conversationId);
+        ids?.delete(id);
+        if (!ids?.size) this.quietActivityByConversation.delete(item.conversationId);
+      }
+      this.quietActivity.delete(id);
     }
     if (record.mutation?.kind === "notifications_read") {
       for (const item of this.notifications.values()) {
@@ -588,8 +666,9 @@ export class WorkspaceStore {
       if (current) {
         this.setNotification({
           ...current,
-          status: record.mutation.status,
-          resolvedAt: record.mutation.at,
+          status: record.mutation.preserveDismissal && current.status === "dismissed" ? "dismissed" : record.mutation.status,
+          resolvedAt: record.mutation.preserveDismissal && current.status === "dismissed" ? current.resolvedAt : record.mutation.at,
+          ...(record.mutation.preserveDismissal ? { recoveredAt: record.mutation.at } : {}),
           ...(record.mutation.status === "dismissed" ? { readAt: current.readAt ?? record.mutation.at } : {}),
         });
         if (record.mutation.status === "dismissed") {
@@ -681,7 +760,7 @@ export class WorkspaceStore {
 
   private projectResourceRecency(record: CanonicalWorkspaceEvent): void {
     const event = record.event;
-    if (event.type === "resource_used" && ["project", "conversation", "agent"].includes(event.kind)) {
+    if (event.type === "resource_used" && ["project", "conversation", "agent", "branch"].includes(event.kind)) {
       this.touchResourceRecency(event.kind, event.resourceId, record.ts);
       return;
     }
@@ -731,6 +810,7 @@ export class WorkspaceStore {
     };
     this.deleteResourceRecency(resourceKey);
     this.resourceRecency.set(resourceKey, next);
+    this.resourceRecencySnapshots.delete(kind);
     this.insertResourceRecency(resourceKey);
     return next;
   }
@@ -784,6 +864,8 @@ export class WorkspaceStore {
       else this.oldestResourceRecencyKey = links.newer;
       this.resourceRecencyLinks.delete(resourceKey);
     }
+    const resource = this.resourceRecency.get(resourceKey);
+    if (resource) this.resourceRecencySnapshots.delete(resource.kind);
     this.resourceRecency.delete(resourceKey);
   }
 
@@ -918,6 +1000,37 @@ export class WorkspaceStore {
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
 
+  /** Complete selected new Rename metadata, never the bounded UI tail. */
+  exportChatTitleHistory(input: { projectId: string; conversationId: string; maximumBytes: number }): PortableChatTitleChangeDto[] {
+    if(!Number.isSafeInteger(input.maximumBytes)||input.maximumBytes<2)throw Error("Invalid Chat title history budget");
+    const result=new Map<string,PortableChatTitleChangeDto>();let bytes=2;
+    const add=(row:PortableChatTitleChangeDto)=>{const key=JSON.stringify([row.sourceInstanceId,row.projectId,row.conversationId,row.eventId]),prior=result.get(key);
+      if(prior){if(stableJson(prior)!==stableJson(row))throw Error("Retained Chat title history identity differs");return;}
+      bytes+=utf8ByteLength(JSON.stringify(row))+(result.size?1:0);
+      if(bytes>input.maximumBytes)throw Object.assign(Error("Selected Chat title history exceeds the existing package budget; no records were omitted"),{statusCode:413});
+      result.set(key,structuredClone(row));
+    };
+    for(const record of this.events){const event=record.event;
+      if(event.type!=="conversation_changed"||event.action!=="updated"||event.projectId!==input.projectId||event.conversationId!==input.conversationId)continue;
+      if(event.titleChange)add({sourceInstanceId:this.instance,eventId:record.id,projectId:event.projectId,conversationId:event.conversationId,createdAt:record.ts,change:event.titleChange});
+      for(const row of event.importedTitleHistory?.items??[])add(row);
+    }return [...result.values()];
+  }
+
+  /** Retained source metadata only, never a destination Rename or Communication. */
+  reconcileImportedChatTitleHistory(projectId:string,conversationId:string,importId:string,items:PortableChatTitleChangeDto[]):void {
+    const error=portableChatTitleHistoryError(items);if(error)throw Error(error);
+    const value={importId,items},key=JSON.stringify([projectId,conversationId,importId]),hash=stableJson(value),prior=this.importedTitleHistoryReceipts.get(key);
+    if(prior){if(prior!==hash)throw Error("Imported Chat title history identity changed");return;}
+    this.append({type:"conversation_changed",projectId,conversationId,action:"updated",importedTitleHistory:structuredClone(value)});
+  }
+
+  listConversationChanges(input: { projectId: string; conversationId: string; limit?: number }): { items: ConversationMutationDto[]; truncated?: boolean } {
+    const limit = Math.min(100, Math.max(1, Math.trunc(input.limit ?? 50)));
+    const history = this.conversationMutationHistory.get(`${input.projectId}\0${input.conversationId}`) ?? [];
+    return { items: structuredClone(history.slice(-limit).reverse()), ...(history.length > limit ? { truncated: true } : {}) };
+  }
+
   hasQueuedMessageChange(input: {
     conversationId: string;
     deliveryId: string;
@@ -934,7 +1047,20 @@ export class WorkspaceStore {
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
-  listResourceRecency(limit?: number): WorkspaceResourceRecencyListDto {
+  /** Complete metadata from the canonical projection, independent of the bounded Recent UI cache. */
+  resourceRecencySnapshot(kind: WorkspaceResourceKind) {
+    let snapshot = this.resourceRecencySnapshots.get(kind);
+    if (!snapshot) {
+      const entries = [...this.resourceRecency.values()].filter(row => row.kind === kind)
+        .map(row => [row.resourceId, row.lastUsedAt] as const).sort(([a], [b]) => a.localeCompare(b));
+      const json = JSON.stringify(entries);
+      snapshot = { json, revision: createHash("sha256").update(json).digest("base64url") };
+      this.resourceRecencySnapshots.set(kind, snapshot);
+    }
+    return snapshot;
+  }
+
+  listResourceRecency(limit?: number, include: (resource: WorkspaceResourceRecencyDto) => boolean = () => true): WorkspaceResourceRecencyListDto {
     const starred = new Set([
       ...(this.preferences.starredResourceIds ?? []),
       ...this.preferences.starredProjectIds.map(id => `project:${id}`),
@@ -943,7 +1069,7 @@ export class WorkspaceStore {
     if (limit !== undefined) {
       for (const resourceKey of starred) {
         const resource = this.resourceRecency.get(resourceKey);
-        if (resource) selected.set(resourceKey, resource);
+        if (resource && include(resource)) selected.set(resourceKey, resource);
       }
     }
 
@@ -952,6 +1078,10 @@ export class WorkspaceStore {
     let resourceKey = this.newestResourceRecencyKey;
     while (resourceKey) {
       const resource = this.resourceRecency.get(resourceKey)!;
+      if (!include(resource)) {
+        resourceKey = this.resourceRecencyLinks.get(resourceKey)?.older;
+        continue;
+      }
       if (limit === undefined) {
         selected.set(resourceKey, resource);
       } else if (!starred.has(resourceKey)) {
@@ -990,6 +1120,9 @@ export class WorkspaceStore {
   }
 
   updatePreferences(patch: UpdateWorkspacePreferencesRequest): WorkspacePreferencesDto {
+    if (patch.globalInstructions !== undefined && patch.globalInstructions.length > 100_000) {
+      throw new Error("Global instructions must be at most 100,000 characters. Your saved instructions were not changed.");
+    }
     const notifications = patch.notifications ? normalizeNotifications(patch.notifications) : this.preferences.notifications;
     const preferences: WorkspacePreferencesDto = {
       ...this.preferences,
@@ -1004,6 +1137,8 @@ export class WorkspaceStore {
       chatSort: patch.chatSort ?? this.preferences.chatSort,
       agentOrder: patch.agentOrder ?? this.preferences.agentOrder,
       agentSort: patch.agentSort ?? this.preferences.agentSort,
+      branchOrder:patch.branchOrder??this.preferences.branchOrder,
+      branchSort:patch.branchSort??this.preferences.branchSort,
       starredResourceIds: patch.starredResourceIds ?? this.preferences.starredResourceIds,
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
@@ -1011,7 +1146,7 @@ export class WorkspaceStore {
       claudeModelOptions: patch.claudeModelOptions === undefined
         ? this.preferences.claudeModelOptions
         : normalizeClaudeModelOptions(patch.claudeModelOptions),
-      globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
+      globalInstructions: patch.globalInstructions ?? this.preferences.globalInstructions,
       maxConcurrentAgentRuns: patch.maxConcurrentAgentRuns ?? this.preferences.maxConcurrentAgentRuns,
       contextRolloverEnabled: patch.contextRolloverEnabled ?? this.preferences.contextRolloverEnabled,
       contextRolloverTokens: clampContextRolloverTokens(
@@ -1209,6 +1344,21 @@ export class WorkspaceStore {
   putDraft(conversationId: string, input: PutConversationDraftRequest): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
+    if(input.captureMetadataOnly){
+      // Capture bookkeeping cannot borrow the editable writer's revision bypass,
+      // overwrite newer text, or manufacture a displaced editable conflict.
+      if(current.revision!==input.expectedRevision)throw Object.assign(new Error('Captured message metadata changed; recheck the current draft.'),{code:'DRAFT_METADATA_CONFLICT'});
+      input={...input,text:current.text,attachmentIds:current.attachmentIds,pastedTextAttachmentId:current.pastedTextAttachmentId,mentionBindings:current.mentionBindings,decisionAnswers:current.decisionAnswers,pendingSubmission:current.pendingSubmission&&!input.retirePendingSubmissionIds?.includes(current.pendingSubmission.idempotencyKey)?current.pendingSubmission:undefined,clientId:current.clientId||input.clientId};
+    }
+    if (input.decisionAnswers !== undefined) {
+      const decision = this.getDecision(ownerId);
+      const error = !decision?.questions || decision.status !== "pending" || conversationId !== `agent:${decision.agentId}`
+        ? "Structured answer drafts require their exact pending Decision owner"
+        : decisionAnswersError(decision.questions, input.decisionAnswers, true);
+      if (error) throw Object.assign(new Error(error), { code: "DRAFT_SUBMISSION_INVALID" });
+      const ids = input.decisionAnswers.flatMap(answer => answer.attachmentIds ?? []);
+      if (stableJson([...ids].sort()) !== stableJson([...input.attachmentIds].sort())) throw Object.assign(new Error("Question files must match the staged draft files"), { code: "DRAFT_SUBMISSION_INVALID" });
+    }
     const pendingSubmission = input.pendingSubmission &&
       !(current.retiredPendingSubmissionIds?.some(item => item.idempotencyKey === input.pendingSubmission!.idempotencyKey) ||
         (input.pendingSubmission.captureRevision !== undefined && draftPendingSubmissionRetired(current, input.pendingSubmission)))
@@ -1225,6 +1375,7 @@ export class WorkspaceStore {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
+        ...(input.decisionAnswers ? { decisionAnswers: structuredClone(input.decisionAnswers) } : {}),
         attachmentIds,
         ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}),
         mentionBindings,
@@ -1239,6 +1390,7 @@ export class WorkspaceStore {
         currentRevision: current.revision,
         expectedRevision: input.expectedRevision,
         text: displaced.text,
+        decisionAnswers: displaced.decisionAnswers ?? null,
         attachmentIds: displaced.attachmentIds,
         pastedTextAttachmentId: displaced.pastedTextAttachmentId ?? null,
         mentionBindings: displaced.mentionBindings ?? [],
@@ -1272,14 +1424,15 @@ export class WorkspaceStore {
       });
     }
     if (current.text === input.text &&
+        stableJson(current.decisionAnswers ?? []) === stableJson(input.decisionAnswers ?? []) &&
         JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
         current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
         JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings) &&
         JSON.stringify(current.pendingSubmission ?? null) === JSON.stringify(pendingSubmission ?? null) &&
         stableJson(current.pendingSubmissions ?? []) === stableJson(captured.pendingSubmissions ?? []) &&
         stableJson(current.retiredPendingSubmissionIds ?? []) === stableJson(captured.retiredPendingSubmissionIds ?? [])) return current;
-    const draft: ConversationDraftDto = { ...captured, conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(pendingSubmission ? { pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
-    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft: structuredClone(draft) });
+    const draft: ConversationDraftDto = { ...captured, conversationId, ownerId, text: input.text, ...(input.decisionAnswers ? { decisionAnswers: structuredClone(input.decisionAnswers) } : {}), attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(pendingSubmission ? { pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && !draft.decisionAnswers?.length && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft: structuredClone(draft) });
     return structuredClone(draft);
   }
 
@@ -1381,6 +1534,8 @@ export class WorkspaceStore {
       conversationId: input.conversationId,
       ownerId: input.ownerId,
       text: conflict.displaced.text,
+      ...(conflict.displaced.decisionAnswers ? { decisionAnswers: conflict.displaced.decisionAnswers.map(answer => ({ ...answer,
+        ...(answer.attachmentIds ? { attachmentIds: answer.attachmentIds.filter(id => !unavailableIds.has(id)).map(id => replacementById.get(id) ?? id) } : {}) })) } : {}),
       attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
       ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
       mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
@@ -1406,7 +1561,7 @@ export class WorkspaceStore {
         type: "draft_changed",
         conversationId: input.conversationId,
         revision: draft.revision,
-        cleared: !draft.text && draft.attachmentIds.length === 0 &&
+        cleared: !draft.text && !draft.decisionAnswers?.length && draft.attachmentIds.length === 0 &&
           !draft.pastedTextAttachmentId,
       },
       { kind: "draft_conflict_resolved", resolution: structuredClone(resolution) },
@@ -1477,7 +1632,8 @@ export class WorkspaceStore {
     }, { kind: "draft_deleted", draftId });
   }
 
-  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {
+  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false, renewAfterRecovery = false): WorkspaceNotificationDto {
+    let renewedFromNotificationId: string | undefined;
     // Operational notifications may point at the same Communication while
     // representing different retry attempts. Their explicit dedupe key is the
     // identity; communicationEventId remains navigation metadata. Ordinary
@@ -1487,14 +1643,27 @@ export class WorkspaceStore {
       if (existing) return existing;
     }
     if (input.dedupeKey) {
-      const existing = this.notificationsByDedupeKey.get(input.dedupeKey);
-      if (existing) {
-        if ((existing.status ?? "open") !== "open") return existing;
+      const workKey = notificationWorkKey(input);
+      const existing = (workKey ? this.notificationsByWork.get(workKey) : undefined) ?? this.notificationsByDedupeKey.get(input.dedupeKey);
+      if (existing && renewAfterRecovery && (existing.status === "resolved" || existing.recoveredAt)) renewedFromNotificationId = existing.id;
+      if (existing && !(renewAfterRecovery && (existing.status === "resolved" || existing.recoveredAt))) {
+        if ((existing.status ?? "open") !== "open") {
+          if (existing.status === "dismissed" && input.workContext?.activationIds) {
+            const workContext = { ...input.workContext, ...existing.workContext,
+              activationIds: [...new Set([...(existing.workContext?.activationIds ?? []), ...input.workContext.activationIds])] };
+            const updated = { ...existing, workContext };
+            if (JSON.stringify(updated) !== JSON.stringify(existing)) this.append(
+              { type: "notification_changed", notificationId: existing.id, action: "updated" }, { kind: "notification", notification: updated });
+            return this.notifications.get(existing.id)!;
+          }
+          return existing;
+        }
         const updated: WorkspaceNotificationDto = {
           ...existing,
           ...input,
           id: existing.id,
           createdAt: existing.createdAt,
+          dedupeKey: existing.dedupeKey ?? input.dedupeKey,
           ...(existing.readAt ? { readAt: existing.readAt } : {}),
         };
         // Affected Agents are membership, not a ranking. Preserve the saved
@@ -1526,12 +1695,12 @@ export class WorkspaceStore {
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
-    const pushTargets = queueWebPush && this.notificationAllowed(notification)
+    const pushTargets = queueWebPush && this.notificationAllowed(notification, renewedFromNotificationId)
       ? [...this.pushSubscriptions.values()].map(({ deviceId, updatedAt }) => ({ deviceId, subscriptionUpdatedAt: updatedAt }))
       : undefined;
     this.append(
       { type: "notification_changed", notificationId: notification.id, conversationId: notification.conversationId, action: "created" },
-      { kind: "notification", notification, ...(pushTargets?.length ? { pushTargets } : {}) },
+      { kind: "notification", notification, ...(renewedFromNotificationId ? { renewedFromNotificationId } : {}), ...(pushTargets?.length ? { pushTargets } : {}) },
     );
     return this.notifications.get(notification.id)!;
   }
@@ -1539,21 +1708,51 @@ export class WorkspaceStore {
   /** Iterate operator notifications without materializing the complete
    * historical collection. Collaboration remains agent-only, and dismissed
    * rows remain outside every operator notification surface. */
-  forEachNotification(visitor: (item: WorkspaceNotificationDto) => void): void {
+  forEachNotification(visitor: (item: WorkspaceNotificationDto) => void, includeDismissed = false): void {
     for (const item of this.notifications.values()) {
-      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      if (item.kind === "collaboration" || (!includeDismissed && (item.status ?? "open") === "dismissed")) continue;
       visitor(item);
     }
   }
 
   findNotification(
     predicate: (item: WorkspaceNotificationDto) => boolean,
+    includeDismissed = false,
   ): WorkspaceNotificationDto | undefined {
     for (const item of this.notifications.values()) {
-      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      if (item.kind === "collaboration" || (!includeDismissed && (item.status ?? "open") === "dismissed")) continue;
       if (predicate(item)) return item;
     }
     return undefined;
+  }
+
+  /** Keep coordination evidence without presenting an internal repair as a human action. */
+  classifyNotificationAsInternal(id: string): void {
+    const current = this.notifications.get(id);
+    if (!current || !["operational", "information"].includes(current.kind) || !["coordination", "communication"].includes(current.category ?? "") || (current.status ?? "open") !== "open") return;
+    const notification = { ...current, kind: "information" as const, severity: "info" as const, readAt: current.createdAt };
+    if (JSON.stringify(notification) !== JSON.stringify(current)) this.append({ type: "notification_changed", notificationId: id, conversationId: current.conversationId, action: "updated" }, { kind: "notification", notification });
+    for (const delivery of this.pushDeliveries.values()) if (delivery.notificationId === id && delivery.status === "pending") {
+      this.updatePushDelivery({ notificationId: id, deviceId: delivery.deviceId, status: "abandoned", lastError: "Coordination repair is owned by an Agent" });
+    }
+  }
+
+  forEachCoordinationNotification(visitor: (item: WorkspaceNotificationDto) => void): void {
+    for (const [key, item] of this.notificationsByDedupeKey) if (key.startsWith("coordination-attention:") && (item.status ?? "open") === "open") visitor(item);
+  }
+
+  getNotificationByDedupeKey(key: string) { return this.notificationsByDedupeKey.get(key); }
+
+  notificationForWork(item: Pick<WorkspaceNotificationDto, "category" | "projectId" | "workContext">) {
+    const key = notificationWorkKey(item);
+    return key ? this.notificationsByWork.get(key) : undefined;
+  }
+
+  /** Adopt retained notification aliases into their canonical work identity. */
+  reconcileNotificationWork(id: string, workContext: NonNullable<WorkspaceNotificationDto["workContext"]>): void {
+    const current = this.notifications.get(id);
+    if (!current || JSON.stringify(current.workContext) === JSON.stringify(workContext)) return;
+    this.append({ type: "notification_changed", notificationId: id, action: "updated" }, { kind: "notification", notification: { ...current, workContext } });
   }
 
   openOperationalNotification(dedupeKey: string): WorkspaceNotificationDto | undefined {
@@ -1574,6 +1773,8 @@ export class WorkspaceStore {
   listNotificationPage(input: {
     limit: number;
     before?: WorkspaceNotificationPageCursor;
+    include?:(notification:WorkspaceNotificationDto)=>boolean;
+    kind?: NotificationLiveKind;
   }): WorkspaceNotificationPage {
     const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
     let start = 0;
@@ -1586,6 +1787,18 @@ export class WorkspaceStore {
         else high = middle;
       }
       start = low;
+    }
+    if(input.include||input.kind){
+      const items:WorkspaceNotificationDto[]=[];
+      let openActionCount=0,unacknowledgedActionCount=0,unreadUpdateCount=0,hasMore=false;
+      for(let index=0;index<this.activeNotifications.length;index++){
+        const item=this.activeNotifications[index]!;if(input.include&&!input.include(item))continue;
+        if(notificationLiveKind(item)==='attention'){openActionCount++;if(!item.acknowledgedAt)unacknowledgedActionCount++;}else unreadUpdateCount++;
+        if(index<start||(input.kind&&notificationLiveKind(item)!==input.kind))continue;
+        if(items.length<limit)items.push(item);else hasMore=true;
+      }
+      const last=items.at(-1);
+      return {items,openActionCount,unacknowledgedActionCount,unreadUpdateCount,...(hasMore&&last?{nextCursor:{createdAt:last.createdAt,id:last.id}}:{})};
     }
     const items = this.activeNotifications.slice(start, start + limit);
     const last = items.at(-1);
@@ -1607,6 +1820,12 @@ export class WorkspaceStore {
     });
   }
 
+  /** Unread Communication metadata is independent of opt-in notification alerts. */
+  recordQuietActivity(item: WorkspaceNotificationDto): void {
+    if (this.quietActivity.has(item.id)) return;
+    this.append({ type: "notification_changed", action: "created" }, { kind: "quiet_activity", item });
+  }
+
   notificationSearchState(input: {
     communicationEventIds: readonly string[];
     conversationIds: readonly string[];
@@ -1615,10 +1834,15 @@ export class WorkspaceStore {
     unreadConversationCounts: Record<string, number>;
   } {
     const unreadCommunicationEventIds = [...new Set(input.communicationEventIds)]
-      .filter((id) => (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
+      .filter((id) => this.quietActivity.has(id) || (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
     const unreadConversationCounts: Record<string, number> = {};
     for (const id of new Set(input.conversationIds)) {
-      const count = this.unreadNotificationIdsByConversation.get(id)?.size ?? 0;
+      const identities = new Set(this.quietActivityByConversation.get(id));
+      for (const notificationId of this.unreadNotificationIdsByConversation.get(id) ?? []) {
+        const item = this.notifications.get(notificationId)!;
+        identities.add(item.communicationEventId ?? item.id);
+      }
+      const count = identities.size;
       if (count > 0) unreadConversationCounts[id] = count;
     }
     return { unreadCommunicationEventIds, unreadConversationCounts };
@@ -1626,16 +1850,17 @@ export class WorkspaceStore {
 
   /** Produce exact, identity-deduped unread projections without exposing the
    * underlying notification collection. The caller bounds which resource
-   * scopes are returned; workspace and All Messages remain scalar summaries. */
+   * scopes are returned; workspace and Inbox remain scalar summaries. */
   notificationProjection(input: {
     projectIds: readonly string[];
     conversationIds: readonly string[];
     chatFolders?: ReadonlyArray<{ id: string; conversationIds: readonly string[] }>;
+    include?:(notification:WorkspaceNotificationDto)=>boolean;
   }): WorkspaceNotificationProjectionDto {
     const requestedProjectIds = new Set(input.projectIds);
     const requestedConversationIds = new Set(input.conversationIds);
     const workspace = emptyNotificationProjectionAccumulator();
-    const allMessages = emptyNotificationProjectionAccumulator();
+    const inbox = emptyNotificationProjectionAccumulator();
     const projects = new Map<string, {
       total: NotificationProjectionAccumulator;
       chat: NotificationProjectionAccumulator;
@@ -1667,10 +1892,12 @@ export class WorkspaceStore {
       conversations.set(conversationId, emptyNotificationProjectionAccumulator());
     }
 
+    const alertedCommunicationIds = new Set<string>();
     for (const item of this.notifications.values()) {
-      if (!this.notificationAllowed(item)) continue;
+      if (!this.notificationAllowed(item)||(input.include&&!input.include(item))) continue;
       const kind = unreadProjectionKind(item);
       if (!kind) continue;
+      if (item.communicationEventId) alertedCommunicationIds.add(item.communicationEventId);
       const navigationConversationIds = new Set([
         ...(item.conversationId ? [item.conversationId] : []),
         ...(item.conversationIds ?? []),
@@ -1683,7 +1910,7 @@ export class WorkspaceStore {
         : new Set(item.conversationId ? [item.conversationId] : []);
       addNotificationProjection(workspace, item, kind);
       if (MESSAGE_NOTIFICATION_KINDS.has(item.kind) && conversationIds.size > 0) {
-        addNotificationProjection(allMessages, item, kind);
+        addNotificationProjection(inbox, item, kind);
       }
 
       if (item.projectId) {
@@ -1709,9 +1936,21 @@ export class WorkspaceStore {
       }
     }
 
+    const quietCounts = new Map<string, number>();
+    const quietFolderCounts = new Map<string, number>();
+    for (const conversationId of requestedConversationIds) {
+      let count = 0;
+      for (const id of this.quietActivityByConversation?.get(conversationId) ?? []) {
+        const item = this.quietActivity.get(id)!;
+        if (!alertedCommunicationIds.has(id) && (!input.include || input.include(item))) count++;
+      }
+      if (!count) continue;
+      quietCounts.set(conversationId, count);
+      for (const folderId of folderIdsByConversation.get(conversationId) ?? []) quietFolderCounts.set(folderId, (quietFolderCounts.get(folderId) ?? 0) + count);
+    }
     return {
       workspace: notificationProjectionCounts(workspace),
-      allMessages: notificationProjectionCounts(allMessages),
+      inbox: notificationProjectionCounts(inbox),
       projects: Object.fromEntries([...projects].map(([projectId, project]) => {
         const projected: WorkspaceProjectNotificationProjectionDto = {
           ...notificationProjectionCounts(project.total),
@@ -1725,30 +1964,39 @@ export class WorkspaceStore {
       })),
       conversations: Object.fromEntries([...conversations].map(([conversationId, projection]) => [
         conversationId,
-        notificationProjectionCounts(projection),
+        { ...notificationProjectionCounts(projection), ...(quietCounts.has(conversationId) ? { quietUnreadCount: quietCounts.get(conversationId) } : {}) },
       ])),
       chatFolders: Object.fromEntries([...chatFolders].map(([folderId, projection]) => [
-        folderId, notificationProjectionCounts(projection),
+        folderId, { ...notificationProjectionCounts(projection), ...(quietFolderCounts.has(folderId) ? { quietUnreadCount: quietFolderCounts.get(folderId) } : {}) },
       ])),
     };
   }
 
   /** Resolve unread informational notifications by canonical Communication
    * identity, including notifications older than the bounded live-feed page. */
-  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[]): number {
+  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[],include?:(notification:WorkspaceNotificationDto)=>boolean): number {
+    const quietIds = [...new Set(communicationEventIds)].filter(id => {
+      const item = this.quietActivity.get(id);
+      return item && (!include || include(item));
+    });
+    if (quietIds.length) this.append({ type: "notification_changed", action: "read" }, { kind: "quiet_activity_read", communicationEventIds: quietIds });
     const notificationIds = new Set<string>();
     for (const communicationEventId of new Set(communicationEventIds)) {
       for (const notificationId of this.unreadNotificationIdsByCommunication.get(communicationEventId) ?? []) {
-        notificationIds.add(notificationId);
+        const notification=this.notifications.get(notificationId);
+        if(notification&&(!include||include(notification)))notificationIds.add(notificationId);
       }
     }
-    if (!notificationIds.size) return 0;
+    if (!notificationIds.size) return quietIds.length;
     const readAt = new Date().toISOString();
     this.append(
       { type: "notification_changed", action: "read" },
       { kind: "notifications_read_ids", notificationIds: [...notificationIds], readAt },
     );
-    return notificationIds.size;
+    return new Set([
+      ...quietIds,
+      ...[...notificationIds].map(id => this.notifications.get(id)!.communicationEventId ?? id),
+    ]).size;
   }
 
   readNotification(notificationId: string): boolean {
@@ -1809,21 +2057,22 @@ export class WorkspaceStore {
     return this.notifications.get(notificationId);
   }
 
-  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): WorkspaceNotificationDto | undefined {
+  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed", confirmedRecovery = false): WorkspaceNotificationDto | undefined {
     const current = this.notifications.get(notificationId);
-    if (!current || (current.status ?? "open") !== "open") return current;
+    if (!current || current.status === "resolved" ||
+        current.status === "dismissed" && (!confirmedRecovery || status !== "resolved" || current.recoveredAt)) return current;
     if (current.decision && this.decisions.get(current.decision.id)?.status === "pending") return current;
     const at = new Date().toISOString();
     this.append(
       { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "resolved" },
-      { kind: "notification_status", notificationId, status, at },
+      { kind: "notification_status", notificationId, status, at, ...(confirmedRecovery ? { preserveDismissal: true as const } : {}) },
     );
     return this.notifications.get(notificationId);
   }
 
-  dismissNotifications(kind: "attention" | "updates"): number {
+  dismissNotifications(kind: "attention" | "updates",include?:(notification:WorkspaceNotificationDto)=>boolean): number {
     const ids = this.activeNotifications
-      .filter((item) => notificationLiveKind(item) === (kind === "attention" ? "attention" : "update"))
+      .filter((item) => (!include||include(item))&&notificationLiveKind(item) === (kind === "attention" ? "attention" : "update"))
       .filter((item) => !item.decision || this.decisions.get(item.decision.id)?.status !== "pending")
       .map((item) => item.id);
     if (!ids.length) return 0;
@@ -1916,6 +2165,7 @@ export class WorkspaceStore {
     conversationId?: string;
     agentId?: string;
     limit: number;
+    visible?:(decision:DecisionDto)=>boolean;
     before?: { createdAt: string; id: string };
   }): { events: DecisionEventProjection[]; hasMore: boolean } {
     const limit = Math.max(1, Math.min(input.limit, 500));
@@ -1946,7 +2196,7 @@ export class WorkspaceStore {
     let hasMore = false;
     for (let index = start; index < ids.length; index += 1) {
       const event = this.decisionEventForId(ids[index]!);
-      if (!event ||
+      if (!event || (input.visible&&!input.visible(event.decision)) ||
           (input.projectId && event.decision.projectId !== input.projectId) ||
           (input.agentId && event.decision.agentId !== input.agentId) ||
           (input.conversationId && event.decision.conversationId !== input.conversationId)) continue;
@@ -1973,6 +2223,12 @@ export class WorkspaceStore {
   resolveDecision(id: string, response: NonNullable<DecisionDto["response"]>): DecisionDto | undefined {
     const current = this.decisions.get(id);
     if (!current || current.status !== "pending") return current;
+    if (current.questions) {
+      const error = decisionAnswersError(current.questions, response.answers);
+      if (error) throw new Error(error);
+      const ids = response.answers!.flatMap(answer => answer.attachmentIds ?? []);
+      if (stableJson([...ids].sort()) !== stableJson((response.attachments ?? []).map(file => file.id).sort()) || response.optionId !== undefined || response.text !== undefined || response.skipped !== undefined) throw new Error("Question answers must reference exactly their canonical response files");
+    }
     const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
@@ -2006,18 +2262,21 @@ export class WorkspaceStore {
   }
 
   duePushDeliveries(now = new Date()): Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> {
-    const due = now.toISOString();
     const result: Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> = [];
     for (const delivery of this.pushDeliveries.values()) {
-      if (delivery.status !== "pending" || delivery.nextAttemptAt > due) continue;
-      const notification = this.notifications.get(delivery.notificationId);
-      const subscription = this.pushSubscriptions.get(delivery.deviceId);
-      // A replaced/rotated subscription must not receive work queued for the
-      // old endpoint. Its new subscription begins with the next notification.
-      if (!notification || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
-      result.push({ delivery, notification, subscription });
+      const current = this.eligiblePushDelivery(delivery.notificationId, delivery.deviceId, now);
+      if (current) result.push(current);
     }
     return result;
+  }
+
+  /** Recheck canonical notification and device state at the send boundary. */
+  eligiblePushDelivery(notificationId: string, deviceId: string, now?: Date) {
+    const delivery = this.pushDeliveries.get(this.pushDeliveryKey(notificationId, deviceId));
+    if (!delivery || delivery.status !== "pending" || (now && delivery.nextAttemptAt > now.toISOString())) return undefined;
+    const notification = this.notifications.get(notificationId), subscription = this.pushSubscriptions.get(deviceId);
+    if (!notification || !notificationLiveKind(notification) || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) return undefined;
+    return { delivery, notification, subscription };
   }
 
   updatePushDelivery(input: {
@@ -2053,8 +2312,7 @@ export class WorkspaceStore {
     return [...this.pushDeliveries.values()]
       .filter((delivery) => {
         if (delivery.status !== "pending") return false;
-        const subscription = this.pushSubscriptions.get(delivery.deviceId);
-        return subscription?.updatedAt === delivery.subscriptionUpdatedAt && this.notifications.has(delivery.notificationId);
+        return Boolean(this.eligiblePushDelivery(delivery.notificationId, delivery.deviceId));
       })
       .map((delivery) => delivery.nextAttemptAt)
       .sort()[0];
@@ -2069,11 +2327,11 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
   if (input && typeof input === "object") {
     const value = input as Partial<NotificationPreferencesDto>;
     return {
-      directResponses: value.directResponses ?? true,
-      broadcasts: value.broadcasts ?? true,
+      directResponses: value.directResponses ?? false,
+      broadcasts: value.broadcasts ?? false,
     };
   }
-  return { directResponses: true, broadcasts: true };
+  return { directResponses: false, broadcasts: false };
 }
 
 function clampContextRolloverTokens(value: number): number {

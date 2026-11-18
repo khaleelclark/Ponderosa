@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { StateAdmission } from "@ponderosa/agents";
 import { DataDirectoryAuthority, physicalDirectoryIdentity } from "@ponderosa/native-host";
 import type { LauncherShutdownReceiptDto } from "@ponderosa/core";
-import { chmodSync, closeSync, constants, fsyncSync, fstatSync, openSync, readFileSync, renameSync, writeFileSync } from "@ponderosa/native-host/fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, writeJsonAtomic } from "@ponderosa/native-host/fs";
 import path from "node:path";
 
 export function launcherShutdownReceiptPath(root: string, generation: string): string {
@@ -31,14 +30,5 @@ export function writeLauncherShutdownReceipt(
     }
   } finally { closeSync(fd); }
   const pathname = launcherShutdownReceiptPath(root, receipt.generation);
-  const temporary = `${pathname}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-  try { chmodSync(temporary, 0o600); } catch { /* Windows ignores POSIX modes. */ }
-  const file = openSync(temporary, "r+");
-  try { fsyncSync(file); } finally { closeSync(file); }
-  renameSync(temporary, pathname);
-  if (process.platform !== "win32") {
-    const directory = openSync(path.dirname(pathname), "r");
-    try { fsyncSync(directory); } finally { closeSync(directory); }
-  }
+  writeJsonAtomic(pathname, receipt);
 }

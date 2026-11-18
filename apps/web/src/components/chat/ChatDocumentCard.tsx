@@ -53,7 +53,7 @@ export function ChatDocumentCard({ document, renderMarkdown }: ChatDocumentContr
             <Typography variant="h6" noWrap>{document.title}</Typography>
             <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
           </Box>
-          <IconButton aria-label="Close document preview" onClick={() => setOpen(false)}><CloseIcon /></IconButton>
+          <IconButton aria-label="Close Document Preview" onClick={() => setOpen(false)}><CloseIcon /></IconButton>
         </DialogTitle>
         <DialogContent dividers className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 5 }, py: 3 }}>
           {query.isLoading

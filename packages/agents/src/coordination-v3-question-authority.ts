@@ -271,7 +271,7 @@ export class CoordinationV3QuestionAuthority {
         AND source.source_kind = 'request_update'
       JOIN coordination_request_updates question_update
         ON question_update.id = source.source_id
-        AND question_update.kind = 'question'
+        AND question_update.kind IN ('question','historical_question')
       JOIN coordination_requests request
         ON request.id = question_update.request_id
       WHERE activation.id IN (${placeholders})
@@ -458,7 +458,7 @@ export class CoordinationV3QuestionAuthority {
         FROM coordination_request_updates question_update
         JOIN coordination_requests request
           ON request.id = question_update.request_id
-        WHERE question_update.id = ? AND question_update.kind = 'question'
+        WHERE question_update.id = ? AND question_update.kind IN ('question','historical_question')
       `).get(questionUpdateId) as {
         id: string;
         project_id: string;

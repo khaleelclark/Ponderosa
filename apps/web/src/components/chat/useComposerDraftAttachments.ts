@@ -1,3 +1,5 @@
+import type {MutationNotifier} from "../MutationNotifications";
+import {productApiPath} from "../../api/productScope";
 import type { AssetLimitsDto, DraftAttachmentDto } from "@ponderosa/core";
 import {
   useCallback,
@@ -8,6 +10,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { api } from "../../api";
+import { createClientId } from "../../clientId";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import {
   selectComposerFiles,
@@ -19,7 +22,7 @@ interface RestoredDraftAttachment {
   file: File;
 }
 
-interface ComposerDraftAttachments {
+export interface ComposerDraftAttachments {
   addFiles(candidates: File[]): void;
   attachmentIds: MutableRefObject<Map<File, string>>;
   metadata: MutableRefObject<Map<string, DraftAttachmentDto>>;
@@ -28,6 +31,7 @@ interface ComposerDraftAttachments {
   locallyRemovedIds: MutableRefObject<Set<string>>;
   mergeRestored(restored: RestoredDraftAttachment[]): void;
   removeFile(index: number): void;
+  replaceFile(previous: File, replacement: File): void;
   replaceRestored(restored: RestoredDraftAttachment[]): void;
   replaceSnapshot(restored: Array<{ file: File; attachmentId: string }>): void;
   retryUpload(file: File): void;
@@ -49,6 +53,8 @@ export function useComposerDraftAttachments({
   files,
   onEdit,
   onBeforeClear,
+  notify,
+  fileOwner,
 }: {
   assetLimits?: AssetLimitsDto;
   conversationDraftId?: string;
@@ -57,7 +63,15 @@ export function useComposerDraftAttachments({
   files: File[];
   onEdit(removedAttachmentId?: string): void;
   onBeforeClear(): void;
+  notify?: MutationNotifier;
+  fileOwner?(file:File):string | undefined;
 }): ComposerDraftAttachments {
+  const feedbackKeys=useRef(new WeakMap<File,string>());
+  const feedbackKey=(file:File)=>{
+    let key=feedbackKeys.current.get(file);
+    if(!key){key=JSON.stringify([productApiPath("/api/conversations"),conversationDraftId,draftOwnerId,fileOwner?.(file),"upload",createClientId("file-feedback-")]);feedbackKeys.current.set(file,key);}
+    return key;
+  };
   const metadata = useRef(new Map<string, DraftAttachmentDto>());
   const attachmentIds = useRef(new Map<File, string>());
   const locallyRemovedIds = useRef(new Set<string>());
@@ -91,6 +105,7 @@ export function useComposerDraftAttachments({
         continue;
       }
       activeUploads.current += 1;
+      const attempt = createClientId("upload-feedback-"),noticeKey=feedbackKey(file);
       const uploadGeneration = generation.current;
       setUploadStates(current =>
         new Map(current).set(file, { status: "uploading" }),
@@ -120,6 +135,7 @@ export function useComposerDraftAttachments({
             new Map(current).set(file, { status: "complete" }),
           );
           setAttachmentVersion(value => value + 1);
+          notify?.({key:noticeKey,message:"",dismiss:true});
         })
         .catch((error: unknown) => {
           if (!mounted.current || uploadGeneration !== generation.current || locallyRemovedFiles.current.has(file))
@@ -130,6 +146,7 @@ export function useComposerDraftAttachments({
               error: error instanceof Error ? error.message : "Upload failed.",
             }),
           );
+          notify?.({key:noticeKey,incident:attempt,severity:"error",message:"Attachment Upload Failed",description:"The original file is retained. Use its Details, Retry or Remove controls.",details:error instanceof Error?error.message:String(error)});
         })
         .finally(() => {
           if (!mounted.current || uploadGeneration !== generation.current)
@@ -152,6 +169,7 @@ export function useComposerDraftAttachments({
   }, [conversationDraftId]);
 
   const addFiles = useCallback((candidates: File[]) => {
+    candidates = [...new Set(candidates)].filter(file => !files.includes(file));
     const selection = selectComposerFiles(files, candidates, assetLimits);
     dispatch({ type: "add", candidates, limits: assetLimits });
     for (const file of selection.accepted) {
@@ -180,7 +198,7 @@ export function useComposerDraftAttachments({
       locallyRemovedIds.current.add(id);
       metadata.current.delete(id);
     }
-    else locallyRemovedFiles.current.add(file);
+    locallyRemovedFiles.current.add(file);
     pendingUploads.current = pendingUploads.current.filter(
       candidate => candidate !== file,
     );
@@ -190,9 +208,23 @@ export function useComposerDraftAttachments({
       return next;
     });
     dispatch({ type: "remove", index });
+    notify?.({key:feedbackKey(file),message:"",dismiss:true});
     onEdit(id);
     setAttachmentVersion(value => value + 1);
-  }, [dispatch, files, onEdit]);
+  }, [dispatch, files, onEdit, notify]);
+
+  // Replace only this File identity. In-flight completion of the old upload is
+  // fenced by the same local removal guard as ordinary attachment removal.
+  const replaceFile = useCallback((previous: File, replacement: File) => {
+    const index = files.indexOf(previous);
+    if (index < 0) throw new Error("The folder attachment was removed. Select it again.");
+    const selection = selectComposerFiles(files.filter(file => file !== previous), [replacement], assetLimits);
+    if (selection.error) throw new Error(selection.error);
+    removeFile(index);
+    const next = [...files]; next[index] = replacement;
+    dispatch({ type: "replace", files: next });
+    queueUploads([replacement]);
+  }, [files, assetLimits, removeFile, dispatch, queueUploads]);
 
   const mergeRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     const existingIds = new Set(attachmentIds.current.values());
@@ -291,6 +323,7 @@ export function useComposerDraftAttachments({
     locallyRemovedIds,
     mergeRestored,
     removeFile,
+    replaceFile,
     replaceRestored,
     replaceSnapshot,
     retryUpload,

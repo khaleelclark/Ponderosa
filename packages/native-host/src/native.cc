@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -37,6 +39,10 @@ SQLITE_EXTENSION_INIT1
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __APPLE__
+#include <sys/param.h>
+#include <sys/mount.h>
+#endif
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
@@ -45,6 +51,8 @@ SQLITE_EXTENSION_INIT1
 #include <sys/syscall.h>
 #include <sys/statvfs.h>
 #include <sys/xattr.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
 #include <linux/stat.h>
@@ -2425,10 +2433,182 @@ napi_value OfflineLinkFile(napi_env env, napi_callback_info info) {
 #endif
 }
 
+
+#ifndef _WIN32
+// 128 bits cover every signed 64-bit time_t expressed in nanoseconds.
+napi_value ExactMetadataEvidence(napi_env env, const struct stat& value) {
+  napi_value out, field;
+  napi_create_object(env, &out);
+  napi_create_bigint_uint64(env, static_cast<uint64_t>(value.st_dev), &field);
+  napi_set_named_property(env, out, "device", field);
+  napi_create_bigint_uint64(env, static_cast<uint64_t>(value.st_ino), &field);
+  napi_set_named_property(env, out, "inode", field);
+  const char* kind = S_ISREG(value.st_mode) ? "file" : S_ISDIR(value.st_mode) ? "directory" : "other";
+  napi_create_string_utf8(env, kind, NAPI_AUTO_LENGTH, &field);
+  napi_set_named_property(env, out, "kind", field);
+  napi_create_uint32(env, value.st_mode & 07777, &field);
+  napi_set_named_property(env, out, "mode", field);
+#ifdef __APPLE__
+  const auto modified = value.st_mtimespec;
+#else
+  const auto modified = value.st_mtim;
+#endif
+  const __int128 ns = static_cast<__int128>(modified.tv_sec) * 1000000000 + modified.tv_nsec;
+  const unsigned __int128 magnitude = ns < 0 ? static_cast<unsigned __int128>(-ns) : ns;
+  uint64_t words[2] = {static_cast<uint64_t>(magnitude), static_cast<uint64_t>(magnitude >> 64)};
+  napi_create_bigint_words(env, ns < 0, words[1] ? 2 : 1, words, &field);
+  napi_set_named_property(env, out, "mtimeNs", field);
+  return out;
+}
+#endif
+
+napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1], fd_value, device_value, inode_value, kind_value, mode_value, time_value;
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  double fd_number = -1, mode_number = -1;
+  uint64_t device = 0, inode = 0;
+  bool device_exact = false, inode_exact = false;
+  std::string kind;
+  napi_valuetype time_type;
+  if (argc != 1 ||
+      napi_get_named_property(env, args[0], "fd", &fd_value) != napi_ok ||
+      napi_get_named_property(env, args[0], "expectedDevice", &device_value) != napi_ok ||
+      napi_get_named_property(env, args[0], "expectedInode", &inode_value) != napi_ok ||
+      napi_get_named_property(env, args[0], "kind", &kind_value) != napi_ok ||
+      napi_get_named_property(env, args[0], "mode", &mode_value) != napi_ok ||
+      napi_get_named_property(env, args[0], "mtimeNs", &time_value) != napi_ok ||
+      napi_typeof(env, time_value, &time_type) != napi_ok || time_type != napi_bigint ||
+      napi_get_value_double(env, fd_value, &fd_number) != napi_ok ||
+      !std::isfinite(fd_number) || fd_number < 0 || fd_number > INT_MAX || std::floor(fd_number) != fd_number ||
+      napi_get_value_double(env, mode_value, &mode_number) != napi_ok ||
+      !std::isfinite(mode_number) || mode_number < 0 || mode_number > 07777 || std::floor(mode_number) != mode_number ||
+      napi_get_value_bigint_uint64(env, device_value, &device, &device_exact) != napi_ok || !device_exact ||
+      napi_get_value_bigint_uint64(env, inode_value, &inode, &inode_exact) != napi_ok || !inode_exact ||
+      !ReadUtf8(env, kind_value, &kind) || (kind != "file" && kind != "directory")) {
+    ThrowCode(env, "ERR_EXACT_METADATA_INPUT", "Invalid exact file metadata input"); return nullptr;
+  }
+  uint64_t selected_links=1;bool has_selected_links=false;
+  if(napi_has_named_property(env,args[0],"expectedLinkCount",&has_selected_links)!=napi_ok){ThrowCode(env,"ERR_EXACT_METADATA_INPUT","Invalid selected link count");return nullptr;}
+  if(has_selected_links){
+    napi_value value;bool exact=false;
+    if(napi_get_named_property(env,args[0],"expectedLinkCount",&value)!=napi_ok||napi_get_value_bigint_uint64(env,value,&selected_links,&exact)!=napi_ok||!exact||selected_links<1||selected_links>10000){ThrowCode(env,"ERR_EXACT_METADATA_INPUT","Invalid bounded selected link count");return nullptr;}
+  }
+#ifdef _WIN32
+  // Node/retained descriptors use libuv's handle table, never this addon's CRT.
+  if (RuntimeDescriptorHandle(static_cast<int>(fd_number)) == -1) {
+    ThrowCode(env, "EBADF", "Invalid Node file descriptor"); return nullptr;
+  }
+  ThrowCode(env, "ERR_EXACT_METADATA_UNSUPPORTED", "Windows cannot apply exact POSIX mode bits; no metadata changed");
+  return nullptr;
+#else
+  size_t word_count = 0;
+  if (napi_get_value_bigint_words(env, time_value, nullptr, &word_count, nullptr) != napi_ok || word_count > 2) {
+    ThrowCode(env, "ERR_EXACT_METADATA_RANGE", "mtimeNs exceeds native time representation"); return nullptr;
+  }
+  uint64_t words[2] = {};
+  int negative = 0;
+  size_t capacity = 2;
+  if (napi_get_value_bigint_words(env, time_value, &negative, &capacity, words) != napi_ok || (words[1] >> 63)) {
+    ThrowCode(env, "ERR_EXACT_METADATA_RANGE", "mtimeNs exceeds native time representation"); return nullptr;
+  }
+  __int128 ns = static_cast<__int128>((static_cast<unsigned __int128>(words[1]) << 64) | words[0]);
+  if (negative) ns = -ns;
+  __int128 seconds = ns / 1000000000;
+  __int128 nanos = ns % 1000000000;
+  if (nanos < 0) { --seconds; nanos += 1000000000; }
+  if (seconds < static_cast<__int128>(std::numeric_limits<time_t>::lowest()) ||
+      seconds > static_cast<__int128>(std::numeric_limits<time_t>::max())) {
+    ThrowCode(env, "ERR_EXACT_METADATA_RANGE", "mtimeNs seconds do not fit platform time_t"); return nullptr;
+  }
+  const int fd = static_cast<int>(fd_number);
+  const mode_t mode = static_cast<mode_t>(mode_number);
+  struct stat before{};
+  if (fstat(fd, &before) != 0) { ThrowCode(env, "ERR_EXACT_METADATA_STAT", std::string("fstat before metadata: ") + std::strerror(errno)); return nullptr; }
+  auto identity_matches = [&](const struct stat& st) {
+    return static_cast<uint64_t>(st.st_dev) == device && static_cast<uint64_t>(st.st_ino) == inode &&
+        (kind == "file" ? S_ISREG(st.st_mode) && static_cast<uint64_t>(st.st_nlink) == selected_links : S_ISDIR(st.st_mode));
+  };
+  if (!identity_matches(before)) {
+    ThrowCode(env, "ERR_EXACT_METADATA_IDENTITY", "Descriptor kind, device, inode or single-link requirement differs"); return nullptr;
+  }
+  struct timespec times[2] = {};
+#ifdef UTIME_OMIT
+  times[0].tv_nsec = UTIME_OMIT;
+#elif defined(__APPLE__)
+  times[0] = before.st_atimespec;
+#else
+  times[0] = before.st_atim;
+#endif
+  times[1].tv_sec = static_cast<time_t>(seconds);
+  times[1].tv_nsec = static_cast<long>(nanos);
+  auto failure = [&](const char* stage, int error_number) -> napi_value {
+    napi_value error, message, field;
+    const std::string detail = std::string("Exact metadata ") + stage +
+        (error_number ? std::string(": ") + std::strerror(error_number) : ": observed metadata differs");
+    napi_create_string_utf8(env, detail.c_str(), detail.size(), &message);
+    napi_create_error(env, nullptr, message, &error);
+    napi_create_string_utf8(env, "ERR_EXACT_METADATA_PARTIAL", NAPI_AUTO_LENGTH, &field);
+    napi_set_named_property(env, error, "code", field);
+    napi_set_named_property(env, error, "partialStatePossible", Boolean(env, true));
+    struct stat observed{};
+    napi_set_named_property(env, error, "observed", fstat(fd, &observed) == 0 ? ExactMetadataEvidence(env, observed) : Null(env));
+    napi_throw(env, error); return nullptr;
+  };
+  // O_PATH regular pins are metadata-only: never reopen the mutable name.
+#if defined(__linux__) && defined(O_PATH)
+  const int descriptorFlags=fcntl(fd,F_GETFL);
+  if(descriptorFlags<0){ThrowCode(env,"ERR_EXACT_METADATA_STAT","metadata descriptor flags unavailable");return nullptr;}
+  const bool metadataOnly=(descriptorFlags&O_PATH)==O_PATH;
+  if(metadataOnly){
+#if defined(SYS_fchmodat2) && defined(AT_EMPTY_PATH)
+    errno=0;if(syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH)!=-1||errno!=EBADF){ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only chmod unavailable; no metadata changed");return nullptr;}
+    const struct timespec probe[2]={{0,0},{0,0}};
+    errno=0;if(utimensat(-1,"",probe,AT_EMPTY_PATH)!=-1||errno!=EBADF){ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only timestamp unavailable; no metadata changed");return nullptr;}
+    if(utimensat(fd,"",times,AT_EMPTY_PATH)!=0)return failure("descriptor utimensat failed",errno);
+    if(syscall(SYS_fchmodat2,fd,"",mode,AT_EMPTY_PATH)!=0)return failure("descriptor fchmodat2 failed",errno);
+#else
+    ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only exact metadata requires fchmodat2/AT_EMPTY_PATH; no metadata changed");return nullptr;
+#endif
+  }else
+#endif
+  {
+    // Time first: subsequent chmod restores bits a timestamp update may clear.
+    if (futimens(fd, times) != 0) return failure("futimens failed", errno);
+    if (fchmod(fd, mode) != 0) return failure("fchmod failed", errno);
+  }
+  struct stat after{};
+  if (fstat(fd, &after) != 0) return failure("verification fstat failed", errno);
+#ifdef __APPLE__
+  const auto modified = after.st_mtimespec;
+#else
+  const auto modified = after.st_mtim;
+#endif
+  if (!identity_matches(after) || (after.st_mode & 07777) != mode ||
+      static_cast<__int128>(modified.tv_sec) != seconds || modified.tv_nsec != static_cast<long>(nanos)) {
+    return failure("verification failed", 0);
+  }
+  return ExactMetadataEvidence(env, after);
+#endif
+}
+
+#include "portable-metadata.inc"
+
 #include "portable-storage.inc"
+#include "available-storage-space.inc"
 
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
+      {"pinPortableRegularFile", nullptr, PinPortableRegularFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"inspectExtendedMetadata", nullptr, InspectExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyExtendedMetadata", nullptr, ApplyExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"inspectPersistentNodeMetadata", nullptr, InspectPersistentNodeMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyPersistentNodeMetadata", nullptr, ApplyPersistentNodeMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"inspectPersistentNode", nullptr, InspectPersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"createPersistentNode", nullptr, CreatePersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyExactFileMetadata", nullptr, ApplyExactFileMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyExactSymlinkMetadata", nullptr, ApplyExactSymlinkMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"pinPortableSymlink", nullptr, PinPortableSymlink, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsProcessBirthMarker", nullptr, WindowsProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -2444,6 +2624,9 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"readStorageDirectory", nullptr, ReadStorageDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"storageOperation", nullptr, StorageOperation, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"storagePathRegistered", nullptr, StoragePathRegistered, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"allocatedHeldFileBytes", nullptr, AllocatedHeldFileBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"availableHeldDirectoryBytes", nullptr, AvailableHeldDirectoryBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"availablePortableStorageBytes", nullptr, AvailablePortableStorageBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"syncStorageFile", nullptr, SyncStorageFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeStorageFile", nullptr, CloseStorageFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dataDirectoryAuthoritySupported", nullptr, DataDirectoryAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},

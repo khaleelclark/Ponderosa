@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -20,12 +21,13 @@ function fsyncDirectory(directory: string): void {
   finally { closeSync(descriptor); }
 }
 
-function writeJson(file: string, data: unknown): void {
+function writeJson(file: string, data: unknown, indentation: 0 | 2 = 2): void {
+  touchSourceMutation();
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
   const temporary = join(directory, `.${randomUUID()}.json.tmp`);
   try {
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
+    writeFileSync(temporary, JSON.stringify(data, null, indentation) + "\n", "utf8");
     const descriptor = openSync(temporary, "r+");
     try { fsyncSync(descriptor); }
     finally { closeSync(descriptor); }
@@ -41,16 +43,9 @@ function readJson<T>(file: string): T {
   return JSON.parse(readFileSync(file, "utf8")) as T;
 }
 
-function readJsonLines<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as T);
-}
-
 /** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
 function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
+  touchSourceMutation();
   if (!existsSync(root)) return;
   for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
     const childRelative = relative ? join(relative, entry.name) : entry.name;
@@ -64,4 +59,4 @@ function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string
   }
 }
 
-export { fsyncDirectory, writeJson, readJson, readJsonLines, pruneArtifactDirectory };
+export { fsyncDirectory, writeJson, readJson, pruneArtifactDirectory };

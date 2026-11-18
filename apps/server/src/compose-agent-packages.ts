@@ -1,0 +1,168 @@
+import {createHash} from 'node:crypto';
+import {workingFileArtifactRefs,type AgentPortablePackageDto,type PortableAgentNodeDto,type PortableArtifactDto,type PortablePackageMemoryDto,type PortableGitStorageBinding} from '@ponderosa/core';
+import {stableJson} from '@ponderosa/agents';
+import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
+import {rewritePortableArtifactReferences} from './artifact-refs.js';
+import {assertAgentPackageMemoryAvailable,decodePortableArtifactData} from './agent-package-codec.js';
+import {verifyPortableWorkingFileParts} from './portable-working-file-parts.js';
+import {validateWorkingFileData} from './portable-working-files.js';
+
+export interface AgentPackageCompositionInput {ref:string;managerRef?:string;package:AgentPortablePackageDto}
+export interface AgentPackageComposition {
+  package:AgentPortablePackageDto;
+  orderedRefs:string[];
+  artifactRefs:Record<string,Record<string,string>>;
+  workingRootRefs:Record<string,string>;
+}
+const identity=(kind:string,...parts:string[])=>`composed-${kind}-${createHash('sha256').update(JSON.stringify(parts)).digest('hex')}`;
+
+/** Remap the entire captured closure, including inert originals' provenance refs. Missing roots refuse. */
+export function remapPortableGitStorageBinding(binding:PortableGitStorageBinding,roots:ReadonlyMap<string,string>,id:string):PortableGitStorageBinding {
+  const map=(ref:string)=>{const mapped=roots.get(ref);if(!mapped)throw new Error('Composition requires the complete Git storage root closure');return mapped;};
+  return {...binding,id,worktreeRootRef:map(binding.worktreeRootRef),storageRootRef:map(binding.storageRootRef),
+    ...(binding.capture?{capture:{...binding.capture,
+      roots:binding.capture.roots.map(root=>({...root,rootRef:map(root.rootRef)})).sort((a,b)=>a.rootRef<b.rootRef?-1:a.rootRef>b.rootRef?1:0),
+      records:binding.capture.records.map(record=>({...record,rootRef:map(record.rootRef)})),
+    }}:{})};
+}
+
+/** Pure deterministic composition. Conflicting independently captured snapshots refuse, never win by order. */
+export async function composeAgentPackages(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>{
+  if(!inputs.length||new Set(inputs.map(input=>input.ref)).size!==inputs.length)throw new Error('Compose distinct nonempty Agent identities');
+  const nodes:PortableAgentNodeDto[]=[],artifactRefs:AgentPackageComposition['artifactRefs']=Object.fromEntries(inputs.map(input=>[input.ref,{}])),workingRootRefs:Record<string,string>=Object.fromEntries(inputs.map(input=>[input.ref,'']));
+  const memories=new Map<string,PortablePackageMemoryDto>();
+  const sourceChats=new Set<string>();
+  const gitStorageBindings:NonNullable<AgentPortablePackageDto['gitStorageBindings']>=[];
+  const folders=new Map<string,{owner:PortableAgentNodeDto;files:Map<string,{file:NonNullable<PortableAgentNodeDto['workingFiles']>[number];sha256:string}>}>();
+  const mode=inputs[0]!.package.mode;
+  const instructions=inputs[0]!.package.sourceProjectInstructions;
+  for(const input of inputs){
+    const pkg=validatePortableAgentPackage(input.package).package;
+    if(!input.ref?.trim()||pkg.agents.length!==1||pkg.mode!==mode||pkg.sourceProjectInstructions!==instructions)throw new Error('Compose requires compatible single-Agent packages and Chat instructions');
+    const node=structuredClone(pkg.agents[0]!);
+    if(node.sourceChat)sourceChats.add(node.sourceChat.ref);
+    if(sourceChats.size>1)throw new Error('Compose requires one source Chat');
+    const oldRef=node.ref;
+    const refs=new Map((node.artifacts??[]).map(artifact=>[artifact.ref,identity('artifact',input.ref,artifact.ref)]));
+    artifactRefs[input.ref]=Object.fromEntries(refs);
+    // Parts are private transport, not separately addressable composed artifacts.
+    for(const file of node.workingFiles??[])if(file.parts)for(const ref of file.parts.refs)delete artifactRefs[input.ref]![ref];
+    for(const artifact of node.artifacts??[])artifact.ref=refs.get(artifact.ref)!;
+    const rewrite=(text:string)=>rewritePortableArtifactReferences(text,refs);
+    if(node.initialInstructions!==undefined)node.initialInstructions=rewrite(node.initialInstructions);
+    if(node.role!==undefined)node.role=rewrite(node.role);
+    if(node.presetSnapshot)node.presetSnapshot.guidance=rewrite(node.presetSnapshot.guidance);
+    for(const message of node.history??[]){
+      message.text=rewrite(message.text);
+      if(message.attachmentRefs)message.attachmentRefs=message.attachmentRefs.map(ref=>refs.get(ref)!);
+      if(message.artifactRefs)message.artifactRefs=Object.fromEntries(Object.entries(message.artifactRefs).map(([id,ref])=>[id,refs.get(ref)!]));
+      // Authored Communication identities remain historical evidence; only portable bindings change.
+    }
+    for(const file of node.workingFiles??[]){
+      file.artifactRef=refs.get(file.artifactRef)!;
+      if(file.parts)file.parts={...file.parts,refs:file.parts.refs.map(ref=>refs.get(ref)!)};
+    }
+    node.ref=input.ref;
+    delete node.managerRef;
+    if(input.managerRef)node.managerRef=input.managerRef;
+    nodes.push(node);
+    for(const entry of pkg.memory??[]){
+      const incoming=structuredClone(entry);
+      incoming.agentRefs=Object.fromEntries(Object.entries(incoming.agentRefs).map(([id,ref])=>{if(ref!==oldRef)throw new Error('Foreign memory Agent binding');return [id,input.ref];}));
+      const existing=memories.get(incoming.snapshot.sourceChatId);
+      if(!existing){memories.set(incoming.snapshot.sourceChatId,incoming);continue;}
+      if(existing.snapshot.signature!==incoming.snapshot.signature)throw new Error('Conflicting memory embedding signatures');
+      for(const [id,ref] of Object.entries(incoming.agentRefs)){
+        if(Object.hasOwn(existing.agentRefs,id)&&existing.agentRefs[id]!==ref)throw new Error('Conflicting source memory Agent identity');
+        Object.defineProperty(existing.agentRefs,id,{value:ref,enumerable:true,writable:true,configurable:true});
+      }
+      existing.snapshot.agentIds=Object.keys(existing.agentRefs);
+      for(const field of ['chunks','conflicts'] as const){
+        const rows=new Map(existing.snapshot[field].map(row=>[row.id,row]));
+        for(const row of incoming.snapshot[field]){const prior=rows.get(row.id);if(prior&&stableJson(prior)!==stableJson(row))throw new Error('Conflicting captured memory rows; re-export a coherent snapshot');if(!prior){existing.snapshot[field].push(row);rows.set(row.id,row);}}
+      }
+    }
+    const rootKey=node.workingCopyMode==='shared'&&node.sourceChat?identity('root','shared',node.sourceChat.ref):identity('root',input.ref,node.workingRootRef??oldRef);
+    workingRootRefs[input.ref]=rootKey;
+    for(const link of node.workingFolder?.links??[])if(link.targetRootRef){
+      if(link.targetRootRef!==node.workingRootRef)throw new Error('Mapped symbolic composition requires complete root closure');
+      link.targetRootRef=rootKey;
+    }
+    if(pkg.gitStorageBindings){
+      const finalRoots=new Map(node.workingRootRef?[[node.workingRootRef,rootKey]]:[]);
+      for(const binding of pkg.gitStorageBindings){
+        gitStorageBindings.push(remapPortableGitStorageBinding(binding,finalRoots,identity('git-binding',input.ref,binding.id)));
+      }
+    }
+    if(!node.workingFolder&&!node.workingFiles?.length)continue;
+    const previous=folders.get(rootKey);
+    const group=previous??{owner:node,files:new Map()};
+    if(!previous){folders.set(rootKey,group);node.workingFolder??={directories:[],excludedPaths:[]};}
+    else if(node.workingFolder){
+      const folder=group.owner.workingFolder!;
+      if((folder.cyclicLinks??'refuse')!==(node.workingFolder.cyclicLinks??'refuse'))throw new Error('Conflicting captured Shared cycle policies');
+      for(const key of ['mode','mtime'] as const){if(folder[key]!==undefined&&node.workingFolder[key]!==undefined&&folder[key]!==node.workingFolder[key])throw new Error('Conflicting captured Shared root metadata');}
+      folder.mode??=node.workingFolder.mode;folder.mtime??=node.workingFolder.mtime;
+      const directories=new Map(folder.directories.map(dir=>[dir.path,dir]));
+      for(const dir of node.workingFolder.directories){const prior=directories.get(dir.path);if(prior&&stableJson(prior)!==stableJson(dir))throw new Error('Conflicting captured Shared directory metadata');if(!prior){folder.directories.push(dir);directories.set(dir.path,dir);}}
+      const links=new Map((folder.links??[]).map(link=>[link.path,link]));
+      for(const link of node.workingFolder.links??[]){const prior=links.get(link.path);if(prior&&stableJson(prior)!==stableJson(link))throw new Error('Conflicting captured Shared link topology');links.set(link.path,link);}
+      if(links.size)folder.links=[...links.values()];
+      folder.excludedPaths=[...new Set([...folder.excludedPaths,...node.workingFolder.excludedPaths])];
+    }
+    for(const file of node.workingFiles??[]){
+      const partRefs=workingFileArtifactRefs(file),partArtifacts=partRefs.map(ref=>node.artifacts!.find(candidate=>candidate.ref===ref)!);
+      if(file.parts)assertAgentPackageMemoryAvailable(file.parts.byteLength);
+      const decoded=[];for(const artifact of partArtifacts)decoded.push((await decodePortableArtifactData(artifact)).data);
+      const {sha256}=verifyPortableWorkingFileParts(file,decoded);
+      const prior=group.files.get(file.path);
+      if(prior){
+        if(prior.sha256!==sha256||prior.file.mode!==file.mode||prior.file.mtime!==file.mtime)throw new Error('Conflicting Shared working originals; re-export a coherent snapshot');
+        if(file.parts)node.artifacts=node.artifacts!.filter(artifact=>!partRefs.includes(artifact.ref));
+        continue;
+      }
+      let merged={...file};
+      if(group.owner!==node){
+        if(file.parts){
+          // Transport pieces remain associated with this one logical original.
+          (group.owner.artifacts??=[]).push(...partArtifacts);
+          node.artifacts=node.artifacts!.filter(artifact=>!partRefs.includes(artifact.ref));
+        }else{
+          const copy:PortableArtifactDto={...partArtifacts[0]!,ref:identity('working',rootKey,file.path)};
+          (group.owner.artifacts??=[]).push(copy);merged={...file,artifactRef:copy.ref};
+        }
+      }
+      group.files.set(file.path,{file:merged,sha256});
+    }
+    if(group.owner!==node){delete node.workingFolder;delete node.workingFiles;}
+  }
+  if(folders.size){
+    // Every member needs a root manifest, even an otherwise empty distinct root.
+    for(const node of nodes){const key=workingRootRefs[node.ref]!;node.workingRootRef=key;if(!folders.has(key)){node.workingFolder={directories:[],excludedPaths:[]};folders.set(key,{owner:node,files:new Map()});}}
+    for(const group of folders.values()){
+      group.owner.workingFiles=[...group.files.values()].map(value=>value.file);
+      // Inspect each complete original and any hardlink names, never a transport part alone.
+      for(const file of group.owner.workingFiles)if(file.parts){
+        assertAgentPackageMemoryAvailable(file.parts.byteLength);
+        const decoded:Buffer[]=[];
+        for(const ref of file.parts.refs){
+          const artifact=group.owner.artifacts?.find(candidate=>candidate.ref===ref);
+          if(!artifact)throw new Error('Composed working original is absent');
+          decoded.push((await decodePortableArtifactData(artifact)).data);
+        }
+        const verified=verifyPortableWorkingFileParts(file,decoded);
+        const original=Buffer.concat(decoded,verified.byteLength);
+        validateWorkingFileData(file.path,original);
+        for(const link of group.owner.workingFolder?.links??[])if(link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path)validateWorkingFileData(link.path,original);
+      }
+    }
+  }
+  const roots=nodes.filter(node=>!node.managerRef).map(node=>node.ref);
+  if(!roots.length)throw new Error('Composed Agents need a reporting root');
+  const result:AgentPortablePackageDto={schema:'ponderosa.agent-package.v1',mode,kind:nodes.length===1?'agent':'organization',exportedAt:inputs.map(input=>input.package.exportedAt).sort().at(-1)!,sourceLabel:inputs[0]!.package.sourceLabel,rootRef:roots[0]!,...(roots.length>1?{rootRefs:roots}:{}),agents:nodes,...(instructions!==undefined?{sourceProjectInstructions:instructions}:{}),...(memories.size?{memory:[...memories.values()]}:{})};
+  const roles=inputs.flatMap(input=>(input.package.outputRoles??[]).map(role=>({...role,ref:input.ref})));
+  if(gitStorageBindings.length)result.gitStorageBindings=gitStorageBindings;
+  if(roles.length)result.outputRoles=roles;
+  validatePortableAgentPackage(result);
+  return {package:result,orderedRefs:nodes.map(node=>node.ref),artifactRefs,workingRootRefs};
+}

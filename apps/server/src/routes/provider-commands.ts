@@ -1,3 +1,9 @@
+import { registerNativeHistoryRoutes } from "./native-history.js";
+import { NativeHistoryAuthority } from "../native-history-authority.js";
+import { registerNativeTaskRoutes } from "./native-tasks.js";
+import { registerSourceEffectRoutes } from "./source-effects.js";
+import { registerNativeControlRoutes } from "./native-controls.js";
+import { registerContextRecoveryRoutes } from "./context-recovery.js";
 import { randomUUID } from "node:crypto";
 import type {
   CancelAgentRunRequest,
@@ -8,9 +14,11 @@ import type {
   RuntimeProcessHandle,
   RuntimeSession,
 } from "@ponderosa/core";
-import { publicProviderFailure } from "@ponderosa/core";
+import { publicProviderFailure, runtimeRestrictions } from "@ponderosa/core";
 import {
+  CapabilityPolicyStore,
   CoordinationIdempotencyConflictError,
+  ContextRecoveryConflictError,
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
   type AgentStore,
   type CoordinationV3Store,
@@ -26,8 +34,9 @@ import type {
   PersistentRuntime,
 } from "../app-contracts.js";
 import {
+  RetainedNativeAuthenticationError,
+  assertRetainedNativeAuthentication,
   concreteRuntimeSelection,
-  providerSessionContractHash,
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
@@ -36,6 +45,7 @@ import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js
 import {
   guardedProviderExceptionStringProperty,
   restrictedProviderExceptionLogDetail,
+  restrictedInternalExceptionDiagnostic,
 } from "../provider-exception-properties.js";
 import {
   projectProviderCapabilities,
@@ -52,7 +62,11 @@ import {
 } from "../provider-session-facade.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
+export type ContextRecoveryOperation={id:string;controller:AbortController;stopped?:boolean;phase:"native"|"draining"|"cleanup_pending"};
 interface ProviderCommandRoutesContext {
+  contextRecoveryMaintenance: {reconcile():Promise<void>;recovering(agentId:string):boolean};
+  activeContextRecoveries: Map<string,ContextRecoveryOperation>;
+  engineAuthStatuses: import("../engine-auth-cache.js").EngineAuthStatusCache;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -111,6 +125,8 @@ function publicProviderCommandFailure(error: unknown): {
   remediation: string;
   retryable?: false;
 } {
+  if (error instanceof RetainedNativeAuthenticationError) return { error: error.message, category: "unknown",
+    remediation: "Recheck native sign-in. Existing session and uncertain work remain held; do not replay or replace them.", retryable: false };
   if (error instanceof NativeContextUnavailableError) return { error: error.message, category: "unknown",
     remediation: "Use Context Refresh after resolving any unfinished work or uncertain outcome.", retryable: false };
   const code = guardedProviderExceptionStringProperty(error, "code")
@@ -135,10 +151,12 @@ export function registerProviderCommandRoutes(
 ): void {
   const {
     store,
+    engineAuthStatuses,
     coordinationV3,
     workspace,
     engines,
     activeRuns,
+    activeContextRecoveries,
     scheduledSessionRollovers,
     deletingProjectIds,
     deletingAgentIds,
@@ -160,6 +178,429 @@ export function registerProviderCommandRoutes(
     providerProcessAuthority,
     workingCopies,
   } = context;
+
+  registerSourceEffectRoutes(app, { store });
+  registerNativeTaskRoutes(app, { store, activeRuns, unavailable: agentId => {
+    const agent = store.getAgent(agentId);
+    const project = agent && store.getChatContext(agent.conversationId);
+    return isClosed() || !project || deletingAgentIds.has(agentId) || deletingProjectIds.has(project.id);
+  } });
+
+const assertRetainedCommand = (agentId: string, session?: RuntimeSession, expectedExecutionId?: string) => {
+  const agent = store.getAgent(agentId);
+  const saved = store.resumeSessionState(agentId);
+  const packet = store.acceptedProviderSessionInput(agentId);
+  const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
+  if (!agent || !saved || !contract || contract.contractHash !== saved.toolContractHash ||
+      contract.engineId !== agent.activeEngine || agent.workingCopy.state !== "ready" ||
+      contract.workingCopyId !== agent.workingCopy.id || contract.cwd !== agent.workingCopy.rootPath ||
+      packet?.exactSystemPrompt === undefined ||
+      (expectedExecutionId !== undefined && packet.executionId !== expectedExecutionId) ||
+      (session && saved.sessionId !== readProviderSessionIdentifier(session)) ||
+      !retainedPermissionsMatch(agentId, agent.activeEngine, contract) ||
+      isClosed() || deletingAgentIds.has(agentId) || deletingProjectIds.has(agent.projectId)) {
+    throw new Error("Retained native session contract or access is incompatible; existing work remains held.");
+  }
+  assertRetainedNativeAuthentication(contract, engineAuthStatuses.snapshot(agent.activeEngine));
+  return packet.executionId;
+};
+registerNativeControlRoutes(app, { ...context, assertRetainedAuthentication: assertRetainedCommand });
+const activeAgentProviderCommands = new Set<string>();
+registerNativeHistoryRoutes(app,{assertRetainedAuthentication:assertRetainedCommand,store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});
+const retainedPermissionsMatch = (agentId:string, engineId:string, contract:import("@ponderosa/core").RetainedNormalRuntimeContract, sourceRunId?:string) => {
+  const current=runtimeRestrictions(new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId,sourceRunId),engineId);
+  const prior=contract.capabilityRestrictions;
+  return Boolean(prior && current.filesystemWriteRestricted===prior.filesystemWriteRestricted &&
+    JSON.stringify(current.restrictedCapabilityIds)===JSON.stringify(prior.restrictedCapabilityIds) &&
+    JSON.stringify(current.restrictedConnectorNames)===JSON.stringify(prior.restrictedConnectorNames));
+};
+const recoveryChanged=(agentId:string)=>{
+  try{publishMessageDeliveryChanged(agentId);}
+  catch(error){app.log.error({agentId,exception:restrictedInternalExceptionDiagnostic(error)},"Recovery status publication requires refresh");}
+};
+const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store,coordinationV3,notifyScheduler,
+  changed:recoveryChanged,
+  support:engineId=>engines.get(engineId)?.adapter.contextRecoverySupport,
+  blocker:agentId=>{
+    const agent=store.getAgent(agentId),activeRecovery=coordinationV3.contextRecovery.active(agentId);
+    const packet=activeRecovery?.progress?.reconstructionRolloverId
+      ?store.getProviderInput(activeRecovery.sourceRunId,true):store.acceptedProviderSessionInput(agentId,true);
+    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+    if(!agent||!contract||packet?.exactSystemPrompt===undefined||contract.engineId!==agent.activeEngine||
+        contract.workingCopyId!==agent.workingCopy.id||contract.cwd!==agent.workingCopy.rootPath||agent.workingCopy.state!=="ready")
+      return {kind:"context_unavailable",message:"The exact saved session or working folder is unavailable. Review Agent activity and settings before recovery."};
+    const source=coordinationV3.contextRecovery.active(agentId)?.sourceRunId??store.uncertainProviderContextRecoveryBoundary(agentId)?.sourceRunId;
+    if(!retainedPermissionsMatch(agentId,agent.activeEngine,contract,source))
+      return {kind:"access_changed",message:"Agent access changed since the interrupted session. Review its access settings before continuing."};
+    try{assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));}
+    catch{return {kind:"authentication",message:"Recheck provider sign-in for this retained session. A changed account or access mode requires review."};}
+    return undefined;
+  },
+  activity:(agentId,recoveryId)=>activeContextRecoveries.get(agentId)?.id===recoveryId
+    ? activeContextRecoveries.get(agentId)?.phase==='cleanup_pending' ? "cleanup_pending" : "running"
+    : providerProcessAuthority.count({agentId})>0 ? "cleanup_pending" : "idle",
+  settle:recovery=>store.sqlite.transaction(()=>{
+    const agent=store.getAgent(recovery.agentId);
+    if(!agent || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(agent.projectId) ||
+        activeAgentProviderCommands.has(agent.id) || activeRuns.has(agent.id) || coordinationV3.activeAgentRun(agent.id) ||
+        activeContextRecoveries.has(agent.id) || providerProcessAuthority.count({agentId:agent.id})!==0 ||
+        [...engineCapabilityDiscoveryAuthorities].some(authority=>authority.agentId===agent.id)) return false;
+    const packet=store.acceptedProviderSessionInput(agent.id,true);
+    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+    if(!contract || contract.contractHash!==recovery.toolContractHash || contract.engineId!==agent.activeEngine ||
+        agent.workingCopy.state!=="ready" || contract.workingCopyId!==agent.workingCopy.id || contract.cwd!==agent.workingCopy.rootPath ||
+        !retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId)) {
+      throw new ContextRecoveryConflictError("Recovery access or retained contract changed. Review Agent settings before continuing.");
+    }
+    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
+    if(!coordinationV3.contextRecovery.reconcileRecordedCompletion(agent.id,recovery.id,true)) return false;
+    coordinationV3.contextRecovery.dismiss(agent.id,recovery.id);
+    return true;
+  })(),
+  stopRecovery: async (agentId,recoveryId) => {
+    const operation=activeContextRecoveries.get(agentId);
+    if (!operation) {
+      const recovery=coordinationV3.contextRecovery.active(agentId);
+      const phase=recovery?.progress?.phase;
+      if (recovery?.id!==recoveryId || !phase || !["reserved","drained","native_started","held"].includes(phase)) return false;
+      if (activeRuns.has(agentId) || coordinationV3.activeAgentRun(agentId)) throw new Error("Recovery stop conflicts with a live Run");
+      await providerProcessAuthority.terminateAgents(new Set([agentId]),"reconcile interrupted context recovery stop");
+      if (providerProcessAuthority.count({agentId})!==0) throw new Error("Interrupted recovery process drain remains pending");
+      coordinationV3.contextRecovery.advanceOperation(agentId,recoveryId,phase,"held",{message:"Interrupted recovery process exit observed; unknown native outcome retained without replay"});
+      return true;
+    }
+    if(operation.id!==recoveryId)return false;
+    operation.stopped=true;
+    operation.controller.abort();
+    await providerProcessAuthority.terminateAgents(new Set([agentId]),"human stop of context recovery");
+    return true;
+  },
+  recover: async (recovery,policy) => {
+    const agent = store.getAgent(recovery.agentId);
+    if (!agent) throw new Error("Recovery Agent no longer exists");
+    const engine = engines.get(agent.activeEngine);
+    const packet = store.acceptedProviderSessionInput(agent.id, true);
+    const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
+    // Legacy unknown sessions cannot be reconstructed from hashes or authored Chat.
+    if (!engine?.adapter.openSession || !contract || packet?.exactSystemPrompt === undefined ||
+        contract.contractHash !== recovery.toolContractHash || contract.engineId !== agent.activeEngine ||
+        !retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId)) return;
+    const project = store.getChatContext(agent.conversationId);
+    if (!project || project.id !== recovery.projectId) return;
+    const assertRecoveryAuthentication = () => {
+      const current = store.acceptedProviderSessionInput(agent.id, true);
+      if (current?.executionId !== packet.executionId ||
+          store.getAgent(agent.id)?.activeEngine !== contract.engineId ||
+          !retainedPermissionsMatch(agent.id, agent.activeEngine, contract, recovery.sourceRunId)) {
+        throw new Error("Accepted recovery contract or human access changed; recovery remains held.");
+      }
+      assertRetainedNativeAuthentication(contract, engineAuthStatuses.snapshot(agent.activeEngine));
+    };
+    if(activeContextRecoveries.has(agent.id)||activeAgentProviderCommands.has(agent.id))return;
+    const release = workingCopies.beginUse(agent.id);
+    const recoveryControl:ContextRecoveryOperation={id:recovery.id,controller:new AbortController(),phase:"draining"};
+    activeContextRecoveries.set(agent.id,recoveryControl);
+    activeAgentProviderCommands.add(agent.id);
+    recoveryChanged(agent.id);
+    let authority: CapabilityDiscoveryAuthority | undefined;
+    let phase: import("@ponderosa/core").ProviderContextRecoveryProgress["phase"] = "reserved";
+    let reserved = false;
+    let acceptedUsage: {usedTokens:number;windowTokens?:number} | undefined;
+    let failure: string | undefined;
+    try {
+      const workingCopy = await workingCopies.resolve(agent, project);
+      workingCopies.assertRunAdmission(agent.id, workingCopy);
+      if (workingCopy.id !== contract.workingCopyId || workingCopy.rootPath !== contract.cwd) return;
+      assertRecoveryAuthentication();
+      if(policy==='automatic'&&!coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery))return;
+      if (!coordinationV3.contextRecovery.reserveOperation(agent.id,recovery.id,true)) return;
+      reserved = true;
+      if(policy==='automatic')coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,phase,{automaticMaintenance:true});
+      // Drain the retained normal process, including restart-recovered groups,
+      // before opening the same native session. No replacement Agent/history.
+      const retained = persistentRuntimeForTermination(agent.id);
+      if (retained) await retained.session.close();
+      await providerProcessAuthority.terminateAgents(new Set([agent.id]), "explicit context recovery drain");
+      if (providerProcessAuthority.count({agentId:agent.id}) !== 0) throw new Error("Recovery old-process drain remains pending");
+      coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,"drained"); phase="drained";
+      recoveryControl.phase="native";
+      if(recoveryControl.controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id))
+        throw new Error("Recovery stopped before native input");
+      authority = {projectId:project.id,agentId:agent.id,engineId:agent.activeEngine,
+        key:`context-recovery:${recovery.id}`,controller:recoveryControl.controller,processes:new Set(),settled:false};
+      engineCapabilityDiscoveryAuthorities.add(authority);
+      const owner = authority;
+      const operation = (async () => {
+        assertRecoveryAuthentication();
+        const raw = await providerRuntimeOperation("open retained recovery session", () => engine.adapter.openSession!({
+          agentId:agent.id,cwd:contract.cwd,resumeSessionId:recovery.providerSessionId,history:[],
+          systemPrompt:packet.exactSystemPrompt,model:contract.model,effort:contract.effort,speed:contract.speed,
+          dynamicTools:contract.dynamicTools,
+          capabilityRestrictions:contract.capabilityRestrictions,
+          handleDynamicToolCall:async()=>{throw new Error("Recovery commands have no live Run tool authority");},
+          handleElicitation:async()=>({action:"cancel" as const}),
+          onRuntimeSpawned:rawHandle=>{
+            const handle=providerProcessHandleFacade(rawHandle);
+            owner.processes.add({handle});
+            providerProcessAuthority.register(handle,{purpose:"context recovery",projectId:project.id,agentId:agent.id});
+            if (isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || owner.controller.signal.aborted) {
+              owner.controller.abort();
+              throw new Error("Recovery interrupted during process admission");
+            }
+          },onRuntimeRootExit:()=>undefined,signal:owner.controller.signal,
+        }));
+        const session=providerSessionFacade(raw);
+        if (readProviderSessionIdentifier(session)!==recovery.providerSessionId || !session.invokeCommand) throw new Error("Recovery native session changed or has no compaction command");
+        if (owner.controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id)) throw new Error("Recovery stopped or interrupted by shutdown or deletion");
+        if (!retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId))
+          throw new Error("Human access changed during recovery admission");
+        assertRecoveryAuthentication();
+        // Commit before the mutating RPC. A lost acknowledgement is never retried.
+        if(policy==='automatic'&&!coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery))return;
+        coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,"native_started"); phase="native_started";
+        const result=projectProviderCommandResult(await session.invokeCommand("compact"));
+        const usage=result.contextUsage;
+        if (result.outcome==="completed"&&usage?.providerSessionGeneration===recovery.providerSessionId)
+          acceptedUsage={usedTokens:usage.usedTokens,...(usage.windowTokens!==undefined?{windowTokens:usage.windowTokens}:{})};
+        // The exact result survives cleanup failures/restart without becoming
+        // accepted occupancy until this operation's processes actually exit.
+        coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,phase,
+          {nativeOutcome:result.outcome??"outcome_unknown",...acceptedUsage});
+        if (result.outcome!=="completed") throw new Error(result.message ?? "Native compaction outcome is unconfirmed; no replay is permitted");
+      })();
+      owner.operation=operation;
+      await operation;
+    } catch (error) {
+      if (!reserved && error instanceof RetainedNativeAuthenticationError) throw error;
+      failure=publicProviderCommandFailure(error).error;
+      app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:agent.id},"Context recovery held");
+    } finally {
+      const recoveryOperation=activeContextRecoveries.get(agent.id);
+      if(recoveryOperation?.id===recovery.id)recoveryOperation.phase="draining";
+      // Acceptance follows observed exit of the recovery process too. Persisted
+      // native_started after a crash stays held; no native query means no replay.
+      const drain = async () => {
+        if (!reserved) return;
+        if (authority) { authority.settled=true; await closeCapabilityDiscoveryAuthority(authority); }
+        await providerProcessAuthority.terminateAgents(new Set([agent.id]), "context recovery completion drain");
+        if (providerProcessAuthority.count({agentId:agent.id})!==0) throw new Error("Recovery completion drain remains pending");
+      };
+      const commitAfterDrain=()=>{
+        if(!reserved)return;
+        if(coordinationV3.contextRecovery.active(agent.id)?.progress?.phase==='context_accepted'||
+            coordinationV3.contextRecovery.reconcileRecordedCompletion(agent.id,recovery.id))return;
+        if(acceptedUsage&&!failure&&!activeContextRecoveries.get(agent.id)?.stopped&&!isClosed()&&
+            !deletingAgentIds.has(agent.id)&&!deletingProjectIds.has(project.id)) {
+          assertRecoveryAuthentication();
+          const event=store.recordProviderRecoveryContextUsage(agent.id,recovery.id,acceptedUsage);
+          if(!event)throw new Error("Recovery context-usage publication boundary changed");
+          const current=coordinationV3.contextRecovery.active(agent.id)!;
+          coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,current.progress!.phase,"context_accepted",{...acceptedUsage,contextUsageEventSequence:event.seq});
+          publish(agent.id,event);
+        }else {
+          const current=coordinationV3.contextRecovery.active(agent.id)!;
+          coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,current.progress!.phase,"held",{message:failure??
+            (current.progress?.nativeOutcome==='completed'?"Native compaction completed; fresh context occupancy is unavailable":"Recovery stopped before a verified native result")});
+        }
+      };
+      let drained = false;
+      try {
+        await drain(); drained = true;
+        commitAfterDrain();
+      } finally {
+        if (drained) { activeContextRecoveries.delete(agent.id); activeAgentProviderCommands.delete(agent.id); release(); }
+        else {
+          if(recoveryOperation?.id===recovery.id)recoveryOperation.phase="cleanup_pending";
+          recoveryChanged(agent.id);
+          // Retain working-folder use and the admission barrier until exit is observed.
+          void (async () => {
+            let retryDelayMs=250;
+            for (;;) {
+              await new Promise<void>(resolve => { const timer=setTimeout(resolve,retryDelayMs); timer.unref?.(); });
+              try {
+                await drain();
+                try { commitAfterDrain(); }
+                catch (error) { app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:agent.id},"Recovery cleanup state requires reconciliation"); }
+                activeContextRecoveries.delete(agent.id); activeAgentProviderCommands.delete(agent.id); release();recoveryChanged(agent.id); return;
+              }
+              catch (error) {
+                retryDelayMs=Math.min(retryDelayMs*2,5000);
+                try { const current=coordinationV3.contextRecovery.active(agent.id),progress=current?.progress;
+                  if(current&&progress)coordinationV3.contextRecovery.advanceOperation(agent.id,current.id,progress.phase,progress.phase,
+                    {maintenanceAttempts:Math.min(12,(progress.maintenanceAttempts??0)+1),nextMaintenanceAt:new Date(Date.now()+retryDelayMs).toISOString()});
+                }catch{}
+                app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:agent.id},"Recovery cleanup remains pending");recoveryChanged(agent.id);
+              }
+            }
+          })();
+        }
+      }
+    }
+  },
+  unavailable:(agentId,projectId)=>isClosed() || deletingAgentIds.has(agentId) || deletingProjectIds.has(projectId) ||
+    activeAgentProviderCommands.has(agentId) || activeRuns.has(agentId) || Boolean(coordinationV3.activeAgentRun(agentId)) ||
+    [...engineCapabilityDiscoveryAuthorities].some(authority=>authority.agentId===agentId),
+};
+registerContextRecoveryRoutes(app,recoveryContext);
+
+// A bounded native attempt without usable telemetry cannot repair itself by
+// polling. Reserve the exact canonical boundary once, then retire its generation.
+const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderContextRecoveryRequest)=>{
+  const agentId=recovery.agentId;
+  if(recoveryContext.unavailable(agentId,recovery.projectId)||activeContextRecoveries.has(agentId))return;
+  const release=workingCopies.beginUse(agentId);
+  const operation:ContextRecoveryOperation={id:recovery.id,controller:new AbortController(),phase:"draining"};
+  activeContextRecoveries.set(agentId,operation);activeAgentProviderCommands.add(agentId);
+  const assertCurrent=()=>{
+    const current=coordinationV3.contextRecovery.active(agentId),agent=store.getAgent(agentId);
+    if(!agent||current?.id!==recovery.id||isClosed()||operation.stopped||deletingAgentIds.has(agentId)||deletingProjectIds.has(recovery.projectId)||
+      activeRuns.has(agentId)||coordinationV3.activeAgentRun(agentId)||
+      workspace.listDecisions({projectId:recovery.projectId,agentId,status:"pending"}).length||recoveryContext.blocker?.(agentId))
+      throw new ContextRecoveryConflictError('Canonical recovery access or active owner changed');
+    coordinationV3.contextRecovery.assertReconstruction(agentId,recovery.id,current.progress?.reconstructionRolloverId);
+    return {agent,current};
+  };
+  try {
+    let {agent,current}=assertCurrent();
+    const project=store.getChatContext(agent.conversationId);
+    if(!project||project.id!==recovery.projectId)throw new ContextRecoveryConflictError('Recovery project changed');
+    const copy=await workingCopies.resolve(agent,project);
+    workingCopies.assertRunAdmission(agentId,copy);
+    ({agent,current}=assertCurrent());
+    if(copy.id!==agent.workingCopy.id||copy.rootPath!==agent.workingCopy.rootPath)throw new ContextRecoveryConflictError('Recovery working folder changed');
+    let rolloverId=current.progress?.reconstructionRolloverId;
+    if(!rolloverId){
+      const ids=store.acceptedProviderSessionCommunicationEventIds(agentId);
+      if(!ids)throw new ContextRecoveryConflictError('Exact canonical recovery history is unavailable');
+      const conversationId=recovery.scopeKey.startsWith('conversation:')?recovery.scopeKey.slice('conversation:'.length):undefined;
+      const pressure=evaluateContextRolloverPressure({usedTokens:workspace.getPreferences().contextRolloverTokens},workspace.getPreferences());
+      const boundary=store.bindContextRolloverBoundary({agentId,...(conversationId?{currentConversationId:conversationId}:{}),
+        submittedCommunicationEventIds:ids,maxUtf8Bytes:Math.min(pressure.lowWaterMark,MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)});
+      // The rollover and backlink commit together; never refreeze this tail on restart.
+      rolloverId=coordinationV3.requestContextRollover({projectId:recovery.projectId,agentId,
+        oldProviderSessionId:recovery.providerSessionId,providerSessionGeneration:recovery.providerSessionId,
+        recoveryReconstruction:{recoveryId:recovery.id},threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,
+        sourceRunId:recovery.sourceRunId,scopeKey:recovery.scopeKey,...(conversationId?{conversationId}:{}),
+        sourceActivationIds:coordinationV3.activationIdsAttachedToRun(recovery.sourceRunId,agentId),
+        compactionCutoffOrdinal:boundary.canonicalOrdinal,compactionCutoffEventId:boundary.communicationEventId,recentTail:boundary.recentTail}).rollover.id;
+    }
+    if(!await retireCompletedContextRolloverSession({agentId,projectId:recovery.projectId,rolloverId,providerSessionGeneration:recovery.providerSessionId}))
+      throw new ContextRecoveryConflictError('Old recovery runtime cleanup remains pending');
+    // Restart-recovered children may have no in-memory session wrapper.
+    await providerProcessAuthority.terminateAgents(new Set([agentId]),'canonical recovery generation retirement');
+    store.sqlite.transaction(()=>{
+      assertCurrent();
+      if(providerProcessAuthority.count({agentId})!==0||persistentRuntimeForTermination(agentId))
+        throw new ContextRecoveryConflictError('Old recovery runtime or children remain');
+      coordinationV3.contextRecovery.completeReconstruction(agentId,recovery.id,rolloverId!);
+    })();
+    recoveryChanged(agentId);notifyScheduler();
+  } finally {
+    if(activeContextRecoveries.get(agentId)===operation)activeContextRecoveries.delete(agentId);
+    activeAgentProviderCommands.delete(agentId);release();
+  }
+};
+
+// Waiting behind another tracked maintenance operation is routine recovery,
+// provided the same canonical input/session remains eligible and no real
+// decision, access failure or exhausted pre-submission policy requires attention.
+context.contextRecoveryMaintenance.recovering=agentId=>{
+  const agent=store.getAgent(agentId),recovery=coordinationV3.contextRecovery.active(agentId),
+    boundary=recovery??store.uncertainProviderContextRecoveryBoundary(agentId);
+  if(!agent||!boundary||isClosed()||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
+      engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction"||
+      recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length||
+      !coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))return false;
+  return recovery?.progress?.phase==='context_accepted'||Boolean(recovery?.progress?.nativeInvoked && (recovery.progress.maintenanceAttempts??0)<12)||
+    !recovery?.progress?.nativeInvoked&&(recovery?.progress?.maintenanceAttempts??0)<3;
+};
+
+// The scheduler owns lifecycle maintenance; a browser never starts or polls it.
+context.contextRecoveryMaintenance.reconcile=async()=>{
+  if(isClosed())return;
+  let candidates:{agent_id:string}[];
+  const deferFailedRead=()=>new Promise<void>(resolve=>{const timer=setTimeout(resolve,5000);timer.unref?.();});
+  try { candidates=store.sqlite.prepare(`SELECT DISTINCT a.agent_id FROM agent_activations a
+    WHERE a.state IN ('pending','retry_pending') AND a.kind='human_message'
+    UNION SELECT agent_id FROM provider_context_recovery_requests WHERE state='unsupported_fenced' LIMIT 1000`).all() as {agent_id:string}[]; }
+  catch(error){app.log.error({exception:restrictedInternalExceptionDiagnostic(error)},"Context maintenance read unavailable");await deferFailedRead();return;}
+  let failedRead=false;
+  for(const {agent_id:agentId} of candidates) {
+    if(isClosed())return;
+    try {
+    const agent=store.getAgent(agentId),boundary=coordinationV3.contextRecovery.active(agentId)??store.uncertainProviderContextRecoveryBoundary(agentId);
+    if(!agent||!boundary||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
+        activeContextRecoveries.has(agentId)||recoveryContext.unavailable(agentId,agent.projectId))continue;
+    const prior=coordinationV3.contextRecovery.active(agentId);
+    if(prior?.progress?.nextMaintenanceAt&&Date.parse(prior.progress.nextMaintenanceAt)>Date.now())continue;
+    const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId});
+    if(!pendingInput&&!prior?.progress?.automaticMaintenance&&!prior?.progress?.reconstructionRolloverId&&providerProcessAuthority.count({agentId})===0)continue;
+    if(!pendingInput&&!prior?.progress?.nativeInvoked)continue;
+    if(recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length)continue;
+    if(!prior&&!pendingInput)continue;
+    if(!prior?.progress?.nativeInvoked&&engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction")continue;
+    let recovery=prior,invoked=false;
+      if(!recovery?.progress?.reconstructionRolloverId&&coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))
+        recovery=coordinationV3.contextRecovery.requestMaintenance({...boundary,agentId}).request;
+      if(!recovery)continue;
+      if(recovery.state==='dismissed')continue;
+      const progress=recovery.progress;
+      if(progress?.nativeInvoked) {
+        // Prefer exact recorded evidence; missing telemetry never authorizes another compact.
+        if(!progress.reconstructionRolloverId&&providerProcessAuthority.count({agentId})>0)await recoveryContext.stopRecovery?.(agentId,recovery.id);
+        coordinationV3.contextRecovery.reconcileRecordedCompletion(agentId,recovery.id);
+        const measured=coordinationV3.contextRecovery.active(agentId)?.progress;
+        if(measured?.phase!=="context_accepted"&&measured?.nativeOutcome==='completed'&&measured.usedTokens!==undefined&&
+            providerProcessAuthority.count({agentId})===0&&!recoveryContext.blocker?.(agentId)) {
+          const event=store.recordProviderRecoveryContextUsage(agentId,recovery.id,{usedTokens:measured.usedTokens,...(measured.windowTokens!==undefined?{windowTokens:measured.windowTokens}:{})});
+          if(event){publish(agentId,event);coordinationV3.contextRecovery.reconcileRecordedCompletion(agentId,recovery.id);}
+        }
+        const unmeasured=coordinationV3.contextRecovery.active(agentId);
+        if(unmeasured?.progress?.nativeInvoked&&unmeasured.progress.phase!=='context_accepted')await reconstructRecovery(unmeasured);
+      } else if(coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery)&&
+          engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status==='managed_compaction'&&
+          coordinationV3.activeRunCount()<workspace.getPreferences().maxConcurrentAgentRuns) {
+        await recoveryContext.recover?.(recovery,'automatic');invoked=true;
+      }
+      const observed=coordinationV3.contextRecovery.active(agentId);
+      if(observed?.progress?.phase==='context_accepted'&&(pendingInput||observed.progress.automaticMaintenance)&&recoveryContext.settle?.(observed)) {
+        recoveryChanged(agentId);notifyScheduler();if(invoked){if(failedRead)await deferFailedRead();return;};continue;
+      }
+      if(observed) {
+        if(!observed.progress)coordinationV3.contextRecovery.reserveOperation(agentId,observed.id);
+        const pending=coordinationV3.contextRecovery.active(agentId)!;
+        if(pending.progress){const attempts=Math.min(12,(pending.progress.maintenanceAttempts??0)+1);
+          coordinationV3.contextRecovery.advanceOperation(agentId,pending.id,pending.progress.phase,pending.progress.phase,
+            {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});}
+      }
+      if(invoked){if(failedRead)await deferFailedRead();return;};
+    }catch(error){
+      app.log.error({agentId,exception:restrictedInternalExceptionDiagnostic(error)},"Automatic context maintenance remains held");
+      try {
+        const recovery=coordinationV3.contextRecovery.active(agentId),progress=recovery?.progress;
+        if(recovery&&progress){const attempts=Math.min(12,(progress.maintenanceAttempts??0)+1);
+          coordinationV3.contextRecovery.advanceOperation(agentId,recovery.id,progress.phase,progress.phase,
+            {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});}
+        else failedRead=true;
+      }catch{failedRead=true;}
+    }
+  }
+  // Keep the existing tracked scheduler job owned during a storage outage;
+  // no per-tick retry flood or second timer loop, and other candidates ran first.
+  if(failedRead)await deferFailedRead();
+};
+
+for (const action of ['pause','resume'] as const) app.post<{Params:{id:string};Body:{targetRunId?:string;pauseId?:string;idempotencyKey?:string}}>(`/api/agents/:id/${action}`,async(request,reply)=>{
+  const body=request.body;
+  const key=body?.idempotencyKey?.trim(),target=action==='pause'?body?.targetRunId?.trim():body?.pauseId?.trim();
+  if(!key||key.length>200||!target||target.length>200)return reply.code(400).send({error:'Exact target and idempotencyKey are required'});
+  if(!store.getAgent(request.params.id))return reply.code(404).send({error:'Agent not found'});
+  try {
+    const result=action==='pause'?coordinationV3.pauseAgentRun({agentId:request.params.id,runId:target,idempotencyKey:key}):coordinationV3.resumeAgentRun({agentId:request.params.id,pauseId:target,idempotencyKey:key});
+    notifyScheduler();publishMessageDeliveryChanged(request.params.id);
+    return {accepted:true,...(result??{})};
+  } catch(error){return reply.code(409).send({error:error instanceof Error?error.message:String(error)});}
+});
 
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
   const idempotencyKey = request.body?.idempotencyKey?.trim();
@@ -232,6 +673,7 @@ app.post<{
   const engine = engines.get(engineId);
   if (!engine) return reply.code(400).send({ error: "unknown engine" });
   const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
+  if (["native-model", "native-permission-mode"].includes(name)) return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
   const argumentsText = request.body?.argumentsText?.trim();
   if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
     return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
@@ -248,6 +690,7 @@ app.post<{
       return reply.code(409).send(publicProviderCommandFailure(error));
     }
   }
+  if (name.startsWith("goal")) return reply.code(409).send({ error: "Native goal operations require an individual Agent’s live accepted session" });
   if (!engine.adapter.openSession) {
     return reply.code(409).send({ error: "this provider cannot open a command-only session" });
   }
@@ -348,11 +791,20 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
   async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
+    if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
+    if(new NativeHistoryAuthority(store).held(agent.id))return reply.code(409).send({error:"Native history operation is prepared or uncertain"});
+    if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active",retryable:false});
+    activeAgentProviderCommands.add(agent.id);
+    let holdAgentCommandBarrier = false;
+    try {
+    if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
+      return reply.code(409).send({error:'Agent is paused; Resume or Stop before a provider command'});
     const project = store.getChatContext(agent.conversationId);
     if (!project || project.id !== agent.projectId) return reply.code(409).send({ error: "Agent Chat context is unavailable" });
     const engine = engines.get(agent.activeEngine);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
     const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
+    if (["native-model", "native-permission-mode"].includes(name)) return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
     const argumentsText = request.body?.argumentsText?.trim();
     if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
       return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
@@ -369,7 +821,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
     }
-    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown" }> => {
+    const invoke = async (session: RuntimeSession, retainedInvocation = true): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean }> => {
+      const retainedExecutionId = retainedInvocation ? assertRetainedCommand(agent.id, session) : undefined;
       const catalog = session.capabilities
         ? projectProviderCapabilities(await session.capabilities())
         : {
@@ -391,6 +844,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
+      if(coordinationV3.contextRecovery.active(agent.id)) throw new NativeContextUnavailableError("An explicit context recovery hold is active");
+      if (retainedInvocation) assertRetainedCommand(agent.id, session, retainedExecutionId);
       const commandBoundary = name === "compact" ? store.providerCommandContextBoundary(agent.id) : undefined;
       const invocationId = randomUUID();
       if (name === "compact") {
@@ -403,6 +858,14 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         if (!store.beginProviderCommandContextMutation(agent.id, commandBoundary, invocationId)) {
           throw new NativeContextUnavailableError("A previous native operation or unfinished work has unconfirmed context. Do not repeat Compact; use Context Refresh after resolving any pending work.");
         }
+      }
+      if (name.startsWith("goal")) {
+        const accepted = store.acceptedProviderSessionInput(agent.id);
+        const contract = accepted?.sourceManifest.schemaVersion === 3 ? accepted.sourceManifest.normalRuntimeContract : undefined;
+        const saved = store.resumeSessionState(agent.id);
+        if (!saved || !contract || contract.engineId !== agent.activeEngine || saved.toolContractHash !== contract.contractHash ||
+            saved.sessionId !== readProviderSessionIdentifier(session) || !retainedPermissionsMatch(agent.id, agent.activeEngine, contract) ||
+            isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id)) throw new Error("Native goal operation requires the current accepted session and human limits");
       }
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
@@ -431,7 +894,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           result.message ??= "Compaction was invoked; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry. Context Refresh is required before more work.";
         }
       }
-      return { catalog, ...(result.message ? { message: result.message } : {}), ...(result.outcome ? { outcome: result.outcome } : {}) };
+      return { catalog, ...(result.message ? { message: result.message } : {}), ...(result.outcome ? { outcome: result.outcome } : {}),
+        ...(result.goal === undefined ? {} : { goal: result.goal }), ...(result.goalCleared === undefined ? {} : { goalCleared: result.goalCleared }) };
     };
     let releaseWorkingCopyUse: () => void;
     try {
@@ -472,11 +936,13 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             catalogVersion: result.catalog.catalogVersion,
             ...(result.outcome ? { outcome: result.outcome } : {}),
             ...(result.message ? { message: result.message } : {}),
+            ...(result.goal === undefined ? {} : { goal: result.goal }), ...(result.goalCleared === undefined ? {} : { goalCleared: result.goalCleared }),
           };
         } catch (error) {
           return reply.code(409).send(publicProviderCommandFailure(error));
         }
       }
+      if (name.startsWith("goal")) return reply.code(409).send({ error: "Native goal operations require a live accepted session. Resuming an active native goal can start unscheduled work, so this command does not open a session." });
       if (!engine.adapter.openSession) {
         return reply.code(409).send({ error: "this provider cannot open a command-only session" });
       }
@@ -502,14 +968,23 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       workspace.getPreferences().engineDefaults?.[agent.activeEngine],
     ], cachedModelOptions(engine.adapter, project.id));
       const persisted = store.resumeSessionState(agent.id);
-      const runtimeSessionContractHash = providerSessionContractHash(
-      agent.activeEngine,
-      workingCopy.id,
-      selection.model,
-      selection.effort,
-    );
-      const resumeSessionId = persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
-      if (name === "compact" && (!resumeSessionId || !store.providerCommandContextBoundary(agent.id))) {
+      const acceptedInput = store.acceptedProviderSessionInput(agent.id);
+      const retainedContract = acceptedInput?.sourceManifest.schemaVersion === 3
+        ? acceptedInput.sourceManifest.normalRuntimeContract : undefined;
+      const exactContract = retainedContract?.version === 1 && persisted &&
+        retainedContract.contractHash === persisted.toolContractHash &&
+        retainedContract.engineId === agent.activeEngine && retainedContract.workingCopyId === workingCopy.id &&
+        retainedContract.cwd === workingCopy.rootPath && acceptedInput?.exactSystemPrompt !== undefined &&
+        retainedPermissionsMatch(agent.id,agent.activeEngine,retainedContract,latestRun?.id)
+        ? retainedContract : undefined;
+      if (persisted) {
+        try {
+          if (!exactContract) throw new Error("Retained native contract is unavailable or incompatible; no replacement session was opened.");
+          assertRetainedCommand(agent.id);
+        } catch (error) { return reply.code(409).send(publicProviderCommandFailure(error)); }
+      }
+      const resumeSessionId = exactContract ? persisted!.sessionId : undefined;
+      if (name === "compact" && (!exactContract || !resumeSessionId || !store.providerCommandContextBoundary(agent.id))) {
         return reply.code(409).send({ error: "Native /compact requires the accepted compatible provider runtime. Use Context Refresh to rebuild this Agent's context." });
       }
       const authority: CapabilityDiscoveryAuthority = {
@@ -541,29 +1016,51 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       };
       let invocation: Awaited<ReturnType<typeof invoke>> | undefined;
       const operation = Promise.resolve().then(async () => {
+      if (resumeSessionId) {
+        assertRetainedCommand(agent.id, undefined, acceptedInput!.executionId);
+        if (store.resumeSessionState(agent.id)?.sessionId !== resumeSessionId) throw new Error("Retained native session changed before reopen");
+      }
       const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
         cwd: workingCopy.rootPath,
         ...(resumeSessionId ? { resumeSessionId } : {}),
         history: [],
-        model: selection.model,
-        effort: selection.effort,
+        model: exactContract?.model ?? selection.model,
+        effort: exactContract?.effort ?? selection.effort,
+        ...(exactContract ? {
+          systemPrompt: acceptedInput!.exactSystemPrompt,
+          speed: exactContract.speed,
+          dynamicTools: exactContract.dynamicTools,
+          capabilityRestrictions: exactContract.capabilityRestrictions,
+          // A command is not a scheduler Run. Keep the native tool declarations,
+          // but never lend a finished Run's capability to a native tool request.
+          handleDynamicToolCall: async () => { throw new Error("Provider commands have no live Run tool authority"); },
+          handleElicitation: async () => ({ action: "cancel" as const }),
+        } : {}),
         onRuntimeSpawned: registerProcess,
         onRuntimeRootExit: () => undefined,
         onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
         signal: authority.controller.signal,
       }));
       const session = providerSessionFacade(rawSession);
-      invocation = await invoke(session);
+      if (resumeSessionId) assertRetainedCommand(agent.id, session, acceptedInput!.executionId);
+      // A session ID echoed from our own resume request is not provider proof.
+      // The adapter must confirm the requested saved session before any native
+      // mutation can execute; read-only commands remain available.
+      if (name === "compact" && resumeSessionId && session.validatesResumeBeforeTurn !== true)
+        throw new NativeContextUnavailableError("Native /compact requires provider confirmation of the saved session. Use Context Refresh after resolving any unfinished work.");
+      invocation = await invoke(session, Boolean(resumeSessionId));
       return invocation.catalog;
       });
       authority.operation = operation;
       engineCapabilityDiscoveryAuthorities.add(authority);
       cleanupOwnsWorkingCopyUse = true;
+      let commandFailure: ReturnType<typeof publicProviderCommandFailure> | undefined;
+      let commandSuccess: { invoked: true; name: string; catalogVersion?: string; outcome?: "completed" | "failed" | "outcome_unknown"; message?: string } | undefined;
       try {
         await operation;
         reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-        return {
+        commandSuccess = {
           invoked: true,
           name,
           catalogVersion: invocation?.catalog.catalogVersion,
@@ -571,7 +1068,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           ...(invocation?.message ? { message: invocation.message } : {}),
         };
       } catch (error) {
-        return reply.code(409).send(publicProviderCommandFailure(error));
+        commandFailure = publicProviderCommandFailure(error);
       } finally {
         authority.settled = true;
         try {
@@ -583,7 +1080,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             providerError: restrictedProviderExceptionLogDetail(error),
             agentId: agent.id,
           }, "transient provider-command process cleanup remains pending and blocks working-folder changes");
-          // Keep the use lease until process-group exit is actually confirmed.
+          holdAgentCommandBarrier = true;
+          // Keep the command barrier and use lease until process-group exit is actually confirmed.
           // Retrying in the background lets a transient teardown failure heal
           // without ever making destructive folder replacement unsafe.
           void (async () => {
@@ -596,6 +1094,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
               try {
                 await closeCapabilityDiscoveryAuthority(authority);
                 releaseWorkingCopyUse();
+                activeAgentProviderCommands.delete(agent.id);
                 return;
               } catch (retryError) {
                 retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
@@ -608,15 +1107,29 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           })();
         }
       }
+      if (commandFailure) return reply.code(409).send({...commandFailure,...(holdAgentCommandBarrier ? {
+        cleanupPending:true,
+        error:`${commandFailure.error} Command cleanup is still pending. Do not repeat it while cleanup is unresolved.`,
+      } : {})});
+      if (!commandSuccess) throw new Error("Provider command outcome unavailable");
+      return holdAgentCommandBarrier ? {...commandSuccess, cleanupPending:true,
+        message:[commandSuccess.message,"Command cleanup is still pending. Do not repeat it while cleanup is unresolved."].filter(Boolean).join(" ")} : commandSuccess;
     } finally {
       if (!cleanupOwnsWorkingCopyUse) releaseWorkingCopyUse();
     }
+    } finally { if (!holdAgentCommandBarrier) activeAgentProviderCommands.delete(agent.id); }
   },
 );
 
 app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
   const agent = store.getAgent(request.params.id);
   if (!agent) return reply.code(404).send({ error: "agent not found" });
+  if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
+  if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active"});
+  activeAgentProviderCommands.add(agent.id);
+  try {
+  if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
+    return reply.code(409).send({error:'Agent is paused; Resume or Stop before Context Refresh'});
   if (activeRuns.has(request.params.id) || coordinationV3.activeAgentRun(request.params.id)) {
     return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
   }
@@ -746,6 +1259,7 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     rolloverId: requested.rollover.id,
     replayed: !requested.created,
   };
+  } finally { activeAgentProviderCommands.delete(agent.id); }
 });
 
 registerAgentRunHistoryRoute(app, serverContext);

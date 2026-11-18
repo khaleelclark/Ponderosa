@@ -32,6 +32,7 @@ import {
   CollectionWorkspace,
 } from "./CollectionPrimitives";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
+import { useMutationNotification } from "./MutationNotifications";
 
 type ChatRow = WorkspaceConversationDirectoryItemDto;
 const chatRowId = (row: ChatRow) => row.conversation.id;
@@ -46,6 +47,14 @@ interface ChatDeletionFailure {
   message: string;
 }
 
+interface ChatDeletionPresentation {
+  count: number;
+  previews?: ChatDeletionPreview[];
+  loading: boolean;
+  queryFailed: boolean;
+  failures: ChatDeletionFailure[];
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -56,8 +65,11 @@ export function ManageChatsWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [search, setSearch] = useState("");
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  // Retained data only renders the closing Dialog; actual targets clear immediately.
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; retained?: ChatDeletionPresentation }>({ open: false });
+  const deleteOpen = deleteDialog.open;
   const [deleteTargets, setDeleteTargets] = useState<ChatRow[]>([]);
   const [deleteFailures, setDeleteFailures] = useState<ChatDeletionFailure[]>(
     [],
@@ -95,23 +107,40 @@ export function ManageChatsWorkspace({
     retry: false,
   });
 
+  const activeDeletionPresentation: ChatDeletionPresentation = {
+    count: deleteTargets.length, previews: previewQuery.data,
+    loading: previewQuery.isFetching, queryFailed: previewQuery.isError, failures: deleteFailures,
+  };
+  const deletionPresentation = deleteOpen ? activeDeletionPresentation : deleteDialog.retained;
+  const finishDeleteDialog = () => {
+    setDeleteDialog({ open: false, retained: activeDeletionPresentation });
+    setDeleteTargets([]);
+  };
+
   const remove = useMutation({
     mutationFn: async (
       previews: ChatDeletionPreview[],
     ): Promise<{
       deleted: ChatDeletionPreview[];
+      pending: ChatDeletionPreview[];
+      cleanupPending: ChatDeletionPreview[];
       failures: ChatDeletionFailure[];
     }> => {
       const deleted: ChatDeletionPreview[] = [];
+      const pending: ChatDeletionPreview[] = [];
+      const cleanupPending: ChatDeletionPreview[] = [];
       const failures: ChatDeletionFailure[] = [];
       setDeleteProgress({ completed: 0, total: previews.length });
       for (const preview of previews) {
         try {
-          await api.deleteConversation(
+          const result = await api.deleteConversation(
             preview.row.conversation.id,
             preview.agents.map(agent => agent.id),
           );
-          deleted.push(preview);
+          if (result.deleted) {
+            deleted.push(preview);
+            if (result.cleanupPending) cleanupPending.push(preview);
+          } else pending.push(preview);
         } catch (error) {
           failures.push({ preview, message: errorMessage(error) });
         }
@@ -120,14 +149,22 @@ export function ManageChatsWorkspace({
           completed: current.completed + 1,
         }));
       }
-      return { deleted, failures };
+      return { deleted, pending, cleanupPending, failures };
     },
-    onSuccess: ({ deleted, failures }) => {
+    onSuccess: ({ deleted, pending, cleanupPending, failures }) => {
+      if (pending.length) notify({
+        message: `${pending.length} Chat deletion${pending.length === 1 ? " is" : "s are"} still pending. The Chat${pending.length === 1 ? "" : "s"} may still be present.`,
+        severity: "warning", persistent: true, key: `bulk-chat-deletion:${pending.map(item => item.row.conversation.id).sort().join(",")}`,
+      });
+      if (cleanupPending.length) notify({
+        message: `${cleanupPending.length} Chat${cleanupPending.length === 1 ? " was" : "s were"} removed, but cleanup is pending. Saved data, including memory, may remain.`,
+        severity: "warning", persistent: true, key: `bulk-chat-cleanup:${cleanupPending.map(item => item.row.conversation.id).sort().join(",")}`,
+      });
       const projectIds = new Set(deleted.map(item => item.row.project.id));
       void queryClient.invalidateQueries({
         queryKey: queryKeys.workspaceDirectory.kind("conversation"),
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll });
       projectIds.forEach(projectId => {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.conversations.project(projectId),
@@ -146,8 +183,7 @@ export function ManageChatsWorkspace({
         setDeleteTargets(failures.map(failure => failure.preview.row));
         return;
       }
-      setDeleteOpen(false);
-      setDeleteTargets([]);
+      finishDeleteDialog();
     },
   });
 
@@ -157,27 +193,26 @@ export function ManageChatsWorkspace({
     setDeleteFailures([]);
     setDeleteProgress({ completed: 0, total: targets.length });
     setDeleteTargets(targets);
-    setDeleteOpen(true);
+    setDeleteDialog({ open: true });
   };
   const closeDelete = () => {
-    if (remove.isPending) return;
-    setDeleteOpen(false);
-    setDeleteTargets([]);
+    if (!deleteOpen || remove.isPending) return;
+    finishDeleteDialog();
     setDeleteFailures([]);
     remove.reset();
   };
 
-  const previewAgents = previewQuery.data?.flatMap(preview =>
+  const previewAgents = deletionPresentation?.previews?.flatMap(preview =>
     preview.agents.map(agent => ({
       agent,
       chatTitle: preview.row.conversation.title,
     })),
   ) ?? [];
-  const deleteError = previewQuery.isError
+  const deleteError = deletionPresentation?.queryFailed
     ? "Ponderosa could not verify every affected Agent. Try again before deleting."
-    : deleteFailures.length
+    : deletionPresentation?.failures.length
       ? <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 2.5 }}>
-          {deleteFailures.map(failure => (
+          {deletionPresentation.failures.map(failure => (
             <Typography component="li" variant="body2" key={failure.preview.row.conversation.id}>
               {failure.preview.row.conversation.title}: {failure.message}
             </Typography>
@@ -200,15 +235,15 @@ export function ManageChatsWorkspace({
           disabled={!selected.size}
           onClick={openDelete}
         >
-          {selected.size ? `Delete selected (${selected.size})` : "Delete selected"}
+          {selected.size ? `Delete Selected (${selected.size})` : "Delete Selected"}
         </Button>
       }
       compactPrimaryAction={
-        <Tooltip title={selected.size ? `Delete ${selected.size} selected Chats` : "Select Chats to delete"}>
+        <Tooltip title={selected.size ? `Delete ${selected.size} Selected Chats` : "Select Chats To Delete"}>
           <span>
             <IconButton
               color="error"
-              aria-label={selected.size ? `Delete ${selected.size} selected Chats` : "Delete selected Chats"}
+              aria-label={selected.size ? `Delete ${selected.size} Selected Chats` : "Delete Selected Chats"}
               disabled={!selected.size}
               onClick={openDelete}
             >
@@ -221,7 +256,7 @@ export function ManageChatsWorkspace({
         <CollectionToolbar
           search={search}
           onSearch={setSearch}
-          searchLabel="Search Chats to manage"
+          searchLabel="Search Chats To Manage"
         >
           <Stack
             data-collection-toolbar-actions
@@ -246,7 +281,7 @@ export function ManageChatsWorkspace({
                 />
               }
             >
-              Select all
+              Select All
             </Button>
             <Typography variant="body2" color="text.secondary" noWrap>
               {directoryQuery.requestState.hasNextPage || directoryQuery.requestState.isFetchingNextPage
@@ -261,7 +296,7 @@ export function ManageChatsWorkspace({
           </Stack>
         </CollectionToolbar>
       }
-      listLabel="Chats available for bulk management"
+      listLabel="Chats Available For Bulk Management"
       busy={
         directoryQuery.requestState.isInitialLoading ||
         directoryQuery.requestState.isRefreshing ||
@@ -324,51 +359,53 @@ export function ManageChatsWorkspace({
     <ResourceDeletionDialog
       open={deleteOpen}
       resourceType="Chats"
-      title={`Delete ${deleteTargets.length} selected ${deleteTargets.length === 1 ? "Chat" : "Chats"}?`}
-      confirmLabel={`Delete ${deleteTargets.length} ${deleteTargets.length === 1 ? "Chat" : "Chats"}`}
+      title={`Delete ${deletionPresentation?.count ?? 0} selected ${deletionPresentation?.count === 1 ? "Chat" : "Chats"}?`}
+      confirmLabel={`Delete ${deletionPresentation?.count ?? 0} ${deletionPresentation?.count === 1 ? "Chat" : "Chats"}`}
       pendingLabel={deleteProgress.total
         ? `Deleting ${Math.min(deleteProgress.completed + 1, deleteProgress.total)} of ${deleteProgress.total}…`
         : "Deleting…"}
       pending={remove.isPending}
       error={deleteError}
       confirmDisabled={
-        !previewQuery.data ||
+        !deleteOpen || !previewQuery.data ||
         previewQuery.isFetching ||
         previewQuery.isError ||
         !deleteTargets.length
       }
       onCancel={closeDelete}
+      onExited={() => setDeleteDialog(current => current.open ? current : { open: false })}
       onConfirm={() => {
-        if (previewQuery.data) remove.mutate(previewQuery.data);
+        if (deleteOpen && previewQuery.data) remove.mutate(previewQuery.data);
       }}
     >
       <Alert severity="warning">
-        This permanently deletes the selected Chats and their history, plus all
-        assigned Agents. Their runs, work logs, private attachments, and in-app
-        artifact views will no longer be available. Pending work is cancelled.
-        Files actually saved in a machine working folder and Project-level
-        artifacts are not deleted. A Chat with an
-        active Agent will remain and report what must be stopped or reassigned.
+        <Stack spacing={0.5}>
+          <Typography>Selected Chats, history and assigned Agents: permanently deleted</Typography>
+          <Typography>Runs, work logs, private attachments and in-app artifact views: unavailable</Typography>
+          <Typography>Pending work: cancelled</Typography>
+          <Typography>Working-folder files and Project-level artifacts: retained</Typography>
+          <Typography>Chats with active Agents: retained with stop or reassignment instructions</Typography>
+        </Stack>
       </Alert>
-      {previewQuery.isFetching ? (
+      {deletionPresentation?.loading ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 1.5 }}>
           <CircularProgress size={18} />
           <Typography variant="body2">Checking affected Agents…</Typography>
         </Stack>
       ) : null}
-      {previewQuery.data ? <>
+      {deletionPresentation?.previews ? <>
         <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 0.5 }}>
-          Selected Chats ({previewQuery.data.length})
+          Selected Chats ({deletionPresentation.previews.length})
         </Typography>
         <Box component="ul" sx={{ maxHeight: 140, overflowY: "auto", mt: 0, mb: 0, pl: 2.5 }}>
-          {previewQuery.data.map(preview => (
+          {deletionPresentation.previews.map(preview => (
             <Typography component="li" variant="body2" key={preview.row.conversation.id}>
               {preview.row.conversation.title} · {preview.row.project.label}
             </Typography>
           ))}
         </Box>
         <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 0.5 }}>
-          Agents that will be deleted ({previewAgents.length})
+          Agents That Will Be Deleted ({previewAgents.length})
         </Typography>
         {previewAgents.length ? (
           <Box component="ul" sx={{ maxHeight: 180, overflowY: "auto", mt: 0, mb: 0, pl: 2.5 }}>

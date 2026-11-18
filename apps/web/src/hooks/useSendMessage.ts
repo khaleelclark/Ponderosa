@@ -6,14 +6,17 @@ import { queryKeys } from "../queryKeys";
 export interface SendMessageAttempt {
   agentId: string;
   request: SendMessageRequest;
+  beforeDispatch?(): Promise<void>;
 }
 
 export function useSendMessage() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ agentId, request }: SendMessageAttempt) =>
-      api.sendMessage(agentId, request),
+    mutationFn: async ({ agentId, request, beforeDispatch }: SendMessageAttempt) => {
+      await beforeDispatch?.();
+      return api.sendMessage(agentId, request);
+    },
     // Composer owns the immediate, explicitly pending presentation. Do not
     // fabricate MessageDto records or roll back SSE updates on a send failure.
     onSettled: async (_data, _error, { agentId }) => {

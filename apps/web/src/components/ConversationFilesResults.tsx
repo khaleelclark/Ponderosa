@@ -1,4 +1,4 @@
-import { routeToPath } from "../routeRegistry";
+import { routeLinkPath } from "../routeRegistry";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import CloseIcon from "@mui/icons-material/Close";
 import { ConversationWorkspaceFiles } from "./files/ConversationWorkspaceFiles";
@@ -116,7 +116,7 @@ export function ConversationFilesResults({
     }))
     .filter(group => group.artifacts.length > 0);
   const hasMore = older?.hasMore ?? artifacts.data?.history.hasMore ?? false;
-  const previewOwner = previewArtifact
+  const previewOwner = previewArtifact && previewArtifact.origin?.kind!=="operator"
     ? agentById.get(previewArtifact.originAgentId ?? previewArtifact.agentId)
     : undefined;
   const loadOlderFiles = async () => {
@@ -148,7 +148,7 @@ export function ConversationFilesResults({
   return (
     <Box
       role="tabpanel"
-      aria-label="Chat files and results"
+      aria-label="Chat Files And Results"
       sx={{
         height: "100%",
         minHeight: 0,
@@ -183,7 +183,7 @@ export function ConversationFilesResults({
           value={filter}
           onChange={event => setFilter(event.target.value)}
           placeholder="Search files, results, or agents"
-          inputProps={{ "aria-label": "Search Chat files and results" }}
+          inputProps={{ "aria-label": "Search Chat Files And Results" }}
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -196,13 +196,13 @@ export function ConversationFilesResults({
       </Stack>
 
       <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 1, sm: 1.5 } }}>
-        {!search ? <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} projectId={projectId} /> : <Box component="section" aria-label="Working-folder matches" sx={{ mb: 2 }}>
-          <Typography variant="overline">Working-folder files</Typography>
+        {!search ? <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} projectId={projectId} /> : <Box component="section" aria-label="Working-Folder Matches" sx={{ mb: 2 }}>
+          <Typography variant="overline">Working-Folder Files</Typography>
           {workspaceMatches.isLoading ? <Typography>Searching this Chat’s folder…</Typography> : null}
           {workspaceMatches.isError ? <Alert severity="error">Working-folder search is unavailable. Managed results remain below.</Alert> : null}
-          <List dense>{workspaceMatches.results.map(file => <ListItemButton key={file.path} component="a" href={routeToPath({ kind: "workspaceFile", projectId, conversationId, path: file.path })}
+          <List dense>{workspaceMatches.results.map(file => <ListItemButton key={file.path} component="a" href={routeLinkPath({ kind: "workspaceFile", projectId, conversationId, path: file.path })}
             onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setWorkspaceFile(file.path); } }}><ListItemText primary={file.path} secondary={`Working folder · ${file.project.label}`} /></ListItemButton>)}</List>
-          {workspaceMatches.hasNextPage ? <Button disabled={workspaceMatches.isFetching} onClick={() => void workspaceMatches.fetchNextPage()}>{workspaceMatches.isFetchingNextPage ? "Loading…" : "Load more working-folder files"}</Button> : null}
+          {workspaceMatches.hasNextPage ? <Button disabled={workspaceMatches.isFetching} onClick={() => void workspaceMatches.fetchNextPage()}>{workspaceMatches.isFetchingNextPage ? "Loading…" : "Load More Working-Folder Files"}</Button> : null}
           {workspaceMatches.truncated ? <Alert severity="info">Folder search reached its limit. Narrow the search to find more files.</Alert> : null}
           {workspaceMatches.unavailableRoots ? <Alert severity="warning">This Chat’s folder could not be fully searched.</Alert> : null}
         </Box>}
@@ -224,7 +224,7 @@ export function ConversationFilesResults({
         ) : null}
         {!artifacts.isLoading && !artifacts.isError && records.length === 0 ? (
           <Alert severity="info">
-            {search ? `No managed files or results match “${search}”.` : "No files or results yet. Anything created by an Agent in this Chat will appear here."}
+            {search ? `No managed files or results match “${search}”.` : "No managed files or results yet."}
           </Alert>
         ) : null}
         <Stack spacing={1.25}>
@@ -233,10 +233,11 @@ export function ConversationFilesResults({
               <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 0.5, mb: 0.5 }}>
                 {group.label}
               </Typography>
-              <List disablePadding aria-label={`${group.label} items`} sx={{ display: "grid", gap: 0.75 }}>
+              <List disablePadding aria-label={`${group.label} Items`} sx={{ display: "grid", gap: 0.75 }}>
                 {group.artifacts.map(artifact => {
                   const ownerId = artifact.originAgentId ?? artifact.agentId;
-                  const owner = agentById.get(ownerId);
+                  const owner = artifact.origin?.kind === "operator" ? undefined : agentById.get(ownerId);
+                  const producer = artifact.origin?.kind === "operator" ? "Operator" : owner?.title ?? `Deleted Agent · ${ownerId.slice(0, 8)}`;
                   const displayPath = projectArtifactDisplayPath(
                     artifact,
                     projectRoot,
@@ -257,7 +258,7 @@ export function ConversationFilesResults({
                     >
                       <ListItemButton
                         component="a" href={artifact.previewUrl ?? artifact.downloadUrl}
-                        aria-label={`Preview ${label} from ${owner?.title ?? "Deleted Agent"}`}
+                        aria-label={`Preview ${label} From ${producer}`}
                         title={displayPath}
                         onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setPreviewArtifact(artifact); } }}
                         sx={{ minWidth: 0 }}
@@ -269,7 +270,7 @@ export function ConversationFilesResults({
                         primary={label}
                         secondary={[
                           displayPath,
-                          owner?.title ?? `Deleted Agent · ${ownerId.slice(0, 8)}`,
+                          producer,
                           new Date(artifact.createdAt).toLocaleString(),
                         ].join(" · ")}
                         primaryTypographyProps={{ fontWeight: 750, noWrap: true }}
@@ -343,7 +344,7 @@ export function ConversationFilesResults({
                   )
                 : "Preview"}
             </Typography>
-            <IconButton aria-label="Close preview" onClick={() => setPreviewArtifact(undefined)}>
+            <IconButton aria-label="Close Preview" onClick={() => setPreviewArtifact(undefined)}>
               <CloseIcon />
             </IconButton>
           </Stack>

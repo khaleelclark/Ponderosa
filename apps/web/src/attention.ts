@@ -8,10 +8,10 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
   const agent = item.agentTitle ?? resolution?.recipientTitle;
   const state = work?.state ?? resolution?.outcome;
   const task = work?.assignment ?? resolution?.assignment ?? item.contextPreview;
-  const knownTask = task && !["Coordinated assignment", "Assignment description unavailable"].includes(task)
+  const knownTask = task && !["coordinated assignment", "assignment description unavailable"].includes(task.toLowerCase())
     ? markdownPreviewText(task).slice(0, 800) : undefined;
   const genericTitle = item.title === "A coordinated assignment needs a decision";
-  const title = genericTitle ? `${agent ?? "Assigned work"} needs review` : item.title;
+  const title = genericTitle ? `${agent ?? "Assigned Work"} Needs Review` : item.title;
   const uncertainty = state === "outcome_unknown"
     ? "Ponderosa cannot confirm whether this work finished or what changes it made. Check its activity before retrying; retrying may duplicate changes."
     : work?.kind === "join"
@@ -31,7 +31,7 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
     : explanation;
   const compactScope = item.conversationId
     ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}`
-    : item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace";
+    : item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa Workspace";
   return {
     title,
     explanation,
@@ -43,34 +43,16 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
     uncertainty,
     detailWarning: state === "outcome_unknown" ? undefined : uncertainty,
     scopes: [
-      item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace",
+      item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa Workspace",
       item.conversationId ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}` : undefined,
       agent ? `Agent: ${agent}` : item.agentId ? `Agent: Name unavailable (${item.agentId.slice(-8)})` : undefined,
     ].filter((label): label is string => Boolean(label)),
     occurredAt: work?.occurredAt ?? item.createdAt,
-    reference: `${work?.kind === "join" ? "Wait" : work?.kind === "activation" ? "Message delivery" : work?.kind === "request" || resolution ? "Assignment" : "Notice"} ${
+    reference: `${work?.kind === "join" ? "Wait" : work?.kind === "activation" ? "Message Delivery" : work?.kind === "request" || resolution ? "Assignment" : "Notice"} ${
       (work?.recordId ?? resolution?.requestId ?? item.id).slice(-12)}`,
     evidenceUnavailable: !work && !resolution && item.kind !== "decision"
       && (item.category === "coordination" || item.category === "communication" || genericTitle),
   };
-}
-
-export function attentionSupportReport(item: WorkspaceNotificationDto): string {
-  const copy = attentionPresentation(item);
-  return ["Ponderosa Support Report", `Issue: ${copy.title}`, ...copy.scopes,
-    `When: ${copy.occurredAt}`, `Task: ${copy.task ?? "Description unavailable"}`,
-    `What happened: ${copy.explanation}`, copy.uncertainty ? `What remains uncertain: ${copy.uncertainty}` : undefined,
-    `Notification ID: ${item.id}`, item.projectId ? `Project ID: ${item.projectId}` : undefined,
-    item.conversationId ? `Chat ID: ${item.conversationId}` : undefined,
-    item.agentId ? `Agent ID: ${item.agentId}` : undefined,
-    item.workContext ? `Work record: ${item.workContext.kind}:${item.workContext.recordId}` : undefined,
-    item.workContext?.state ?? item.resolution?.outcome
-      ? `Recorded outcome: ${item.workContext?.state ?? item.resolution?.outcome}` : undefined,
-    item.resolution ? `Request ID: ${item.resolution.requestId}` : undefined,
-    item.workContext?.traceId ?? item.resolution?.traceId
-      ? `Trace ID: ${item.workContext?.traceId ?? item.resolution?.traceId}` : undefined,
-    copy.evidenceUnavailable ? "Additional historical evidence was not retained." : undefined,
-  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 export function isOpenAttention(item: WorkspaceNotificationDto): boolean {
@@ -122,21 +104,4 @@ export function notificationsForAvailableProjects(
   return notifications.filter(item =>
     !item.projectId || projectIds.has(item.projectId)
   );
-}
-
-export function scopedAttention(notifications: WorkspaceNotificationDto[], scope: {
-  projectId?: string;
-  conversationId?: string;
-  agentId?: string;
-} = {}): WorkspaceNotificationDto[] {
-  return notifications.filter((item) => isOpenAttention(item)
-    && (!scope.projectId || item.projectId === scope.projectId)
-    && (!scope.conversationId
-      || item.conversationId === scope.conversationId
-      || item.conversationIds?.includes(scope.conversationId))
-    && (!scope.agentId
-      || item.agentId === scope.agentId
-      || item.agentIds?.includes(scope.agentId)
-      || (item.action?.kind === "open_agent" && item.action.targetId === scope.agentId)))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
 }

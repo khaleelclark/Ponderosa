@@ -3,6 +3,7 @@ import type { EngineSnapshot } from "./engine-state.js";
 interface PonderosaEngineBridge {
   snapshot(): Promise<EngineSnapshot>;
   openPonderosa(): Promise<void>;
+  openBranches(): Promise<void>;
   restart(): Promise<void>;
   quit(): Promise<boolean>;
   copyLogs(text: string): Promise<void>;
@@ -32,6 +33,7 @@ const agents = byId<HTMLElement>("agents");
 const dataDir = byId<HTMLElement>("data-dir");
 const logOutput = byId<HTMLPreElement>("log-output");
 const openButton = byId<HTMLButtonElement>("open");
+const branchesButton = byId<HTMLButtonElement>("open-branches");
 const restartButton = byId<HTMLButtonElement>("restart");
 const quitButton = byId<HTMLButtonElement>("quit");
 const refreshButton = byId<HTMLButtonElement>("refresh");
@@ -91,12 +93,12 @@ function render(snapshot: EngineSnapshot): void {
   const selected = snapshot.logs[selectedLog];
   logOutput.textContent = selected.text ||
     (["running", "reachable", "degraded"].includes(snapshot.state) ? "No log output yet." : snapshot.detail);
-  const totalKiB = (selected.totalBytes / 1024).toFixed(1);
+  const returnedKiB = (selected.returnedBytes / 1024).toFixed(1);
   logOutput.setAttribute(
     "aria-label",
-    `${selectedLog} log${selected.truncated ? `, latest ${totalKiB} KiB shown` : ""}`,
+    `${selectedLog} log${selected.truncated ? `, latest ${returnedKiB} KiB shown` : ""}`,
   );
-  openButton.disabled = !["running", "reachable", "degraded"].includes(snapshot.state) || busy;
+  openButton.disabled = branchesButton.disabled = !["running", "reachable", "degraded"].includes(snapshot.state) || busy;
   restartButton.disabled = ["starting", "stopping"].includes(snapshot.state) || busy;
   quitButton.disabled = busy;
 }
@@ -130,6 +132,7 @@ async function act(action: () => Promise<unknown>): Promise<void> {
 }
 
 openButton.addEventListener("click", () => void act(() => window.ponderosaEngine.openPonderosa()));
+branchesButton.addEventListener("click", () => void act(() => window.ponderosaEngine.openBranches()));
 restartButton.addEventListener("click", () => void act(() => window.ponderosaEngine.restart()));
 quitButton.addEventListener("click", () => void act(() => window.ponderosaEngine.quit()));
 refreshButton.addEventListener("click", () => void refresh());

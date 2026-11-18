@@ -50,7 +50,7 @@ Feature-specific data stays beside its tests; reusable helpers and loaders are i
 
 Attachment fixtures discover paths only from actual submitted input/history, decoding JSON and preserving Windows drive letters, backslashes and spaces. Their exact-byte, recipient privacy, blind-input and canonical-reply assertions remain unchanged. The Git fixture sets `core.autocrlf=false` only in its fresh owned repository so setup and the app's Git process share a byte policy; user/system Git settings remain unchanged.
 
-The controlled diagnostic engine labeled Claude is inert and uses no provider account. Actual provider opt-ins use Codex only. Neither synthetic fixtures nor successful automated slices establish all-platform installation/UI acceptance. The maintained manual UI fixture and its explicit controls remain in workspace-navigation; they do not become default automated tests.
+The controlled diagnostic engine labeled Claude is inert and uses no provider account. Actual provider opt-ins include Codex and the single Claude private READY smoke described below. Neither synthetic fixtures nor successful automated slices establish all-platform installation/UI acceptance. The maintained manual UI fixture and its explicit controls remain in workspace-navigation; they do not become default automated tests.
 
 ## Opt-in lanes
 
@@ -58,11 +58,20 @@ After build, use an existing permitted subscription-backed Codex CLI/SDK. These 
 
 ```sh
 PONDEROSA_REGRESSION_REAL_CODEX=1 node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/agents/real-codex.test.mjs tests/agents/real-joins.test.mjs tests/files-results/real-artifact.test.mjs
+PONDEROSA_REGRESSION_REAL_CLAUDE=1 node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/agents/real-claude.test.mjs
+PONDEROSA_REGRESSION_REAL_MEMORY=1 PONDEROSA_TEST_CHROMA_BIN=/absolute/qualified/chroma PONDEROSA_TEST_MEMORY_MODEL_DIR=/absolute/qualified/models node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/memory/real-provider-recall.test.mjs
+PONDEROSA_REGRESSION_REAL_MEMORY=0 PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY=1 PONDEROSA_TEST_CHROMA_BIN=/absolute/qualified/chroma PONDEROSA_TEST_MEMORY_MODEL_DIR=/absolute/qualified/models node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/memory/real-provider-recall.test.mjs
 PONDEROSA_REGRESSION_NATIVE_BROWSER=1 PONDEROSA_BROWSER_MULTI_PAGE=1 PONDEROSA_BROWSER_FILE_UPLOAD=1 node --import ./tests/shared/workspace-resolution.mjs --test tests/browser/native-browser.test.mjs
 PONDEROSA_REGRESSION_INSTALLED_PWA=1 PONDEROSA_REGRESSION_BUNDLE=/absolute/owned/Ponderosa node --test tests/installation-release/installed-pwa.test.mjs
 ```
 
-`PONDEROSA_CODEX_BIN` may select an existing compatible native CLI. Native Chrome uses a fresh profile and owned local HTTP fixture. The PWA lane requires a clean exact-source native bundle; its fresh instance disables both providers before browser use. Never select a personal database, output directory, credential/profile directory or browser profile. The three opt-in gates account for 14 actual Codex cases, one Chrome case and one PWA case. Default skips mean those lanes were not requested by that command; separately executed lanes retain their own results.
+The Claude gate uses the existing permitted native Claude account and normal profile without login, credential/history copies, installation, or global configuration changes. `PONDEROSA_CLAUDE_BIN` may select an existing compatible CLI. It creates one fresh Chat/Agent in an owned working folder and sends one synthetic READY nonce through the managed message tool. The oracle requires canonical `user_dm`/`user_agent` scope, the private Agent projection, local-only context with no Broadcast nonce, scope-preserving operator Chat projection, one completed Run/turn, and exactly one managed message call; native `ToolSearch` selecting that exact MCP tool is counted separately. Shell, files, browser, connectors, native helpers and other Agents are prohibited by the prompt and any observed unrelated tool activity fails. Normal native configuration remains in effect; this is not a claim of hard tool exclusion. The fixture verifies its own loopback listener and explicit `agentBaseUrl` before dispatch, observes owned runtime shutdown, removes successful state after drain, and retains failed state. Direct Messages intentionally appear as tagged rows in the operator Chat UI while remaining local-only context; the test checks explicit scope metadata rather than presentation prefixes. This narrow transport smoke does not establish complete privacy, broader Claude feature parity, native UI acceptance or all-platform qualification.
+
+The Core real-memory gate adds one bounded test using both existing native accounts, real local ONNX embedding/reranking, and a fresh owned loopback Chroma database. It seeds only two synthetic facts through trusted host/core operations, grants that fresh Chat global reads, and allows at most one native Codex turn and one native Claude turn. Each must issue one source-omitted combined search with the same query, return both blind facts with their exact physical IDs/scopes, and deliver the codes through one managed DM. Optional native discovery is limited to those two tools. The qualified model directory is a shared read-only dependency, not disposable state; only the fixture database, policy, working folder, Chroma HOME, process caches and temporary files are fresh. Native HOME/account selection stays unchanged. No provider saves, profile/credential copies, production memory, dependency builds or retries are part of this test. Failures retain owned evidence; success removes it only after server, native runtimes and Chroma drain. This qualifies the current host bridge and pinned private.6 core within that slice; it does not establish standalone private.10 compatibility or complete privacy/retrieval quality.
+
+Select one product gate per bounded qualification run; the Branches command explicitly disables the Core gate. The separate Branches real-memory gate reuses the same fixture for one fresh persistent Branch-owned Chat and two native Agents. It creates the owner through `/api/branches` and `/api/branches/:id/chats`, uses the `/api/branches/engine/*` operator namespace for Agents and the Chat-specific global-read grant, and checks that Core cannot read those owned resources. Native capability callbacks still use the verified own loopback endpoint; canonical Chat ownership selects the Branches authority. It has the same two-turn ceiling and blind combined-search assertions. The Core gate does not enable this case or establish Branches acceptance. This slice excludes workflow execution, temporary execution-owned copies and their separate consent/global-memory restrictions.
+
+`PONDEROSA_CODEX_BIN` may select an existing compatible native CLI. Native Chrome uses a fresh profile and owned local HTTP fixture. The PWA lane requires a clean exact-source native bundle; its fresh instance disables both providers before browser use. Never select a personal database, output directory, credential/profile directory or browser profile. The Codex, Chrome and PWA opt-in gates account for 14 actual Codex cases, one Chrome case and one PWA case; the Claude gate adds one narrowly scoped smoke. Default skips mean those lanes were not requested by that command; separately executed lanes retain their own results.
 
 Windows actual provider/browser/PWA opt-in gates remain separate. The Unix broker/client test retains its existing Windows gate because that transport is Unix-specific; Windows browsers use CDP pipes. Sixty original controlled provider cases and two merged controlled prompt-fence route cases now execute on native Windows rather than skip.
 
@@ -70,7 +79,7 @@ Windows actual provider/browser/PWA opt-in gates remain separate. The Unix broke
 
 `MIGRATION.md` retains the original before/after map and historical byte-identical relocation evidence. Later native-fixture plumbing preserves original assertions, identities and timeouts while intentionally removing the qualified controlled-fixture Windows gates. The original check25 assertion remains; its TODO is removed by the merged product parser repair. No unmerged suites, private historical fixtures or removed tests are imported.
 
-Exact revisions, commands, per-host results, retained failures and observed cleanup are recorded in the task handoff and `APPROVED_REGRESSIONS.md`. Manual checks still include native GUI/installation journeys, accessibility/audio, local browser connection/extension pairing and other limits in the approved feature manifest. Wiki and Automations remain excluded. Claude remains deferred by the human. Missing native-beta CI voice/extension references remain reported; no replacement gate or new release requirement is invented.
+Exact revisions, commands, per-host results, retained failures and observed cleanup are recorded in the task handoff and `APPROVED_REGRESSIONS.md`. Manual checks still include native GUI/installation journeys, accessibility/audio, local browser connection/extension pairing and other limits in the approved feature manifest. Wiki and Automations remain excluded. Broader Claude qualification remains deferred; the limited READY smoke above is separate. Missing native-beta CI voice/extension references remain reported; no replacement gate or new release requirement is invented.
 
 At authorized cleanup-health fix `de3f406d7459d826922df1218a21ff4691362573`, full default `pnpm verify` passes on Linux/macOS (133 pass,16 opt-in skips) and Windows (132 pass,17 skips:16 opt-ins plus the Unix transport case), with zero failures/TODOs. All36 test bodies remain byte-identical to the prior combined head. The actual Codex/browser/PWA opt-ins passed with all149 cases enabled on Linux/macOS at `fef3d74e97a8169bd0a829c5abbcefcf3140a9a8`; Claude remains deferred. See APPROVED_REGRESSIONS.md and task HANDOFF.json for exact revisions and preserved initial failures.
 
@@ -99,3 +108,37 @@ The task's `private-windows-optins-20261013/QUALIFICATION.json` and `HANDOFF.jso
 ## Beta scope correction: local browser deferred
 
 The human clarified that local browser connection and its extension are deferred until after beta. At `a4d16a9d518c465a16f3337772ca075dc44d8abd`, new pairing is deliberately refused with HTTP409 `browser_profile_isolation_required` in `apps/server/src/routes/local-browsers.ts`; the beta UI has no reachable local setup entrypoint. The earlier disabled menu placeholder/help suggestion was removed by merged `b29d8a44df194908ada0163346f638eb9252541d`. Dormant setup/transport/extension implementation and maintained tests remain. Their pending live qualification is post-beta work, not a current beta blocker. The internal browser stays in beta scope. This corrects the outdated remaining-work classification without changing the accepted110 test behaviors or removing assertions. Roster search is a known nonblocking beta bug; failed check43 stays tracked.
+
+### Clipboard and first UI fix batch
+
+After building, the installed-Chromium regression uses real clipboard writes and
+Control+V on Core/Branches shared and direct Chat and Inbox, on desktop and Android
+identity/touch emulation. It asserts LF/CRLF content, blank lines, Unicode and the
+last-line sentinel in the draft and canonical dispatch; paste and Shift+Enter never
+submit. Desktop Enter and mobile Return follow the current documented policy.
+It also checks rename Enter/IME suppression, sidebar keyboard resizing, and the
+mobile disabled Executions tab's semantic parent. The fixture uses a controlled
+provider and temporary data; it never loads a provider profile or live service.
+
+```sh
+CHROME_PATH=/usr/bin/google-chrome node --import ./tests/shared/workspace-resolution.mjs tests/chats/composer-clipboard-qualification.mjs
+```
+
+Optional `AXE_CORE_PATH` points to an already installed axe-core browser script;
+`QUALIFICATION_REPORT` writes its full results. Selected shared surfaces run in
+both themes; critical findings fail, and other severities remain in the report.
+The check does not qualify physical iPhone, native IME, the future Assistant,
+provider inference or a production release.
+
+The second UI batch adds a native Chrome zoom/keyboard qualification (Linux host
+with existing Xvfb and xdotool). It uses 100%, 200% and 400% browser zoom, asserts
+actual DPR and theme, walks compose/send/rename and instructions by keyboard,
+and saves complete axe results and screenshots. Set `AXE_CORE_PATH` to an existing
+axe-core script; no package is installed by the runner.
+
+```sh
+AXE_CORE_PATH=/path/to/axe.min.js QUALIFICATION_DIRECTORY=/tmp/ui-a11y node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/accessibility-qualification.mjs
+```
+
+This finite native-browser matrix does not substitute for a screen reader,
+Safari qualification, every dialog state, or independent visual comparison.

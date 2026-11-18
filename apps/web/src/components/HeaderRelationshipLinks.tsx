@@ -65,7 +65,7 @@ export function AgentHeaderRelationships({
         <Link
           component="button"
           variant="caption"
-          aria-label={`Show ${additionalChats.length} more ${additionalChats.length === 1 ? "Chat" : "Chats"}`}
+          aria-label={`Show ${additionalChats.length} More ${additionalChats.length === 1 ? "Chat" : "Chats"}`}
           aria-haspopup="menu"
           aria-expanded={menuOpen || undefined}
           aria-controls={menuOpen ? "agent-header-chat-menu" : undefined}

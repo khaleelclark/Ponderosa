@@ -1,6 +1,9 @@
 import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useIsMutating, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../queryKeys";
+import type {MutationNotifier} from "../components/MutationNotifications";
+import {productApiPath} from "../api/productScope";
+import {createClientId} from "../clientId";
 import {
   runtimeControlState,
   runtimeSelectionAfterChange,
@@ -10,19 +13,28 @@ import {
 
 // Share a queue across every surface editing the same next-Run owner. The key
 // also detaches an observer on navigation, freezing queued mutation options.
-export function runtimeMutationOptions(owner: string) {
-  return { mutationKey: queryKeys.runtimeSelection(owner), scope: { id: `runtime:${owner}` } };
+export function runtimeFeedbackKey(owner:string,namespace=productApiPath("/api/conversations")):string {
+  return JSON.stringify([namespace,owner,"runtime-selection"]);
+}
+export function runtimeMutationKey(owner:string,namespace=productApiPath("/api/conversations")) {
+  return [...queryKeys.runtimeSelection(owner),namespace] as const;
+}
+export function runtimeMutationOptions(owner: string, notify?:MutationNotifier) {
+  const key=runtimeFeedbackKey(owner);
+  return { mutationKey: runtimeMutationKey(owner), scope: { id: `runtime:${key}` },
+    ...(notify ? {onError:(error:unknown)=>notify({key,incident:createClientId("runtime-feedback-"),severity:"error",message:"Runtime Selection Not Saved",description:"The last saved selection is retained. Review the original Chat or Agent before choosing again.",details:error instanceof Error?error.message:String(error)})} : {}),
+  };
 }
 
 export function useRuntimeSaving(owner: string) {
-  return useIsMutating({ mutationKey: queryKeys.runtimeSelection(owner), exact: true }) > 0;
+  return useIsMutating({ mutationKey: runtimeMutationKey(owner), exact: true }) > 0;
 }
 
 // A newly opened surface must inherit the queued choice, not an older server
 // snapshot. Read the existing mutation cache rather than adding another store.
 export function pendingRuntimeSelection(queryClient: QueryClient, owner: string) {
   const queued = queryClient.getMutationCache().findAll({
-    mutationKey: queryKeys.runtimeSelection(owner), exact: true, status: "pending",
+    mutationKey: runtimeMutationKey(owner), exact: true, status: "pending",
   });
   const selection: { engine?: string; model?: string | null; effort?: string | null; speed?: string | null } = {};
   for (const item of queued) {

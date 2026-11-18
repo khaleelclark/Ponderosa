@@ -1,3 +1,4 @@
+import {productApiPath} from "../../api/productScope.js";
 import type {
   BrowserOperatorInputRequest,
   BrowserSessionDto,
@@ -6,6 +7,8 @@ import type {
   BrowserFrameMetadata,
   BrowserViewportSize,
 } from "@ponderosa/core";
+import { browserOwnerFromId, BrowserOperatorObservationClient } from "@ponderosa/core";
+import { requestJson } from "../../api/real";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 
@@ -27,6 +30,9 @@ export interface BrowserControlTarget {
 /** The browser UI depends on this narrow contract, never on URL construction. */
 export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   queryKey: readonly unknown[];
+  observations?: BrowserOperatorObservationClient;
+  recordingProjectId?: string;
+  sharedRecording?: {projectId:string; conversationId?:string};
   get(): Promise<Session>;
   open?(url?: string): Promise<Session>;
   navigate?(url: string): Promise<Session>;
@@ -44,9 +50,12 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   resizeViewport?(pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<unknown>;
 }
 
-export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
+export function projectBrowserAdapter(projectId: string, destinationProjectId?: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
+  const owner = browserOwnerFromId(projectId);
   return {
     queryKey: queryKeys.projectBrowser.project(projectId),
+    ...(destinationProjectId ? {recordingProjectId:destinationProjectId,sharedRecording:{projectId:destinationProjectId,...(owner?.kind === "chat" ? {conversationId:owner.conversationId} : {})}} : {}),
+    observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/browser`),
     get: () => api.getProjectBrowser(projectId),
     open: (url) => api.openProjectBrowser(projectId, url),
     navigate: (url) => api.navigateProjectBrowser(projectId, url),
@@ -67,7 +76,7 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
       expectedControlEpoch,
     } as BrowserOperatorInputRequest),
     getFrame: (pageId, signal) => api.getProjectBrowserFrame(projectId, pageId, signal),
-    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
+    frameStreamUrl: pageId => productApiPath(`/api/projects/${encodeURIComponent(projectId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`),
     newPage: epoch => api.newBrowserPage(projectId, epoch) as Promise<ProjectBrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch),
   };
@@ -80,6 +89,8 @@ export function agentBrowserAdapter(
 ): BrowserEndpointAdapter<BrowserSessionDto> {
   return {
     queryKey: queryKeys.agentBrowsers.session(projectId, agentId, runId),
+    observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser`),
+    recordingProjectId: projectId,
     get: () => api.getBrowserSession(projectId, agentId, runId),
     open: () => api.openBrowserSession(projectId, agentId, runId),
     navigate: url => api.navigateAgentBrowser(projectId, agentId, runId, url),
@@ -102,8 +113,13 @@ export function agentBrowserAdapter(
       { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
     ),
     getFrame: (pageId, signal) => api.getBrowserFrame(projectId, agentId, runId, pageId, signal),
-    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
+    frameStreamUrl: pageId => productApiPath(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`),
     newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };
+}
+
+function operatorObservations(base: string): BrowserOperatorObservationClient {
+  return new BrowserOperatorObservationClient(<T,>(suffix: string, input: object) =>
+    requestJson<T>(`${base}/${suffix}`, {method: "POST", cache: "no-store", body: JSON.stringify(input)}));
 }

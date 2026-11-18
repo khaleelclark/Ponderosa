@@ -3,6 +3,7 @@ import type {
   AgentDetailDto,
   AgentDto,
   AgentRunDto,
+  AssetDto,
   ArtifactDto,
   ChangedFileDto,
   HistoryPageDto,
@@ -10,12 +11,11 @@ import type {
   RunOutputDto,
   WorkItemDto,
 } from "@ponderosa/core";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull } from "drizzle-orm";
 import type { CommunicationEvent } from "@ponderosa/core";
-import { agentMentionHandleBase } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { messages } from "./schema.js";
-import { userDmAgentIds } from "./store-communication.js";
+import { directMessageAgentBindings } from "./store-communication.js";
 import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
@@ -52,6 +52,15 @@ export class AgentAuditReadModel {
     private readonly getArtifactPage: Page<ArtifactDto>,
   ) {}
 
+  /** Attachment maintenance needs no message text, author or mention hydration. */
+  getMessageAttachmentIds(agentId: string): Set<string> {
+    return new Set(this.db.select({ attachments: messages.attachmentsJson })
+      .from(messages)
+      .where(and(eq(messages.agentId, agentId), isNotNull(messages.attachmentsJson)))
+      .all()
+      .flatMap((row) => (JSON.parse(row.attachments || "null") as AssetDto[] | null)?.map((asset) => asset.id) ?? []));
+  }
+
   getMessages(agentId: string): MessageDto[] {
     const projectId = this.projectIdOf(agentId);
     const conversationId = this.getAgent(agentId)?.conversationId ?? "";
@@ -69,14 +78,7 @@ export class AgentAuditReadModel {
           ? communication.sender.agentId
           : undefined;
         const directMessageAgents = communication
-          ? userDmAgentIds(communication).map((directAgentId) => {
-              const directAgent = this.getAgent(directAgentId);
-              return {
-                id: directAgentId,
-                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
-                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
-              };
-            })
+          ? directMessageAgentBindings(communication, id => this.getAgent(id))
           : [];
         const agentMentions = communication
           ? communicationMentionBindings(row.text, communication, id => this.getAgent(id), conversationId)

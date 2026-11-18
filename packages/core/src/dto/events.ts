@@ -3,7 +3,7 @@ import type { AgentEvent } from "../events.js";
 import type { AgentDto, AgentState } from "./agents.js";
 import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
-import type { ConversationDecisionEventDto, ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
+import type { ConversationDecisionEventDto, ConversationDto, ConversationTitleChangeDto, PortableChatTitleChangeDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
 import type {
   WorkspacePreferencesDto,
@@ -11,10 +11,12 @@ import type {
 } from "./workspace.js";
 
 export type WorkspaceEvent =
+  | { type: "branch_execution_budget"; budgetEventId: number; branchId: string; kind: string; evidence: unknown }
+  | { type: "branch_checkpoint"; checkpointId: number; branchId: string; chatId: string; executionId: string; kind: string; evidence: unknown }
   | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
   | { type: "resource_used"; kind: WorkspaceResourceKind; resourceId: string }
   | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
-  | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
+  | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message"; titleChange?: ConversationTitleChangeDto; importedTitleHistory?: {importId:string;items:PortableChatTitleChangeDto[]} }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; /** Present only for Decision mutations. */ decisionId?: string; projectId?: string; conversationId?: string; action: "created" | "updated" | "read" | "acknowledged" | "resolved" | "cleared" }
@@ -58,7 +60,7 @@ export interface ContextRolloverTriggeredEvent {
 }
 
 export type AgentActivityEvent = Extract<AgentEvent, {
-  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
+  type: "native_plan" | "native_diff" | "native_review" | "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
     "browser_session" | "browser_action" | "browser_console" | "browser_screenshot" |
     "context_rollover_seed_overflow" | "context_rollover_completed";
 }> | ContextRolloverTriggeredEvent;

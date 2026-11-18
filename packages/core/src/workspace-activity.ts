@@ -2,7 +2,7 @@ import type { AgentHealthDto, WorkspaceActivityCountDto } from "./dto.js";
 
 export type AgentDisplayStatus = "working" | "waiting" | "needs_decision" | "recovering" | "error" | "idle";
 export const AGENT_DISPLAY_STATUS_LABELS: Record<AgentDisplayStatus, string> = {
-  working: "Working", waiting: "Waiting", needs_decision: "Needs decision",
+  working: "Working", waiting: "Waiting", needs_decision: "Needs Decision",
   recovering: "Recovering", error: "Error", idle: "Idle",
 };
 

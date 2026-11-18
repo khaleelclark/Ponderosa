@@ -8,8 +8,9 @@ develop a creative brief, or build and review software. Conversations, agent
 roles, assignments and saved results stay available when you return.
 
 You work in a web app. **Ponderosa Engine** runs the service on your computer
-and manages startup, status and logs. AI work runs through subscription-authenticated
-provider tools on that computer; Ponderosa does not accept provider API keys.
+and manages startup, status and logs. AI work runs through harness-authenticated
+provider tools on that computer; configure credentials in those native tools or
+the host environment, never in Ponderosa.
 Saved history helps work continue, but does not mean an agent recalls every detail.
 
 ## Public beta
@@ -19,13 +20,13 @@ Saved history helps work continue, but does not mean an agent recalls every deta
 Linux, macOS and Windows are the beta targets.
 
 Codex and Claude Code are both supported, using your existing provider
-subscriptions. Choose either provider, or configure both. Available models,
+subscription or API billing mode. Choose either provider, or configure both. Available models,
 reasoning settings and tools depend on the provider and account.
 
 ## Prerequisites
 
 - A computer you administer and a modern web browser.
-- Codex CLI or Claude Code installed and signed in with your subscription under
+- Codex CLI or Claude Code installed and configured for subscription or API billing under
   the same OS account that runs Engine. See [provider setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run).
 - For internal browsing, Chrome or Chromium installed on the Engine host.
   [Browser setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#browsers) explains the platform limits.
@@ -115,3 +116,40 @@ or fix deadline is promised.
 ## Credits
 
 Ponderosa was created by [Khaleel Clark](https://github.com/khaleelclark).
+
+### Native harness billing mode
+
+Codex and Claude Code can use a subscription or configured API credentials through
+those same CLIs. Ponderosa does not collect, store, export, or log credential
+values. Configure login using the native Codex CLI; for Claude API billing set
+`ANTHROPIC_API_KEY` in the daemon's host environment. Host environment changes
+require a normal daemon restart; Ponderosa never edits the environment or logs
+in on your behalf. No direct provider HTTP integration is used.
+
+Ponderosa automatically uses the authentication already configured in the native
+harness. There is no separate billing-mode selection in Provider Settings.
+Recheck sign-in after changing native login. Agent identity, canonical history,
+model, permissions and settings are retained. At the next turn, an observed mode
+change retires incompatible provider caches through the existing session-contract
+boundary; uncertainty, reconstruction and cleanup guards still apply.
+Removing the former selector alone preserves an existing session when its complete
+contract and observed native authentication still match. Saved selector preferences
+are ignored. Older clients that submit `providerBillingModes` receive HTTP 400 and
+must reload/update; unrelated preferences are retained. No credentials are migrated.
+
+Status distinguishes CLI login / environment presence from a successful provider
+request. Claude key presence is explicitly unverified. Recheck/model tests can
+incur the selected account's normal charges and run only on explicit request.
+No real-account/API parity qualification is implied by controlled fixture tests.
+
+Retained native commands and managed recovery require the accepted contract's
+nonsecret observed authentication mode to match a current, unexpired native-auth
+observation. Missing, unknown, stale or mismatched evidence holds the operation
+before reopening or mutation; recheck native sign-in to renew an expired
+observation. Old accepted packets are never rewritten, and their former selector
+or a bare hash is not evidence of observed authentication. Historical packets
+without this evidence cannot authorize retained commands or recovery; this does
+not replace their session, replay work or authorize Context Refresh. Ordinary
+turn compatibility and pause recovery keep their existing separate rules.
+Fresh read-only commands without a retained session keep their existing path.
+This observation is not an atomic lock against external credential changes.

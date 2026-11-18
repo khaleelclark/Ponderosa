@@ -1,3 +1,4 @@
+import {productWorkspacePath} from "./api/productScope.js";
 import type { ConversationDto } from "@ponderosa/core";
 import type { Route } from "./routing.js";
 
@@ -70,10 +71,15 @@ const ROUTE_REGISTRY = {
     scope: "global",
     initialSidebarSection: "home",
   },
-  allChat: {
+  inbox: {
     toPath: () => "/messages",
     scope: "global",
     initialSidebarSection: "home",
+  },
+  assistant: {
+    toPath: route => `/assistant${route.returnTo ? `?returnTo=${encodeURIComponent(route.returnTo)}` : ""}`,
+    scope: "global",
+    initialSidebarSection: "chats",
   },
   manageChats: {
     toPath: () => "/manage/chats",
@@ -232,3 +238,6 @@ export function isProjectRoute(route: Route): route is ProjectRoute {
 export function assertNeverRoute(route: never): never {
   throw new Error(`Unhandled route: ${JSON.stringify(route)}`);
 }
+
+/** Native links keep modified clicks and new tabs inside the owning product. */
+export function routeLinkPath(route:Route):string {return productWorkspacePath(routeToPath(route));}

@@ -1,13 +1,14 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
+import { HomeLayout, HomeFirstItem, HomeSection as Section, HomeSummaryCard as SummaryCard, HomeItemCard as ItemCard, homeItemsGridSx, homeSummaryGridSx } from "./HomeView.parts";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import {
   Alert,
   Box,
   Button,
-  ButtonBase,
   Paper,
   Stack,
   Typography,
@@ -19,7 +20,6 @@ import type {
   WorkspaceNotificationDto,
   WorkspaceNotificationPageDto,
 } from "@ponderosa/core";
-import type { ReactNode } from "react";
 import { agentStatusPresentation } from "../agents";
 import { isOpenAttention, notificationOpenActionCount } from "../attention";
 import { engineAvailabilityPresentation } from "../conversationEngine";
@@ -28,171 +28,13 @@ import {
   useWorkspaceDirectory,
 } from "../hooks/useWorkspaceDirectory";
 import type { Route } from "../routing";
-import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import {
-  SemanticStatus,
   semanticAgentStatus,
-  type SemanticStatusKind,
 } from "./SemanticStatus";
 
 function humanizeStatus(status: string): string {
   return status.replaceAll("_", " ").replace(/\b\w/g, character => character.toUpperCase());
-}
-
-function Section({
-  title,
-  description,
-  action,
-  children,
-}: {
-  title: string;
-  description: string;
-  action?: JSX.Element;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <Box component="section">
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: { xs: 0.75, sm: 1.25 }, minWidth: 0 }}>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6" component="h2" fontWeight={800} noWrap>{title}</Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ "@container (max-width: 680px)": { display: "none" } }}>{description}</Typography>
-        </Box>
-        {action}
-      </Stack>
-      {children}
-    </Box>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  compactLabel,
-  compactValue,
-  onClick,
-}: {
-  label: string;
-  value: string | number;
-  compactLabel?: string;
-  compactValue?: string | number;
-  onClick?(): void;
-}): JSX.Element {
-  const content = (
-    <Stack spacing={0} sx={{ p: { xs: 1, sm: 1.5 }, minWidth: 0, textAlign: "left" }}>
-      <Typography variant="h5" component="div" fontWeight={800} noWrap sx={{ fontSize: { xs: 19, sm: undefined } }}>
-        {compactValue === undefined ? value : (
-          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
-        )}
-      </Typography>
-      <Typography variant="body2" color="text.secondary" noWrap sx={{ fontSize: { xs: 12, sm: undefined } }}>
-        {compactLabel === undefined ? label : (
-          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactLabel}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{label}</Box></>
-        )}
-      </Typography>
-    </Stack>
-  );
-  return (
-    <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
-      {onClick ? (
-        <ButtonBase
-          onClick={onClick}
-          sx={{
-            display: "block",
-            width: "100%",
-            transition: theme => theme.transitions.create("background-color", {
-              duration: theme.transitions.duration.shortest,
-            }),
-            "&:hover": { bgcolor: "action.hover" },
-            "&.Mui-focusVisible": { bgcolor: "action.selected" },
-          }}
-        >
-          {content}
-        </ButtonBase>
-      ) : content}
-    </Paper>
-  );
-}
-
-function ItemCard({
-  icon,
-  title,
-  detail,
-  status,
-  statusLabel,
-  statusAccessibleLabel,
-  statusDetail,
-  multilineDetail = false,
-  onClick,
-}: {
-  icon: JSX.Element;
-  title: string;
-  detail: string;
-  status?: SemanticStatusKind;
-  statusLabel?: string;
-  statusAccessibleLabel?: string;
-  statusDetail?: string;
-  multilineDetail?: boolean;
-  onClick(): void;
-}): JSX.Element {
-  return (
-    <Paper
-      variant="outlined"
-      sx={{ minWidth: 0, height: "100%", overflow: "hidden" }}
-    >
-      <ButtonBase
-        onClick={onClick}
-        sx={{
-          width: "100%",
-          minHeight: multilineDetail ? 78 : undefined,
-          height: "100%",
-          p: 1.35,
-          gap: 1.25,
-          justifyContent: "flex-start",
-          textAlign: "left",
-          overflow: "hidden",
-          transition: theme => theme.transitions.create("background-color", {
-            duration: theme.transitions.duration.shortest,
-          }),
-          "&:hover": { bgcolor: "action.hover" },
-          "&.Mui-focusVisible": { bgcolor: "action.selected" },
-        }}
-      >
-        <Box sx={{ width: 36, height: 36, borderRadius: 1.25, bgcolor: "action.selected", color: "text.secondary", display: "grid", placeItems: "center", flexShrink: 0 }}>
-          {icon}
-        </Box>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography fontWeight={750} noWrap>{title}</Typography>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            noWrap={!multilineDetail}
-            sx={multilineDetail ? {
-              display: "-webkit-box",
-              minHeight: "2.7em",
-              overflow: "hidden",
-              overflowWrap: "anywhere",
-              WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 2,
-              lineHeight: 1.35,
-            } : { display: { xs: "block", md: "inline" }, maxWidth: "100%" }}
-          >
-            {detail}
-          </Typography>
-        </Box>
-        {status ? (
-          <Box sx={{ flexShrink: 0 }}>
-            <SemanticStatus
-              status={status}
-              label={statusLabel}
-              accessibleLabel={statusAccessibleLabel}
-              detail={statusDetail}
-            />
-          </Box>
-        ) : null}
-      </ButtonBase>
-    </Paper>
-  );
 }
 
 export function HomeView({
@@ -248,58 +90,35 @@ export function HomeView({
   const homeRefreshError = activeAgentQuery.requestState.isRefreshError || outcomeQuery.requestState.isRefreshError;
   const homeRefreshing = activeAgentQuery.requestState.isRefreshing || outcomeQuery.requestState.isRefreshing;
 
+  const homeReads=[workspaceRead("workspace","Active Agents",activeAgentQuery),workspaceRead("workspace","Recent Outcomes",outcomeQuery)];
   return (
-    <Box className="ponderosa-scroll" aria-busy={homeLoading} sx={{ minHeight: 0, overflowY: "auto" }}>
-      <Box
-        component="span"
-        role="status"
-        sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}
-      >
-        {homeLoading ? "Loading Home summary" : homeInitialError ? "Home summary could not be fully loaded" :
-          homeRefreshError ? "Home refresh failed. Last loaded results are still available." :
-          homeRefreshing ? "Refreshing Home summary" : "Home summary loaded"}
-      </Box>
-      <CompactWorkspaceHeader
-        icon={<HomeOutlinedIcon />}
-        title="Home"
-        context="Across your chats"
-      />
-      <Box sx={{ p: { xs: 1.5, sm: 3, lg: 4 }, containerType: "inline-size" }}>
-        <Stack spacing={{ xs: 2, sm: 3 }} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
-          <Box sx={{
-            display: "grid",
-            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-            gap: { xs: 1, sm: 1.25 },
-            "@container (min-width: 760px)": {
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-            },
-          }}>
+    <HomeLayout context="Across your chats" loading={homeLoading} status={homeLoading ? "Loading Home summary" : homeInitialError ? "Home summary could not be fully loaded" :
+      homeRefreshError ? "Home refresh failed. Last loaded results are still available." :
+      homeRefreshing ? "Refreshing Home summary" : "Home summary loaded"}>
+      {homeInitialError&&<WorkspaceQueryError initial read={homeReads.find(read=>read.error)!}/>}
+      <WorkspaceQueryErrors reportOnly reads={homeReads}/>
+          <Box sx={homeSummaryGridSx}>
             <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionLoading ? notificationsLoadFailed ? "Unavailable" : "Loading" : attentionCount} onClick={onOpenInbox} />
-            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} onClick={() => onNavigate({ kind: "settings", section: "providers" })} />
+            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine Ready" ? "Ready" : provider.label} onClick={() => onNavigate({ kind: "settings", section: "providers" })} />
           </Box>
           {enginesLoaded && provider.severity === "warning" ? <Alert severity="warning" action={<Button color="inherit" onClick={() => onNavigate({ kind: "settings", section: "providers" })}>Provider Settings</Button>}>
             Provider access needs attention. {provider.detail} This is separate from work waiting for your response.
           </Alert> : null}
 
           {projectsLoaded && projects.length === 0 ? (
-            <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-              <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
-              <Typography variant="h6" component="h2" fontWeight={800}>Start Your First Chat</Typography>
-              <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-                Chats bring your messages, agents, and files together.
-              </Typography>
+            <HomeFirstItem icon={<FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />} title="Start Your First Chat" description="Chats bring your messages, agents, and files together.">
               <Button variant="contained" onClick={onCreateProject}>New Chat</Button>
-            </Paper>
+            </HomeFirstItem>
           ) : null}
 
           <Section
             title="Needs Attention"
             description="Decisions, blockers, and failures that still need you."
-            action={!attentionLoading && attentionCount ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
+            action={!attentionLoading && attentionCount ? <Button onClick={onOpenInbox}>View All</Button> : undefined}
           >
             {attention.length ? (
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+              <Box sx={homeItemsGridSx}>
                 {attention.slice(0, 6).map(item => {
                   const route = notificationNavigationRoute(item);
                   return (
@@ -342,13 +161,9 @@ export function HomeView({
             title="Working Now"
             description="Active and waiting Agent work across the organization."
           >
-            {activeAgentQuery.requestState.isRefreshError ? (
-              <Alert severity="warning" action={<Button aria-label="Retry refresh of active Agents" aria-busy={activeAgentQuery.requestState.isRefreshing} onClick={() => void activeAgentQuery.requestState.retry()}>Retry</Button>}>
-                Could not refresh active Agents. Last loaded results are still available.
-              </Alert>
-            ) : null}
+            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Active Agents",activeAgentQuery)}/>
             {working.length ? (
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+              <Box sx={homeItemsGridSx}>
                 {working.slice(0, 8).map(item => {
                   const presentation = agentStatusPresentation(item.health, {
                     connectionStatus: workspaceConnection.status,
@@ -371,9 +186,7 @@ export function HomeView({
                 })}
               </Box>
             ) : activeAgentQuery.requestState.isInitialError ? (
-              <Alert severity="error" action={<Button onClick={() => void activeAgentQuery.requestState.retry()}>Retry</Button>}>
-                Could not load active Agents.
-              </Alert>
+              <Typography color="text.secondary">Unavailable</Typography>
             ) : activeAgentQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading active Agents…</Typography></Paper>
             ) : (
@@ -382,13 +195,9 @@ export function HomeView({
           </Section>
 
           <Section title="Recent Outcomes" description="Recently finished assigned work across chats.">
-            {outcomeQuery.requestState.isRefreshError ? (
-              <Alert severity="warning" action={<Button aria-label="Retry refresh of recent outcomes" aria-busy={outcomeQuery.requestState.isRefreshing} onClick={() => void outcomeQuery.requestState.retry()}>Retry</Button>}>
-                Could not refresh recent outcomes. Last loaded results are still available.
-              </Alert>
-            ) : null}
+            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Recent Outcomes",outcomeQuery)}/>
             {recentOutcomes.length ? (
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+              <Box sx={homeItemsGridSx}>
                 {recentOutcomes.map(item => (
                   <ItemCard
                     key={item.agent.id}
@@ -402,17 +211,13 @@ export function HomeView({
                 ))}
               </Box>
             ) : outcomeQuery.requestState.isInitialError ? (
-              <Alert severity="error" action={<Button onClick={() => void outcomeQuery.requestState.retry()}>Retry</Button>}>
-                Could not load recent outcomes.
-              </Alert>
+              <Typography color="text.secondary">Unavailable</Typography>
             ) : outcomeQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading recent outcomes…</Typography></Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">{outcomeQuery.requestState.isRefreshError ? "No recent outcomes in the last loaded results." : "Completed Agent work will appear here."}</Typography></Paper>
             )}
           </Section>
-        </Stack>
-      </Box>
-    </Box>
+    </HomeLayout>
   );
 }

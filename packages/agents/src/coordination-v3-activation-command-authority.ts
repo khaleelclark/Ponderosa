@@ -1,6 +1,9 @@
+import { settingsTransitionDeliveryHolds, retrySettingsTransitionHold } from "./coordination-v3-settings-transition-hold.js";
+import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
+import {heldHumanRollover,canRetryHeldHumanRollover} from "./coordination-v3-rollover-held-task.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
@@ -54,12 +57,58 @@ export class CoordinationV3ActivationCommandAuthority {
     ) => void,
   ) {}
 
+  /** Read an exact still-open peer Request, never an inferred or successor task. */
+  settingsTransitionRequestHold(input:{projectId:string;requestId:string}):{activationId:string;retryable:boolean}|undefined {
+    const rows=this.sqlite.prepare(`SELECT a.id,a.agent_id,a.scope_key,a.state AS activation_state,r.conversation_id,
+        r.state AS request_state,r.superseded_by_request_id
+      FROM coordination_requests r
+      JOIN activation_sources s ON s.source_kind='request' AND s.source_id=r.id
+      JOIN agent_activations a ON a.id=s.activation_id AND a.project_id=r.project_id AND a.agent_id=r.recipient_agent_id
+      WHERE r.id=? AND r.project_id=? AND a.kind='coordination_request'
+        AND json_extract(a.payload_json,'$.requestId')=r.id`)
+      .all(input.requestId,input.projectId) as Array<{id:string;agent_id:string;scope_key:string;activation_state:string;
+        conversation_id:string|null;request_state:string;superseded_by_request_id:string|null}>;
+    const holds=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,rows.map(row=>row.id),"request");
+    const held=rows.filter(row=>holds.has(row.id));
+    if(!held.length)return undefined;
+    const row=held[0]!,hold=holds.get(row.id)!;
+    const authorized=row.scope_key===this.runtimeScopeAuthority.coordinationScopeKey(row.conversation_id,row.agent_id) &&
+      this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(input.projectId,row.agent_id,row.scope_key);
+    const otherHold=this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
+      AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')`).get(row.id);
+    return {activationId:row.id,retryable:rows.length===1 && held.length===1 && authorized &&
+      row.request_state==='open' && !row.superseded_by_request_id && ['pending','retry_pending'].includes(row.activation_state) && hold.retryable && !otherHold};
+  }
+
+  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;now?:string}):
+    {accepted:boolean;replayed:boolean;activationId?:string;targetAgentId?:string} {
+    if(!input.idempotencyKey.trim())throw Error('Request retry idempotency key is required');
+    const now=input.now??new Date().toISOString();
+    return this.sqlite.transaction(()=>{
+      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId});
+      const replay=this.idempotentReplay<{accepted:boolean;activationId?:string;targetAgentId?:string}>(
+        input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash);
+      if(replay)return {...replay,replayed:true};
+      const match=this.settingsTransitionRequestHold(input);
+      if(!match?.retryable)return {accepted:false,replayed:false};
+      const row=this.sqlite.prepare('SELECT agent_id FROM agent_activations WHERE id=? AND project_id=?').get(match.activationId,input.projectId) as {agent_id:string}|undefined;
+      if(!row)return {accepted:false,replayed:false};
+      const hold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[match.activationId],"request").get(match.activationId);
+      if(!hold?.retryable)return {accepted:false,replayed:false};
+      retrySettingsTransitionHold(this.sqlite,match.activationId,input.projectId,row.agent_id,hold,now,true);
+      const result={accepted:true,activationId:match.activationId,targetAgentId:row.agent_id};
+      this.recordIdempotency(input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash,result,now);
+      return {...result,replayed:false};
+    })();
+  }
+
   /** Create a new delivery attempt without duplicating the canonical user
    * message. Only the latest terminal attempt can advance the attempt chain. */
   retryMessageDelivery(input: {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
     now?: string;
   }): RetryMessageDeliveryResponse {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
@@ -77,7 +126,8 @@ export class CoordinationV3ActivationCommandAuthority {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_found",
       };
 
-      const hash = payloadHash({ projectId: input.projectId, activationId: original.id });
+      const hash = payloadHash({ projectId: input.projectId, activationId: original.id,
+        ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) });
       const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
         input.projectId, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
       );
@@ -135,6 +185,62 @@ export class CoordinationV3ActivationCommandAuthority {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
       };
 
+      // A stale receipt cannot authorize another Run after task accounting was held.
+      // Replay above only returns the already committed receipt and creates no work.
+      const held = heldHumanRollover(this.sqlite,input.projectId,original.id);
+      if (heldTaskDecisionRepairs(this.sqlite,input.projectId,[{activationId:original.id}]).has(original.id)
+        || (held && heldTaskDecisionRepairRuns(this.sqlite,input.projectId,[held.candidate_run_id]).has(held.candidate_run_id))) return {
+        accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+      };
+      const settingsHold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[original.id]).get(original.id);
+      if (settingsHold) {
+        if (!settingsHold.retryable || held || input.expectedRolloverAttemptId) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
+        retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
+        const result: Omit<RetryMessageDeliveryResponse,"replayed">={
+          accepted:true,state:'queued',activationId:original.id,targetAgentId:original.agent_id,
+        };
+        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,result,now);
+        return {...result,replayed:false};
+      }
+      if (held) {
+        if (!canRetryHeldHumanRollover(held) || input.expectedRolloverAttemptId !== held.continuation_activation_id) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
+        const prior = this.sqlite.prepare(`SELECT kind,priority,dispatch_policy,prompt_class,payload_json
+          FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND scope_key=?`)
+          .get(held.continuation_activation_id,original.agent_id,original.project_id,original.scope_key) as {
+            kind:string;priority:number;dispatch_policy:ActivationDispatchPolicy;prompt_class:ActivationPromptClass;payload_json:string
+          } | undefined;
+        if (!prior || prior.kind !== 'context_rollover_continuation') throw Error('Held rollover continuation is unavailable');
+        const activationId=this.createActivation({
+          projectId:original.project_id,agentId:original.agent_id,scopeKey:original.scope_key,
+          kind:prior.kind,priority:prior.priority,dispatchPolicy:prior.dispatch_policy,promptClass:prior.prompt_class,
+          dedupeKey:`rollover-human-retry:${held.id}:${input.idempotencyKey}`,
+          payload:{...JSON.parse(prior.payload_json),humanRetry:{instruction:
+            'This continuation was requested by the human after an unstarted replacement. Inspect the original task and any uncertain external effects before acting. Do not repeat completed or uncertain actions.'}},
+          sourceKind:'context_rollover',sourceId:held.id,now,
+        });
+        // Preserve the exact original communication/request lineage for delivery
+        // projection and authority; only the new continuation ID is allocated.
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+          SELECT ?,source_kind,source_id FROM activation_sources WHERE activation_id=?`)
+          .run(activationId,held.continuation_activation_id);
+        const rebound=this.sqlite.prepare(`UPDATE context_rollovers SET state='continuation_ready',
+          continuation_activation_id=?,last_error=NULL,terminal_at=NULL,updated_at=?
+          WHERE id=? AND state='failed' AND continuation_activation_id=? AND replacement_run_id IS NULL`)
+          .run(activationId,now,held.id,held.continuation_activation_id);
+        if(rebound.changes!==1)throw Error('Held rollover changed before retry');
+        const result: Omit<RetryMessageDeliveryResponse,"replayed">={
+          accepted:true,state:'queued',activationId,targetAgentId:original.agent_id,retryMayDuplicate:true,
+        };
+        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,result,now);
+        return {...result,replayed:false};
+      }
+      if (input.expectedRolloverAttemptId) return {
+        accepted:false,replayed:false,state:"not_retryable",rejectionReason:"stale_attempt",
+      };
       const payload = JSON.parse(original.payload_json) as Record<string, unknown>;
       const lineage = this.sqlite.prepare(`
         SELECT root_activation_id, attempt_number
@@ -155,6 +261,11 @@ export class CoordinationV3ActivationCommandAuthority {
       let retryable = original.state === "failed";
       if (original.state === "outcome_unknown") {
         retryMayDuplicate = true;
+        if (this.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+          json_each(injection.activation_ids_json) member
+          WHERE member.value=? AND injection.kind='steer' AND injection.state='outcome_unknown' LIMIT 1`).get(original.id)) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
         const recovery = this.sqlite.prepare(`
           SELECT recovery.state, recovery_activation.state AS activation_state,
             injection.state AS injection_state
@@ -243,6 +354,7 @@ export class CoordinationV3ActivationCommandAuthority {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
   }): RetryMessageDeliveryResponse | undefined {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
     return this.sqlite.transaction(() => {
@@ -251,7 +363,8 @@ export class CoordinationV3ActivationCommandAuthority {
         "user:local-operator",
         "retry_message_delivery",
         input.idempotencyKey,
-        payloadHash({ projectId: input.projectId, activationId: input.activationId }),
+        payloadHash({ projectId: input.projectId, activationId: input.activationId,
+          ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) }),
       );
       return replay ? { ...replay, replayed: true } : undefined;
     })();
@@ -279,6 +392,10 @@ export class CoordinationV3ActivationCommandAuthority {
       const changed = this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE id = ? AND project_id = ? AND state IN ('failed', 'outcome_unknown')
+          AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections injection,
+            json_each(injection.activation_ids_json) member
+            WHERE member.value=agent_activations.id AND injection.kind='steer'
+              AND injection.state='outcome_unknown' AND agent_activations.prompt_class='human')
       `).run(now, input.activationId, input.projectId).changes;
       const result = changed === 1
         ? { cancelled: true, state: "cancelled" as const, ...(activation ? { targetAgentId: activation.agent_id } : {}) }

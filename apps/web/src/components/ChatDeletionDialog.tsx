@@ -1,4 +1,4 @@
-import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
 import type { ConversationDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
@@ -22,12 +22,23 @@ export function ChatDeletionDialog({
   const agentsQuery = useQuery({
     queryKey: ["chat-deletion-agents", conversation?.id],
     queryFn: () => api.listConversationMembers(conversation!.id),
-    enabled: open && Boolean(conversation),
+    enabled: open && Boolean(conversation) && !conversation?.branchId,
     staleTime: 0,
     retry: false,
   });
   const agents = [...(agentsQuery.data ?? [])].sort((a, b) =>
     a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+
+  if (conversation?.branchId) return <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
+    <DialogTitle>Workflow-Owned Chat</DialogTitle>
+    <DialogContent>
+      <Typography>Workflow Chat: cannot be deleted separately</Typography><Typography>Deleting the workflow also removes its other Chats and Agents</Typography>
+    </DialogContent>
+    <DialogActions>
+      <Button onClick={onClose}>Cancel</Button>
+      <Button href={`/branches?branch=${encodeURIComponent(conversation.branchId)}&tab=settings`}>Open Workflow Settings</Button>
+    </DialogActions>
+  </Dialog>;
 
   return <ResourceDeletionDialog
     open={open}
@@ -42,7 +53,7 @@ export function ChatDeletionDialog({
   >
     <Alert severity="warning">
       This permanently deletes the Chat and its history{agents.length ? ", plus the Agents listed below" : ""}.
-      {agents.length ? " Their runs, work logs, private attachments, and in-app artifact views will no longer be available." : ""}
+      {agents.length ? " Their runs, work logs, private attachments, and in-app artifact views will no longer be available." : ""}{" "}
       Files saved in the Project working folder and Project-level artifacts are not deleted.
       Pending work is cancelled. Stop active Agents before deleting.
     </Alert>
@@ -55,7 +66,7 @@ export function ChatDeletionDialog({
     </Alert> : null}
     {agentsQuery.data ? <>
       <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 0.5 }}>
-        Agents that will be deleted ({agents.length})
+        Agents That Will Be Deleted ({agents.length})
       </Typography>
       {agents.length ? <Box component="ul" sx={{ maxHeight: 180, overflowY: "auto", mt: 0, mb: 0, pl: 2.5 }}>
         {agents.map(agent => <Typography component="li" variant="body2" key={agent.id}>

@@ -4,6 +4,7 @@ import { spawnContainedCli } from "./contained-spawn.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
+import { StderrTail } from "./stderr-tail.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
 type RpcId = number;
@@ -77,7 +78,7 @@ export class JsonRpcProcess {
   private readonly pending = new Map<RpcId, { resolve(value: unknown): void; reject(error: Error): void }>();
   private readonly queue = new AsyncQueue<JsonRpcNotification>();
   private nextId = 1;
-  private stderrTail = "";
+  private readonly stderrTail = new StderrTail();
   private closed = false;
   private failure?: Error;
   private closePromise?: Promise<void>;
@@ -108,7 +109,7 @@ export class JsonRpcProcess {
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
-      this.stderrTail = (this.stderrTail + chunk).slice(-8192);
+      this.stderrTail.append(chunk);
     });
     const lines = new LineBuffer();
     let outputBytes = 0;
@@ -148,7 +149,7 @@ export class JsonRpcProcess {
       // Host-initiated rollover, replacement, cancellation, and shutdown are
       // expected closes. Only an independently exiting root is a crash that
       // fences the active Run through onRuntimeRootExit.
-      if (!this.closed) reportRootExit({ exitCode: code, signal, stderr: this.stderrTail });
+      if (!this.closed) reportRootExit({ exitCode: code, signal, stderr: this.stderrTail.text() });
       // A descendant outside the owned process group can inherit stdout and
       // otherwise keep the provider event stream open forever. Allow already
       // buffered output to drain briefly, then close the transport locally.
@@ -158,7 +159,7 @@ export class JsonRpcProcess {
     this.child.once("exit", rootExited);
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
-      : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}`)));
+      : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.text().trim() ? `: ${this.stderrTail.text().trim()}` : ""}`)));
     const abort = (): void => { void this.close().catch(() => undefined); };
     opts.signal.addEventListener("abort", abort);
     if (opts.signal.aborted) abort();

@@ -17,7 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectSort } from "@ponderosa/core";
-import { Children, useState, type ReactNode } from "react";
+import { Children, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
@@ -111,7 +111,11 @@ function SharedSidebarPanel({
   createLabel,
   onCreate,
   drawer,
+  presentation,
+  scrollReady = true,
 }: {
+  presentation?: {scrollTop:number;starsCollapsed:boolean};
+  scrollReady?: boolean;
   icon: ReactNode;
   title: string;
   header?: ReactNode;
@@ -144,10 +148,12 @@ function SharedSidebarPanel({
   onCreate?(): void;
   drawer: boolean;
 }): JSX.Element {
+  const scrollHost=useRef<HTMLDivElement|null>(null),scrollPositions=useRef<Record<string,number>>({});
+  useLayoutEffect(()=>{if(scrollHost.current&&scrollReady)scrollHost.current.scrollTop=presentation?.scrollTop??scrollPositions.current[title]??0;},[title,presentation,scrollReady,allRows]);
   const hasStarredRows = Children.count(starredRows) > 0;
   const [collapsedStars, setCollapsedStars] = useState<Record<string, boolean>>({});
   const [sortAnchor, setSortAnchor] = useState<HTMLElement>();
-  const starsCollapsed = Boolean(collapsedStars[title]);
+  const starsCollapsed = presentation?.starsCollapsed??Boolean(collapsedStars[title]);
   const sortLabel = sort === "last_used"
     ? "Recent"
     : sort === "alphabetical"
@@ -169,7 +175,7 @@ function SharedSidebarPanel({
           "& .MuiListItemButton-root": { borderRadius: 1.25 },
         } : {}),
         "@media (max-width: 599.95px)": {
-          "& .MuiListItemText-secondary": { fontSize: 12 },
+          "& .MuiListItemText-secondary": { fontSize: "0.75rem" },
         },
       }}
     >
@@ -199,7 +205,7 @@ function SharedSidebarPanel({
           value={searchValue}
           onChange={event => onSearchValueChange(event.target.value)}
           placeholder={searchLabel}
-          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } }, ...(drawer ? { "& .MuiInputBase-root": { height: 44 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
+          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: "1rem" } }, ...(drawer ? { "& .MuiInputBase-root": { minHeight: 44 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
           inputProps={{ "aria-label": searchLabel }}
           InputProps={{
             startAdornment: (
@@ -211,6 +217,8 @@ function SharedSidebarPanel({
         />
       </Box>}
       <Box
+        ref={scrollHost}
+        onScroll={event=>{if(!scrollReady||!event.currentTarget.getClientRects().length)return;scrollPositions.current[title]=event.currentTarget.scrollTop;if(presentation)presentation.scrollTop=event.currentTarget.scrollTop;}}
         aria-busy={busy}
         className="ponderosa-scroll"
         sx={{
@@ -226,10 +234,10 @@ function SharedSidebarPanel({
         {topContent}
         {hasStarredRows ? (
           <Box component="section" sx={{ mb: drawer ? 1 : 2 }}>
-            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => setCollapsedStars(current => ({ ...current, [title]: !current[title] }))}
+            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => {if(presentation)presentation.starsCollapsed=!starsCollapsed;setCollapsedStars(current=>({...current,[title]:!starsCollapsed}));}}
               sx={{ width: "100%", justifyContent: "flex-start", minHeight: drawer ? 36 : 28, px: .5, gap: .5, color: "text.secondary", borderRadius: 1 }}>
               {starsCollapsed ? <KeyboardArrowRightIcon sx={{ fontSize: 16 }} /> : <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
-              <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Starred</Typography>
+              <Typography sx={{ fontSize: "0.6875rem", fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Starred</Typography>
             </ButtonBase>
             {!starsCollapsed ? <List disablePadding>{starredRows}</List> : null}
           </Box>
@@ -254,7 +262,7 @@ function SharedSidebarPanel({
                   "&:hover": { bgcolor: "action.hover", color: "text.primary" },
                 }}
               >
-                <Typography component="span" noWrap sx={{ fontSize: 12, fontWeight: 600 }}>
+                <Typography component="span" noWrap sx={{ fontSize: "0.75rem", fontWeight: 600 }}>
                   {sortLabel}
                 </Typography>
                 <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />
@@ -307,7 +315,7 @@ function SharedSidebarPanel({
         sx={{
           p: drawer ? 0 : 1.75,
           pb: drawer ? "env(safe-area-inset-bottom, 0px)" : 1.75,
-          ...(drawer ? { "& .MuiButton-root": { minHeight: 44, py: 0.5, px: 2, fontSize: 13, borderRadius: 0 }, "& .MuiButton-startIcon > *": { fontSize: 18 } } : {}),
+          ...(drawer ? { "& .MuiButton-root": { minHeight: 44, py: 0.5, px: 2, fontSize: "0.8125rem", borderRadius: 0 }, "& .MuiButton-startIcon > *": { fontSize: 18 } } : {}),
           borderTop: 2,
           borderColor: "divider",
           bgcolor: sidebarSurface,
@@ -330,7 +338,7 @@ function SharedSidebarPanel({
             sx={{
               justifyContent: "flex-start",
               color: "text.secondary",
-              "@media (max-width: 599.95px)": { fontSize: 14, fontWeight: 600 },
+              "@media (max-width: 599.95px)": { fontSize: "0.875rem", fontWeight: 600 },
             }}
           >
             {newLabel}
@@ -349,7 +357,7 @@ function SharedSidebarPanel({
             sx={{
               justifyContent: "flex-start",
               color: "text.secondary",
-              "@media (max-width: 599.95px)": { fontSize: 14, fontWeight: 600 },
+              "@media (max-width: 599.95px)": { fontSize: "0.875rem", fontWeight: 600 },
             }}
           >
             {viewAllLabel}

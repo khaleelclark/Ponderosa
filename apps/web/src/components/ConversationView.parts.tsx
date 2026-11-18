@@ -1,3 +1,7 @@
+import {attachmentsOutsideVisualizations} from "./chat/messageMarkdown";
+import { OutgoingMessageRow } from "./chat/OutgoingMessage";
+import {useTextReplyProjection,ReplyReadFeedback} from './chat/useTextReplyProjection';
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -6,6 +10,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import LanguageIcon from "@mui/icons-material/Language";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import {
@@ -28,6 +33,8 @@ import type {
 import {
   memo,
   useCallback,
+  useMemo,
+  type ReactNode,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -46,7 +53,8 @@ import {
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
-import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { ChatOverflowMenu, type ChatOverflowAction } from "./ChatOverflowMenu";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
@@ -77,6 +85,8 @@ function ConversationMessageComponent({
   projectId,
   projectRoot,
   activeRunId,
+  provisional=false,
+  replyFeedback,
   operatorProfile,
 }: {
   message: ConversationMessageDto;
@@ -95,22 +105,37 @@ function ConversationMessageComponent({
   projectId: string;
   projectRoot?: string;
   activeRunId?: string;
+  provisional?:boolean;
+  replyFeedback?:JSX.Element;
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const reportVisibility = useCallback((visible: boolean) =>
     onVisible?.(message.communicationEventId, visible), [onVisible, message.communicationEventId]);
+  // Receipt/status updates must not invalidate unchanged Markdown inputs.
+  const authoredMention = useCallback((handle: string) =>
+    authoredAgentMentionForHandle(handle, message.agentMentions), [message.agentMentions]);
+  const fileScope = useMemo(() => fileOwnerForMessage(message),
+    [message.authorAgentId, message.conversationId]);
+  const previewScope = useMemo(() => message.authorAgentId && message.executionId && activeRunId === message.executionId
+    ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId }
+    : undefined, [projectId, message.authorAgentId, message.executionId, message.conversationId, activeRunId]);
+  const collaborationRecipients = useMemo(() => message.communicationIntent === "collaboration"
+    ? message.collaborationRecipients ?? [] : undefined, [message.communicationIntent, message.collaborationRecipients]);
   const fromManager = !message.authorAgentId;
   const routedText = message.text;
   const copyableText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
   );
-  const visibleText = communicationVisibleText({
+  const visibleText = useMemo(() => communicationVisibleText({
     text: copyableText,
     intent: message.communicationIntent,
     fromAgent: Boolean(message.authorAgentId),
     agentMentions: message.agentMentions,
-  });
+  }), [copyableText, message.communicationIntent, message.authorAgentId, message.agentMentions]);
+  const readAloudText = useMemo(() => message.authorAgentId
+    ? resolveMessageMentionText(visibleText, message.agentMentions) : "",
+    [visibleText, message.authorAgentId, message.agentMentions]);
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
@@ -137,34 +162,22 @@ function ConversationMessageComponent({
           ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
           ) : undefined,
-        onVisible: onVisible ? reportVisibility : undefined,
+        onVisible: !provisional&&onVisible ? reportVisibility : undefined,
         body: (
           <ChatMessageBody
+                  artifactSource={message}
             text={visibleText}
-            collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
+            collaborationRecipients={collaborationRecipients}
             agentMentions={message.agentMentions}
             compactMarkdown
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
-            agentMentionForHandle={handle =>
-              authoredAgentMentionForHandle(handle, message.agentMentions)
-            }
+            agentMentionForHandle={authoredMention}
             operatorHandle={operatorProfile?.handle}
             onOpenAgent={onOpenAgent}
             projectId={projectId}
-            fileScope={fileOwnerForMessage(message)}
-            previewScope={
-              message.authorAgentId &&
-              message.executionId &&
-              activeRunId === message.executionId
-                ? {
-                    projectId,
-                    agentId: message.authorAgentId,
-                    runId: message.executionId,
-                    conversationId: message.conversationId,
-                  }
-                : undefined
-            }
+            fileScope={fileScope}
+            previewScope={previewScope}
           />
         ),
         afterBody: (
@@ -178,7 +191,7 @@ function ConversationMessageComponent({
               />
             ) : null}
             {message.document ? (
-              <CommunicationDocumentCard document={message.document} projectId={projectId} fileScope={fileOwnerForMessage(message)} />
+              <CommunicationDocumentCard document={message.document} projectId={projectId} fileScope={fileScope} />
             ) : null}
             {message.fileActivity?.length ? (
               <ResponseFileActivity
@@ -202,8 +215,8 @@ function ConversationMessageComponent({
             ) : null}
           </>
         ),
-        attachments: message.attachments,
-        belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
+        attachments: attachmentsOutsideVisualizations({...message,text:visibleText,projectId,fromAgent:message.role==="assistant"||Boolean(message.authorAgentId)}),
+        belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{replyFeedback}</>,
         status:
           (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
@@ -214,7 +227,7 @@ function ConversationMessageComponent({
               compactSuccess={message.communicationIntent === "user_dm"}
             />
           ) : undefined,
-        actions: (
+        actions: !provisional&& (
           <>
             <CopyMessageButton text={resolvedCopyText} />
             {conversation === "collaboration" ? <MessageRequestAction
@@ -227,10 +240,7 @@ function ConversationMessageComponent({
             /> : null}
             {message.authorAgentId ? (
               <ReadAloudControls
-                text={resolveMessageMentionText(
-                  visibleText,
-                  message.agentMentions,
-                )}
+                text={readAloudText}
               />
             ) : null}
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
@@ -259,6 +269,7 @@ function ConversationMessageComponent({
 const ConversationMessage = memo(ConversationMessageComponent);
 
 function ConversationHeader({
+  titleControl,
   onChatSettings,
   activeView,
   agentWorkOpen,
@@ -275,12 +286,13 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
+  titleControl?: ReactNode;
   activeView: "main" | "collaboration" | "files" | "agents";
   onChatSettings(): void;
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
-  transcriptMarkdown: string;
+  transcriptMarkdown: string | (() => string);
   transcriptTitle: string;
   onOpenProject(): void;
   onOpenProjectBrowser(): void;
@@ -291,65 +303,82 @@ function ConversationHeader({
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
+  const chatActions = useMemo<ChatOverflowAction[]>(()=>[
+    { label: "Chat Settings", onSelect: onChatSettings },
+    {
+      label: "Work",
+      icon: <AccountTreeOutlinedIcon fontSize="small" />,
+      onSelect: () => setAgentWorkOpen(true),
+    },
+    {
+      label: "Rename",
+      icon: <DriveFileRenameOutlineIcon fontSize="small" />,
+      onSelect: () => {
+        setRenameValue(conversation.title);
+        setRenameOpen(true);
+      },
+    },
+    {
+      label: "Add Agents…",
+      icon: <AddIcon fontSize="small" />,
+      onSelect: () => setAddAgentsOpen(true),
+    },
+    {
+      label: "Delete",
+      icon: <DeleteOutlineIcon fontSize="small" />,
+      destructive: true,
+      onSelect: () => setDeleteOpen(true),
+    },
+  ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,setRenameOpen,setAddAgentsOpen,setDeleteOpen]);
+  const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`;
+  const browserAction = useMemo(() => <Tooltip title="Open Browser">
+    <IconButton aria-label="Open Browser" onClick={onOpenProjectBrowser}><LanguageIcon /></IconButton>
+  </Tooltip>,[onOpenProjectBrowser]);
+  const renderCollapsedMenu = useCallback((openUsage:(anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Stack direction="row" spacing={0.5} sx={{alignItems:"center",flexWrap:"nowrap"}}>
+    {fullTrigger}
+    {fullTrigger && !auditOnly ? browserAction : null}
+    {!auditOnly || !fullTrigger ? <ChatOverflowMenu
+      label={menuLabel} transcriptMarkdown={transcriptMarkdown}
+      transcriptFileName={transcriptFileName(transcriptTitle)} showExports={!auditOnly}
+      actions={[
+        ...(auditOnly ? [] : chatActions),
+        ...(!fullTrigger ? [
+          {label:"Provider Usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
+          ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
+        ] : []),
+      ]}
+    /> : null}
+  </Stack>,[menuLabel,transcriptMarkdown,transcriptTitle,auditOnly,chatActions,onOpenProjectBrowser,browserAction]);
   return (
     <TabbedWorkspaceFrame
+      collapsedIconTabs
+      collapsedActions={<PrimaryHeaderActionsOutlet renderTrigger={renderCollapsedMenu}/>}
       compactMobile
       icon={<ChatBubbleOutlineIcon />}
       title={conversation.title}
+      titleControl={titleControl}
       context={
         <ProjectRelationshipLink
           projectLabel={projectLabel}
           onOpenProject={onOpenProject}
         />
       }
-      actions={
+      actions={auditOnly?null:
         <>
-        <Tooltip title="Open Browser">
-            <IconButton
-            aria-label="Open Browser"
-              onClick={onOpenProjectBrowser}
-            >
-              <LanguageIcon />
-            </IconButton>
-          </Tooltip>
+          {browserAction}
           <ChatOverflowMenu
-            label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
+            label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            actions={[
-              { label: "Chat settings", onSelect: onChatSettings },
-              {
-                label: "Work",
-                icon: <AccountTreeOutlinedIcon fontSize="small" />,
-                onSelect: () => setAgentWorkOpen(true),
-              },
-              {
-                label: "Rename",
-                icon: <DriveFileRenameOutlineIcon fontSize="small" />,
-                onSelect: () => {
-                  setRenameValue(conversation.title);
-                  setRenameOpen(true);
-                },
-              },
-              {
-                label: "Add Agents…",
-                icon: <AddIcon fontSize="small" />,
-                onSelect: () => setAddAgentsOpen(true),
-              },
-              {
-                label: "Delete",
-                icon: <DeleteOutlineIcon fontSize="small" />,
-                destructive: true,
-                onSelect: () => setDeleteOpen(true),
-              },
-            ]}
+            actions={chatActions}
           />
         </>
       }
       tabs={{
         idPrefix: "chat-workspace",
         activeLabel: agentWorkOpen ? "Work" : undefined,
-        label: "Chat views",
+        label: "Chat Views",
         value: agentWorkOpen ? false : activeView,
         onChange: next => {
           setAgentWorkOpen(false);
@@ -376,7 +405,7 @@ function ConversationHeader({
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
           },
-        ],
+        ].filter(item=>!auditOnly||item.value!=="agents") as Array<{value:ConversationDetailView;label:string;icon:JSX.Element}>,
       }}
     />
   );
@@ -384,6 +413,7 @@ function ConversationHeader({
 
 function MainConversationTimeline({
   mainTimeline,
+  firstMountedIndex = 0,
   operatorProfile,
   projectId,
   projectRoot,
@@ -398,6 +428,7 @@ function MainConversationTimeline({
   notifications,
 }: {
   mainTimeline: MainTimelineEntry[];
+  firstMountedIndex?: number;
   operatorProfile?: OperatorProfileDto;
   projectId: string;
   projectRoot?: string;
@@ -418,14 +449,17 @@ function MainConversationTimeline({
   ): void;
   notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
+  const replySources=mainTimeline.flatMap(item=>item.kind==='message'?[item.message]:[]);
+  const replyRows=useTextReplyProjection(replySources,projectId,JSON.stringify([projectId,'main',replySources[0]?.conversationId]));
+  const visibleIds=new Set(mainTimeline.slice(firstMountedIndex).map(entry=>entry.id));
+  const timeline=[...mainTimeline.flatMap(entry=>entry.kind!=='message'&&visibleIds.has(entry.id)&&!(entry.kind==='decision'&&entry.event.decision.status==='pending')?[entry]:[]),...replyRows.filter(row=>row.provisional||visibleIds.has(`message:${row.message.id}`)).map(row=>({kind:'message' as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback}))].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
-      {mainTimeline.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No messages yet. Send a message or mention an Agent to start this Chat.
-        </Typography>
-      ) : null}
-      {mainTimeline.map(entry => {
+      <OutgoingMessageRow empty={<Typography variant="body2" color="text.secondary">No messages yet · send a message or mention an Agent</Typography>}
+        entries={timeline.map(entry => ({
+        id: entry.id, createdAt: entry.at,
+        ...(entry.kind === "message" ? {communicationEventId:entry.message.communicationEventId,creationIdempotencyKey:entry.message.creationIdempotencyKey,projectId} : {}),
+        render: createdAt => {
         if (entry.kind === "decision") {
           const notification = notifications.find((item) =>
             item.decision?.id === entry.event.decision.id && (item.status ?? "open") === "open");
@@ -438,11 +472,13 @@ function MainConversationTimeline({
           return <DecisionResponseMessage key={entry.id} event={entry.event}
             operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         }
-        const message = entry.message;
+        const message = entry.provisional||entry.message.replyStream||entry.message.createdAt===createdAt?entry.message:{...entry.message,createdAt};
         return <ConversationMessage
           key={entry.id}
           message={message}
           conversation="main"
+          provisional={entry.provisional}
+          replyFeedback={entry.feedback?.length?<ReplyReadFeedback entry={entry.feedback} agentTitle={agentTitle}/>:undefined}
           projectId={projectId}
           projectRoot={projectRoot}
           activeRunId={
@@ -460,7 +496,7 @@ function MainConversationTimeline({
           onMentionAgent={mentionAgent}
           onVisible={markCommunicationVisible}
         />;
-      })}
+      }}))}/>
     </Stack>
   );
 }
@@ -494,6 +530,7 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
+  const replyRows=useTextReplyProjection(collaborationMessages,projectId,JSON.stringify([projectId,'collaboration',collaborationMessages[0]?.conversationId]));
   const loadedCommunicationIds = new Set(
     collaborationMessages.flatMap(message =>
       message.communicationEventId ? [message.communicationEventId] : [],
@@ -518,11 +555,8 @@ function CollaborationTimeline({
     ),
   );
   const timeline = [
-    ...collaborationMessages.map(message => ({
-      kind: "message" as const,
-      id: `message:${message.id}`,
-      at: message.createdAt,
-      message,
+    ...replyRows.map(row => ({
+      kind: "message" as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback,
     })),
     ...visibleOperations
       .map(event => ({
@@ -684,7 +718,9 @@ function CollaborationTimeline({
           <Box key={entry.id}>
             <ConversationMessage
               message={message}
-              conversation="collaboration"
+              provisional={entry.provisional}
+            replyFeedback={entry.feedback?.length?<ReplyReadFeedback entry={entry.feedback} agentTitle={agentTitle}/>:undefined}
+            conversation="collaboration"
               projectId={projectId}
               projectRoot={projectRoot}
               activeRunId={

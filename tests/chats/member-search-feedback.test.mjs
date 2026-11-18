@@ -17,6 +17,7 @@ registerHooks({ load(url, context, next) {
 const { ConversationView } = await import('../../apps/web/src/components/ConversationView.tsx');
 const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
 const { AgentsTab } = await import('../../apps/web/src/components/AgentsTab.tsx');
+const { RecoverableLazyRoute } = await import('../../apps/web/src/components/RecoverableLazyRoute.tsx');
 const { queryKeys } = await import('../../apps/web/src/queryKeys.ts');
 const { api } = await import('../../apps/web/src/api/index.ts');
 const chat = { id: 'chat', projectId: 'project', title: 'Search fixture', defaultEngine: 'codex' };
@@ -27,6 +28,13 @@ const data = items => ({ pages: [page(items)], pageParams: [undefined] });
 const findRoster = node => {
   if (!React.isValidElement(node)) return;
   if (node.type === AgentsTab) return node;
+  if (typeof node.type === 'function' && node.type.name === 'ConversationAgentsPanel') {
+    // Follow the actual pure boundary wrapper, then keep this SSR regression
+    // on the real owner/query/roster projection. Browser checks cover loading.
+    const boundary = node.type(node.props);
+    assert.equal(boundary.type, RecoverableLazyRoute);
+    return React.createElement(AgentsTab, boundary.props.componentProps);
+  }
   for (const child of React.Children.toArray(node.props.children)) {
     const found = findRoster(child); if (found) return found;
   }
@@ -80,7 +88,7 @@ test('Chat distinguishes pending search, successful no match, and unfiltered ros
   assert.doesNotMatch(pending, /No Agents Yet|No Agents match|Unfiltered reader/);
   client.setQueryData(queryKeys.conversations.members(chat.id, 'needle'), data([]));
   const empty = render('needle').html;
-  assert.match(empty, /No Agents match these filters/);
+  assert.match(empty, /No Agents Match These Filters/);
   assert.doesNotMatch(empty, /No Agents Yet|Could not load Agents|Unfiltered reader/);
   client.setQueryData(queryKeys.conversations.members(chat.id, ''), data([agent]));
   const unfiltered = render().html;
@@ -137,9 +145,9 @@ const require = createRequire(new URL('../../apps/web/package.json', import.meta
 const ts = require('typescript');
 const ReactQuery = await import('@tanstack/react-query');
 const { normalizeResetPages, uniqueBy } = await import('../../apps/web/src/collections.ts');
-const { routeToPath } = await import('../../apps/web/src/routeRegistry.ts');
+const { routeToPath, routeLinkPath } = await import('../../apps/web/src/routeRegistry.ts');
 const { phaseQueryMatchesProject } = await import('../../apps/web/src/workspaceDirectoryScope.ts');
-function searchSetup(t) {
+function searchSetup(t, activeIndex = -1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, refetchOnMount: false, gcTime: Infinity } } });
   t.after(() => client.clear());
   const query = 'needle';
@@ -151,9 +159,9 @@ function searchSetup(t) {
     history: { limit: 25, hasMore: Boolean(cursor), ...(cursor ? { cursor } : {}) } });
   client.setQueryData(queryKeys.globalSearch.results(query, 25, 'agent'), { results: [], recentChats: [] });
   client.setQueryData(key, { pages: [page(items.slice(0, 25), 'owned-next')], pageParams: [undefined] });
-  const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial) },
+  const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial === -1 ? activeIndex : initial) },
     '@tanstack/react-query': ReactQuery, '../api': { api }, '../queryKeys': { queryKeys }, '../collections': { normalizeResetPages, uniqueBy },
-    '../routeRegistry': { routeToPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
+    '../routeRegistry': { routeToPath, routeLinkPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
     '../hooks/queries': { useNotifications: () => ({}) }, '../hooks/useWorkspaceFileSearch': { useWorkspaceFileSearch: () => ({ results: [] }) },
     './chat/ChatMessages': { linkPresentation: () => undefined } };
   const context = vm.createContext({ exports: {}, console, setTimeout, clearTimeout, require(name) {
@@ -176,7 +184,7 @@ function searchSetup(t) {
     for (const child of React.Children.toArray(node.props.children)) yield* walk(child);
   }
   const loadMore = async () => {
-    const button = [...walk(render().tree)].find(node => node.props.children === 'Load more Agents');
+    const button = [...walk(render().tree)].find(node => node.props.children === 'Load More Agents');
     assert.ok(button, 'A cursor must offer continuation even without authored message matches');
     button.props.onClick();
     await client.getQueryCache().find({ queryKey: key, exact: true }).promise;
@@ -195,7 +203,7 @@ test('F10: Agent titles continue past 25 with owning Chat, handle and stable rou
   const next = f.render();
   assert.equal((next.html.match(/role="option"/g) ?? []).length, 26);
   assert.match(next.html, /Owning Chat 25/); assert.match(next.html, /#handle-25/);
-  assert.doesNotMatch(next.html, /Load more Agents/);
+  assert.doesNotMatch(next.html, /Load More Agents/);
   const last = [...f.walk(next.tree)].find(node => node.props.result?.chat.id === 'agent-25');
   last.props.onSelect();
   assert.equal(f.selected[0].chat.id, 'agent-25'); assert.equal(f.selected[0].projectId, 'project');
@@ -215,4 +223,33 @@ test('F10: failed continuation retains matches and can retry; reset pages drop s
   const recovered = f.render().html;
   assert.match(recovered, /Owning Chat 25/); assert.doesNotMatch(recovered, /Owning Chat 24|Some search results could not load/);
   assert.equal((recovered.match(/role="option"/g) ?? []).length, 1);
+});
+
+// IME Enter commits composition, not the highlighted search destination.
+test('global search leaves composing Enter and arrow keys to the input method', t => {
+  const f = searchSetup(t, 0), input = [...f.walk(f.render().tree)].find(node => node.props.inputProps?.role === 'combobox');
+  assert.ok(input);
+  for (const key of ['Enter', 'ArrowDown', 'ArrowUp']) {
+    for (const nativeEvent of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
+      let prevented = false;
+      input.props.onKeyDown({ key, nativeEvent, preventDefault() { prevented = true; } });
+      assert.equal(prevented, false);
+      assert.equal(f.selected.length, 0);
+    }
+  }
+  let prevented = false;
+  input.props.onKeyDown({ key: 'Enter', nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(f.selected.length, 1);
+  assert.equal(f.selected[0].chat.id, 'agent-0');
+});
+
+test('global search announces the loaded suggestion count without claiming a total', t => {
+  const f = searchSetup(t), {tree, html} = f.render();
+  const status = [...f.walk(tree)].find(node => node.props.role === 'status');
+  assert.ok(status);
+  assert.equal(status.props['aria-atomic'], 'true');
+  assert.equal(status.props.children, '25 suggestions available.');
+  // role=status supplies implicit polite announcements; verify the serialized atomic region too.
+  assert.match(html, /<[^>]*role="status"[^>]*aria-atomic="true"[^>]*>25 suggestions available\.<\//);
 });

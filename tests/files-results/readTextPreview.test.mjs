@@ -19,6 +19,10 @@ test('text downloads preview as data, with bounded UTF-8 and safe URL handling',
   assert.deepEqual(await readTextPreview('/api/asset/download',signal),{content:text,truncated:false});
   await assert.rejects(readTextPreview('https://other.test/api/asset',signal),/Invalid/);
   await assert.rejects(readTextPreview('javascript:alert(1)',signal),/Invalid/);
+  globalThis.fetch=async(url)=>{assert.equal(url,'blob:https://preview.test/local-file');return new Response(text);};
+  assert.deepEqual(await readTextPreview('blob:https://preview.test/local-file',signal),{content:text,truncated:false});
+  await assert.rejects(readTextPreview('blob:https://other.test/local-file',signal),/Invalid/);
+  await assert.rejects(readTextPreview('data:text/plain,hello',signal),/Invalid/);
   globalThis.fetch=async()=>new Response(null,{status:404});
   await assert.rejects(readTextPreview('/api/missing',signal),/404/);
   const limit=2*1024*1024;

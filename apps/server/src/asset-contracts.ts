@@ -1,4 +1,3 @@
-import { existsSync, mkdirSync } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import {
   DEFAULT_ASSET_LIMITS,
@@ -147,6 +146,8 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
   const extension = path.posix.extname(leaf).toLowerCase();
   const nameExtension = path.extname(artifact.summary).toLowerCase();
   const expectedMediaTypes = ({
+    ".webm": ["audio/webm", "application/octet-stream"], ".ogg": ["audio/ogg", "application/octet-stream"],
+    ".m4a": ["audio/mp4", "application/octet-stream"], ".mp4": ["audio/mp4", "application/octet-stream"],
     ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -164,9 +165,4 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
 
 export class AssetError extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
-}
-
-export function mkdirSyncSafe(dataDir: string): void {
-  // The server creates this root before stores open their durable state.
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 }

@@ -43,7 +43,10 @@ export type AgentOperationalReason =
   | "pending_user_decision"
   | "run_preparing"
   | "provider_capacity_unavailable"
-  | "provider_admission_blocked";
+  | "provider_admission_blocked"
+  | "context_recovery_required"
+  | "context_recovery_running"
+  | "context_recovery_cleanup";
 
 /** Payload-free, current admission observation. Not an execution result. */
 export interface QueuedAdmissionBlockerDto {

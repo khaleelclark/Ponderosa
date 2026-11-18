@@ -1,8 +1,13 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "./components/WorkspaceQueryError";
+import type {WorkspaceReadIssue} from "./workspaceAvailability";
+import {useInitializeAssistant} from './components/AssistantEntry';
+import {AssistantSurface} from './AssistantSurface';
+import { useEffect } from "react";
+import { loadProjectShell } from "./projectShellLoader";
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
 import type {
-  ConversationDto,
   EngineDto,
   ProjectDto,
   WorkspaceNotificationDto,
@@ -24,12 +29,11 @@ type RemovableWorkspaceResourceRoute = Extract<
   { kind: "agent" | "conversation" }
 >;
 
-const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadInboxView = () => import("./components/InboxView").then(module => ({ default: module.InboxView }));
 const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace").then(module => ({ default: module.ManageChatsWorkspace }));
 const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
 const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
-const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
 const workspaceSettingsViews = () => import("./components/WorkspaceSettingsView");
 const loadWorkspaceSettingsView = () => workspaceSettingsViews().then(module => ({ default: module.WorkspaceSettingsView }));
 
@@ -49,10 +53,13 @@ interface WorkspaceRouteOutletProps {
   preferencesLoaded: boolean;
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
+  workspaceReads?:WorkspaceReadIssue[];
   loadError: boolean;
+  loadErrorDetails?: string;
   refreshError: boolean;
+  refreshErrorDetails?: string;
   onRetryLoad(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route, options?: {replace?: boolean}): boolean | void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onSavePreferences(
     patch: Partial<WorkspacePreferencesDto>,
@@ -67,15 +74,10 @@ interface WorkspaceRouteOutletProps {
   ): void;
   onCancelCreate(): void;
   onOpenInbox(): void;
-  onProjectDeleted(projectId: string): void;
-  onConversationAction(
-    kind: "rename" | "delete",
-    conversation: ConversationDto,
-  ): void;
-  onOpenEngineStatus(): void;
   onBrowserRequestHandled(requestId: number): void;
   onResourceDeleted(route: RemovableWorkspaceResourceRoute): void;
   onToggleColorMode(): void;
+  onOpenAssistantNavigation(): void;
 }
 
 export function WorkspaceRouteOutlet({
@@ -94,8 +96,9 @@ export function WorkspaceRouteOutlet({
   preferencesLoaded,
   colorMode,
   projectBrowserRequest,
+  workspaceReads=[],
   loadError,
-  refreshError,
+  loadErrorDetails,
   onRetryLoad,
   onNavigate,
   onPreferences,
@@ -103,13 +106,18 @@ export function WorkspaceRouteOutlet({
   onCreate,
   onOpenInbox,
   onCancelCreate,
-  onProjectDeleted,
-  onConversationAction,
-  onOpenEngineStatus,
   onBrowserRequestHandled,
   onResourceDeleted,
   onToggleColorMode,
+  onOpenAssistantNavigation,
 }: WorkspaceRouteOutletProps): JSX.Element {
+  useInitializeAssistant();
+  // Fetch the existing route chunk while its Project metadata resolves. The
+  // route boundary still owns its loading, failure and explicit retry states.
+  const projectRoute = isProjectRoute(route);
+  useEffect(() => {
+    if (projectRoute) void loadProjectShell().catch(() => {});
+  }, [projectRoute]);
   return (
     <Box
       sx={{
@@ -117,36 +125,17 @@ export function WorkspaceRouteOutlet({
         maxHeight: "100%",
         minHeight: 0,
         minWidth: 0,
-        display: "grid",
-        gridTemplateRows: refreshError && !loadError
-          ? "auto minmax(0, 1fr)"
-          : "minmax(0, 1fr)",
+        display: "flex", flexDirection:"column",
       }}
     >
-      {refreshError && !loadError ? (
-        <Alert
-          severity="warning"
-          action={<Button color="inherit" size="small" onClick={onRetryLoad}>Retry</Button>}
-          sx={{ m: 1 }}
-        >
-          Some workspace data could not be refreshed. The last loaded data remains available.
-        </Alert>
-      ) : null}
-      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
-      {loadError ? (
+      <WorkspaceQueryErrors reads={workspaceReads} reportOnly={loadError&&route.kind!=="assistant"}/>
+      <Box sx={{ flex:1,minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
+      <Box sx={{flex:1,minHeight:0,display:"grid"}}>
+      {loadError && route.kind!=="assistant" ? (
         <Box sx={{ p: 2 }}>
           <MobileNavigationButton />
-          <Alert
-            severity="error"
-            action={
-              <Button color="inherit" size="small" onClick={onRetryLoad}>
-                Retry
-              </Button>
-            }
-          >
-            Ponderosa could not load its workspace data. Check the server
-            connection and try again.
-          </Alert>
+          {workspaceReads.some(read=>read.error)?<WorkspaceQueryError initial read={workspaceReads.find(read=>read.error)!}/>:<Alert severity="error" action={<Button onClick={onRetryLoad}>Retry</Button>}>Ponderosa could not load its workspace data. {loadErrorDetails}</Alert>}
+
         </Box>
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
         <LoadingState resource="settings" variant="route" />
@@ -161,14 +150,14 @@ export function WorkspaceRouteOutlet({
             route.creationKey ?? "",
           ].join(":")}
           load={loadCreateWorkspace}
-          componentProps={{ route, projects, engines, enginesLoaded, preferences, onCancel: onCancelCreate, onNavigate }}
+          componentProps={{ route, projects, projectsLoaded, engines, enginesLoaded, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "home" ? (
         <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, notificationsLoadFailed, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
-      ) : route.kind === "allChat" ? (
+      ) : route.kind === "inbox" ? (
         <RecoverableLazyRoute
-          key="all-chat"
-          load={loadAllChatView}
+          key="inbox"
+          load={loadInboxView}
           componentProps={{ onNavigate, notifications }}
         />
       ) : route.kind === "manageChats" ? (
@@ -177,6 +166,8 @@ export function WorkspaceRouteOutlet({
           load={loadManageChatsWorkspace}
           componentProps={{ onNavigate }}
         />
+      ) : route.kind === "assistant" ? (
+        <AssistantSurface colorMode={colorMode} returnTo={route.returnTo} onOpenNavigation={onOpenAssistantNavigation} onToggleColorMode={onToggleColorMode} onOpenProviderSettings={() => onNavigate({kind:"settings",section:"providers"})}/>
       ) : route.kind === "manageAgents" ? (
         <RecoverableLazyRoute
           key="manage-agents"
@@ -239,19 +230,13 @@ export function WorkspaceRouteOutlet({
               project: projects.find(project => project.id === selectedProjectId)!,
               route,
               engines,
-              notifications,
               preferences,
               onPreferences,
-              onRenameConversation: conversation =>
-                onConversationAction("rename", conversation),
-              onDeleteConversation: conversation =>
-                onConversationAction("delete", conversation),
-              onOpenEngineStatus,
+              decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View Decision</Button>,
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,
               onResourceDeleted,
-              onProjectDeleted,
               onCreate: (kind, context) => onCreate(kind, context),
             }}
           />
@@ -284,6 +269,7 @@ export function WorkspaceRouteOutlet({
       ) : (
         assertNeverRoute(route)
       )}
+      </Box>
       </Box>
     </Box>
   );

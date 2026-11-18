@@ -1,3 +1,4 @@
+import {productApiPath} from "../api/productScope";
 import type {
   AgentDto,
   AgentHealthDto,
@@ -200,6 +201,7 @@ export function useConversationMessagingController({
       idempotencyKey,
       selectedEngine,
       runtimeConfig,
+      beforeDispatch,
       onAgentCreated,
     }: {
       scopeId: string;
@@ -211,9 +213,11 @@ export function useConversationMessagingController({
       idempotencyKey: string;
       selectedEngine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
       onAgentCreated?(agent: AgentDto): void;
     }) => {
       if (!scopeProjectId) throw new Error("Project chat not loaded");
+      await beforeDispatch?.();
       const agent = await api.createAgent(
         scopeProjectId,
         scopeId,
@@ -254,7 +258,9 @@ export function useConversationMessagingController({
       activeRunDelivery,
       engine,
       runtimeConfig,
+      beforeDispatch,
     }: {
+      namespace: string;
       scopeId: string;
       scopeProjectId?: string;
       agentIds: string[];
@@ -264,7 +270,9 @@ export function useConversationMessagingController({
       activeRunDelivery: "steer" | "queue";
       engine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
     }) => {
+      await beforeDispatch?.({prefix:"user-dm",seed:`multi-direct:${scopeId}:${requestId}`});
       return api.sendMultiAgentDirectMessage(scopeId, {
         text,
         recipients: uploadedRecipients.map(({ agentId, attachments }) => ({
@@ -281,6 +289,7 @@ export function useConversationMessagingController({
       });
     },
     onSuccess: async (response, variables) => {
+      if(productApiPath("/api/conversations")!==variables.namespace)return;
       await publishConversationMessageReceipt(queryClient, variables.scopeId, response.message);
       invalidate(variables.scopeId, variables.scopeProjectId);
       if (activeConversationId.current === variables.scopeId) queuedMessages.recordDelivery(
@@ -307,6 +316,7 @@ export function useConversationMessagingController({
       activeRunDelivery,
       engine,
       runtimeConfig,
+      beforeDispatch,
     }: {
       scopeId: string;
       scopeProjectId?: string;
@@ -318,6 +328,7 @@ export function useConversationMessagingController({
       activeRunDelivery: "steer" | "queue";
       engine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
     }) => {
       const agentIds = agentMentions.map(binding => binding.agentId);
       const attachmentsByAgent = new Map(
@@ -329,6 +340,7 @@ export function useConversationMessagingController({
       const attachments = broadcastAttachmentsForOwner(
         scopeId, attachmentOwnerAgentId, uploadedRecipients,
       );
+      await beforeDispatch?.({prefix:"broadcast",seed:`${scopeId}\0${requestId}`});
       return api.sendConversationMessage(scopeId, {
         text,
         attachments: attachments as AssetDto[],
@@ -374,6 +386,7 @@ export function useConversationMessagingController({
     ) => Promise<void>,
     onAgentCreated?: (agent: AgentDto) => void,
     capturedSubmission = false,
+    beforeDispatch?: (identity?: {prefix:string;seed:string}) => Promise<void>,
   ) => {
     if (activeConversationId.current === conversationId) setSpawnNotice(undefined);
     const showOperation = (operation: Parameters<typeof setActiveOperation>[0]) => {
@@ -553,7 +566,7 @@ export function useConversationMessagingController({
       if (durableId) submissionAttempts.current.delete(durableId);
       else if (submissionAttempt.current === attempt) submissionAttempt.current = undefined;
     };
-    let acceptedResponse: MultiAgentDirectMessageResponse | undefined;
+    let acceptedResponse: MultiAgentDirectMessageResponse | Awaited<ReturnType<typeof api.sendConversationMessage>> | undefined;
     const createdAgentIds: string[] = [];
     const createdTitles = detailAgents.map(agent => agent.title);
     let agentCreationCommitted = false;
@@ -578,6 +591,7 @@ export function useConversationMessagingController({
       const title = await durableAgentTitle(titleKey);
       createdTitles.push(title);
       const created = await spawn.mutateAsync({
+        beforeDispatch,
         scopeId: conversationId, scopeProjectId: conversation?.projectId,
         text: submittedText,
         draftAttachmentIds: prepared.draftAttachmentIds,
@@ -622,6 +636,7 @@ export function useConversationMessagingController({
         : undefined;
       try {
         const response = await broadcast.mutateAsync({
+        beforeDispatch,
           scopeId: conversationId, scopeProjectId: conversation?.projectId,
           text: submittedBroadcastText,
           uploadedRecipients,
@@ -638,6 +653,7 @@ export function useConversationMessagingController({
             response.communicationEventId,
           ));
         }
+        acceptedResponse = response;
       } catch (error) {
         if (!capturedSubmission && !agentCreationCommitted &&
             await cleanupRecipientUploadsForDefinitiveFailure({
@@ -653,7 +669,7 @@ export function useConversationMessagingController({
         throw error;
       }
       finishAttempt();
-      return;
+      return acceptedResponse;
     }
     if (hasBroadcastMention(submittedText)) {
       throw new Error("Broadcast scope could not be resolved.");
@@ -674,6 +690,8 @@ export function useConversationMessagingController({
       let response: MultiAgentDirectMessageResponse;
       try {
         response = await sendToAgents.mutateAsync({
+          namespace:productApiPath("/api/conversations"),
+        beforeDispatch,
           scopeId: conversationId, scopeProjectId: conversation?.projectId,
           agentIds: targetAgentIds,
           text: submittedText,
@@ -757,6 +775,7 @@ export function useConversationMessagingController({
       const titleKey = "default-agent";
       const title = await durableAgentTitle(titleKey);
       await spawn.mutateAsync({
+        beforeDispatch,
         scopeId: conversationId, scopeProjectId: conversation?.projectId,
         text: submittedText,
         draftAttachmentIds: prepared.draftAttachmentIds,

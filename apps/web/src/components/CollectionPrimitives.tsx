@@ -110,7 +110,7 @@ export function CollectionProgressiveFooter({
   return (
     <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
       <Button size="small" color="inherit" onClick={onShowMore}>
-        {`Show ${nextCount} more ${resourceLabel} · ${remaining} remaining`}
+        {`Show ${nextCount} More ${resourceLabel} · ${remaining} Remaining`}
       </Button>
     </Box>
   );
@@ -281,7 +281,7 @@ export function CollectionToolbar({
   const compact = useContext(CollectionCompactContext);
   return <Box
     component="section"
-    aria-label="Collection controls"
+    aria-label="Collection Controls"
     sx={{
       px: compact ? 2 : { xs: 2, md: 3 },
       py: compact ? 1 : 1.5,
@@ -484,7 +484,7 @@ export function CollectionStateFeedback({
     {empty && !suppressEmpty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
       detail={filtersActive ? noMatchDetail : emptyDetail}
-      action={filtersActive && onClearFilters ? { label: "Clear filters", onClick: onClearFilters } : undefined}
+      action={filtersActive && onClearFilters ? { label: "Clear Filters", onClick: onClearFilters } : undefined}
     /> : null}
     {!empty ? <CollectionPagination request={request} resourceLabel={resourceLabel} autoLoadMore={autoLoadMore} /> : null}
   </>;
@@ -748,7 +748,7 @@ export function ResourceRow({
       {leading}
       {icon ? <Box sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", color: "primary.main", "& > svg": { fontSize: 21 } }}>{icon}</Box> : null}
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography fontWeight={750} noWrap>{label}</Typography>
+        <Typography fontWeight={750} noWrap sx={{display:{xs:"-webkit-box",sm:"block"},WebkitLineClamp:2,WebkitBoxOrient:"vertical",whiteSpace:{xs:"normal",sm:"nowrap"},overflowWrap:"anywhere"}}>{label}</Typography>
         {description ? <Typography component="div" variant="body2" color="text.secondary" noWrap>{description}</Typography> : null}
       </Box>
       {meta ? <Box sx={{ flexShrink: 0, minWidth: 0 }}>{meta}</Box> : null}

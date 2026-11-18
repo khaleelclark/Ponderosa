@@ -10,8 +10,9 @@
 // persisted locally; all real data still comes from the server.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { assistantReturnPath } from "./assistantRouting";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
-import { confirmUnsavedNavigation } from "./reloadSafety.js";
+import { confirmUnsavedNavigation, reloadBlockers } from "./reloadSafety.js";
 import { routeToPath } from "./routeRegistry.js";
 
 export interface AgentTelemetryFocus {
@@ -57,7 +58,8 @@ export type Route =
       surface?: "workspace";
       creationKey?: string;
     }
-  | { kind: "allChat" }
+  | { kind: "inbox" }
+  | { kind: "assistant"; returnTo?: string }
   | { kind: "manageChats" }
   | { kind: "manageAgents" }
   | { kind: "settings"; returnTo?: string; section?: "profile" | "general" | "providers" | "notifications" | "activity" }
@@ -123,7 +125,8 @@ function parseRoutePath(pathname: string, search = ""): Route {
         : {}),
     };
   }
-  if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
+  if (parts.length === 1 && parts[0] === "messages") return { kind: "inbox" };
+  if (parts.length === 1 && parts[0] === "assistant") return { kind: "assistant", ...(assistantReturnPath(query.get("returnTo")) ? { returnTo: assistantReturnPath(query.get("returnTo")) } : {}) };
   if (parts.length === 2 && parts[0] === "manage" && parts[1] === "chats") {
     return { kind: "manageChats" };
   }
@@ -242,7 +245,7 @@ export function routeReturnTarget(returnTo: string | undefined, fallback: Route)
 }
 
 export function routeReturnLabel(target: Route): string {
-  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "allChat" ? "Back to Messages" : "Back to Home";
+  return target.kind === "conversation" ? "Back To Chat" : target.kind === "agent" ? "Back To Agent" : target.kind === "inbox" ? "Back To Inbox" : "Back To Home";
 }
 
 export function parseRouteLocation(
@@ -280,16 +283,17 @@ function initialWorkspaceLocation(): { route: Route; replacement?: string } {
   return resolveStartupLocation(window.location.pathname, window.location.search, remembered);
 }
 
-function navigationPreservesSettings(current: Route, next: Route): boolean {
-  // General drafts remain mounted across subsection changes. The profile form
-  // unmounts when its section changes, so it always needs the discard guard.
+export function navigationPreservesSettings(current: Route, next: Route): boolean {
+  // Parent Settings drafts survive subsection changes. Profile and permission
+  // editors unmount, so their pending edits still need the discard guard.
   return current.kind === "settings" && next.kind === "settings" &&
-    current.section !== "profile" && next.section !== "profile";
+    current.section !== "profile" && next.section !== "profile" &&
+    !reloadBlockers().includes("tool-permissions:/api/workspace/capabilities");
 }
 
 export function useRoute(): {
   route: Route;
-  navigate(route: Route, options?: { replace?: boolean }): void;
+  navigate(route: Route, options?: { replace?: boolean }): boolean;
 } {
   const [route, setRoute] = useState<Route>(() => initialWorkspaceLocation().route);
 
@@ -337,9 +341,9 @@ export function useRoute(): {
     const path = routeToPath(next);
     if (path === `${window.location.pathname}${window.location.search}`) {
       setRoute(next);
-      return;
+      return true;
     }
-    if (!navigationPreservesSettings(currentRoute.current, next) && !confirmUnsavedNavigation()) return;
+    if (!navigationPreservesSettings(currentRoute.current, next) && !confirmUnsavedNavigation()) return false;
     acceptedLocation.current = path;
     if (options?.replace) {
       window.history.replaceState(null, "", path);
@@ -347,6 +351,7 @@ export function useRoute(): {
       window.history.pushState(null, "", path);
     }
     setRoute(next);
+    return true;
   }, []);
 
   return { route, navigate };

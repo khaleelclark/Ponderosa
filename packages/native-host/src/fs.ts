@@ -1,5 +1,6 @@
 /** Application-local fs boundary. Unregistered paths retain Node semantics;
  * registered storage paths use the process-held physical root. */
+import { randomUUID } from "node:crypto";
 import * as node from "node:fs";
 import * as asyncNode from "node:fs/promises";
 import path from "node:path";
@@ -17,6 +18,11 @@ function retained(value: unknown): string | undefined {
   if (process.platform === "linux") return undefined;
   const name = filename(value);
   return name && storageBinding().storagePathRegistered(name) ? name : undefined;
+}
+/** True only for a path already bound to a live native portable storage root.
+ * A spelling alone is not authority; the native registry owns this decision. */
+export function hasRetainedStorageAuthority(name: string): boolean {
+  return process.platform !== 'linux' && storageBinding().storagePathRegistered(path.resolve(name));
 }
 function operation(op: string, name: string, second = "", flags = 0, mode = 0o600): unknown {
   return storageBinding().storageOperation(op, name, second, flags, mode);
@@ -195,6 +201,11 @@ class RetainedFile {
   async read(buffer: Buffer, offset = 0, length = buffer.length, position: number | null = null): Promise<any> { return { bytesRead: node.readSync(this.fd, buffer, offset, length, position), buffer }; }
   async write(body: Buffer | string, offset?: any, length?: any, position?: any): Promise<any> { return { bytesWritten: typeof body === "string" ? node.writeSync(this.fd, body, offset, length) : node.writeSync(this.fd, body, offset, length, position), buffer: body }; }
 }
+/** Transfer an already owned native descriptor into the existing handle boundary. */
+export function adoptPortableFileDescriptor(descriptor:number):asyncNode.FileHandle{
+  if(!Number.isSafeInteger(descriptor)||descriptor<0)throw new TypeError('invalid owned native file descriptor');
+  return new RetainedFile(descriptor) as unknown as asyncNode.FileHandle;
+}
 export const promises: typeof asyncNode = {
   ...asyncNode,
   open: (async (name: node.PathLike, flags: node.OpenMode, mode?: node.Mode) => retained(name) ? new RetainedFile(openSync(name, flags, mode)) : asyncNode.open(name, flags, mode)) as typeof asyncNode.open,
@@ -218,3 +229,23 @@ export const promises: typeof asyncNode = {
 };
 const applicationFs: typeof node = { ...node, createReadStream, fsyncSync, openSync, closeSync, readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, readdirSync, opendirSync, unlinkSync, rmdirSync, renameSync, linkSync, rmSync, chmodSync, truncateSync, copyFileSync, readlinkSync, realpathSync, promises };
 export default applicationFs;
+
+/** Durably replace JSON using this fs boundary; callers retain path authority. */
+export function writeJsonAtomic(pathname: string, value: unknown): void {
+  const temporary = `${pathname}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  try { chmodSync(temporary, 0o600); } catch { /* Windows ignores POSIX modes. */ }
+  // Windows requires a writable handle for FlushFileBuffers (fsync). Opening
+  // the completed temporary file read-only works on POSIX but fails with EPERM
+  // on Windows before the launcher can publish its state.
+  const file = openSync(temporary, "r+");
+  try { fsyncSync(file); } finally { closeSync(file); }
+  renameSync(temporary, pathname);
+  // A durable rename requires the containing directory on POSIX. Windows
+  // does not permit opening directories this way, while its rename remains
+  // atomic for the same-volume launcher state used here.
+  if (process.platform !== "win32") {
+    const directory = openSync(path.dirname(pathname), "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  }
+}

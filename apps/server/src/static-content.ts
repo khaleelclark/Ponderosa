@@ -13,29 +13,6 @@ function acceptsGzip(value: string | string[] | undefined): boolean {
   return Boolean(preferences.find((preference) => preference.encoding === "*" && preference.quality > 0));
 }
 
-function utf8Page(content: string, start: number, maximum: number): {
-  output: string;
-  pageUtf8Bytes: number;
-  endUtf8Byte: number;
-  totalUtf8Bytes: number;
-} {
-  const bytes = Buffer.from(content, "utf8");
-  if (start > bytes.length || (start < bytes.length && (bytes[start]! & 0xc0) === 0x80)) {
-    throw new Error("activity output cursor is not on a UTF-8 boundary");
-  }
-  let end = Math.min(bytes.length, start + maximum);
-  while (end > start && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
-  const output = bytes.subarray(start, end).toString("utf8");
-  return { output, pageUtf8Bytes: end - start, endUtf8Byte: end, totalUtf8Bytes: bytes.length };
-}
-
-function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
-  let end = Math.min(content.length, maximumEnd);
-  if (end >= content.length) return end;
-  while (end > start && (content[end]! & 0xc0) === 0x80) end -= 1;
-  return end > start ? end : Math.min(content.length, maximumEnd);
-}
-
 /** Return one bounded, code-point-aligned UTF-8 prefix. Validation decodes the
  * prefix exactly once; malformed content fails into the caller's binary path. */
 function boundedUtf8Preview(content: Buffer, maximumBytes: number): Buffer | undefined {
@@ -93,8 +70,6 @@ function contentTypeForArtifact(file: string): ArtifactContentDto["contentType"]
 
 export {
   acceptsGzip,
-  utf8Page,
-  utf8PageEnd,
   boundedUtf8Preview,
   contentTypeForStatic,
   cacheControlForStatic,

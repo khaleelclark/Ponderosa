@@ -1,5 +1,9 @@
+/** Existing bounded text/HTML preview limit; downloads retain complete managed bytes. */
+export const ARTIFACT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
 export const ASSET_MEDIA_TYPES = [
   "image/png", "image/jpeg", "image/webp", "image/heic", "image/gif", "image/avif",
+  "audio/webm", "audio/ogg", "audio/mp4",
   "application/pdf", "text/plain", "application/json", "application/zip",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   // Original bytes only: no implicit execution, extraction or active preview.
@@ -37,6 +41,8 @@ export interface AssetDto {
  * retain their catalog media type without widening human upload admission. */
 export type CommunicationAttachmentDto = Omit<AssetDto, "mediaType"> & {
   mediaType: string;
+  /** Managed canonical artifact kind, absent on ordinary uploads. */
+  artifactKind?: ArtifactKind;
 };
 
 export interface AssetLimitsDto {
@@ -90,12 +96,15 @@ export interface ArtifactDto {
   id: string;
   /** Owning Project for stable cross-Agent retrieval. */
   projectId?: string;
+  /** Agent producer, or the canonical Chat storage owner for an operator-origin document. */
   agentId: string;
+  /** Present only for direct operator publication; no Agent/Run is attributed. */
+  origin?: {kind: "operator"; conversationId: string};
   /** Agent that created the artifact; retained after that Agent is deleted. */
   originAgentId?: string;
   executionId?: string;
   kind: ArtifactKind;
-  /** Relative path under the agent's `artifacts/` dir. */
+  /** Logical relative result path; managed result bytes belong to the Project. */
   path: string;
   summary?: string;
   createdAt: string;

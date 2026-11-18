@@ -1,3 +1,4 @@
+import {requestProduct} from '../product-scope.js';
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../server-context.js";
 import { parseTokenUsageRange } from "../token-usage.js";
@@ -7,19 +8,19 @@ export function registerUsageRoutes(
   { store, tokenUsage }: ServerContext,
 ): void {
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
-    try { return tokenUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "overall",productScope:requestProduct(request) }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "project", id: request.params.id,productScope:requestProduct(request) }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/conversations/:id/usage", async (request, reply) => {
     const chat = store.getConversation(request.params.id);
     if (!chat || chat.deletedAt) return reply.code(404).send({ error: "Chat not found" });
-    try { return tokenUsage({ type: "conversation", id: chat.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "conversation", id: chat.id,productScope:requestProduct(request) }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 }
@@ -30,7 +31,7 @@ export function registerAgentUsageRoute(
 ): void {
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
     if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    try { return tokenUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "agent", id: request.params.id,productScope:requestProduct(request) }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 }

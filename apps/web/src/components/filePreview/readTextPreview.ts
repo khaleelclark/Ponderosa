@@ -3,7 +3,7 @@ const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 /** Fetch as data: download response headers must never cause browser navigation. */
 export async function readTextPreview(url: string, signal: AbortSignal): Promise<{ content: string; truncated: boolean }> {
   const target = new URL(url, window.location.origin);
-  if (target.origin !== window.location.origin || !target.pathname.startsWith("/api/")) {
+  if (target.origin !== window.location.origin || (target.protocol!=="blob:"&&!target.pathname.startsWith("/api/"))) {
     throw new Error("Invalid attachment URL");
   }
   const response = await fetch(target.href, { signal, cache: "no-store", redirect: "error" });

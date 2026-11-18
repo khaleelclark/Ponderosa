@@ -1,6 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
 import ArticleIcon from "@mui/icons-material/Article";
 import CloseIcon from "@mui/icons-material/Close";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import { MutationErrorDetails } from "../MutationNotifications";
 import {
   Alert,
   Box,
@@ -8,6 +10,10 @@ import {
   Chip,
   ClickAwayListener,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   ListSubheader,
   MenuItem,
@@ -30,6 +36,7 @@ import type {
   ArtifactDto,
 } from "@ponderosa/core";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { FOLDER_PICKER_NOTE } from "./folderAttachments";
 import { isIOSDevice } from "../../browserPlatform";
 import type { ComposerMenuAction } from "./composerContracts";
 import { compactPreviewText } from "./Composer.helpers";
@@ -52,6 +59,7 @@ export function ComposerNotices({
   pastedTextBytes,
   error,
   attachmentError = false,
+  compactError = false,
   draftConflict,
   failedDraftContents,
   onShowPastedText,
@@ -68,6 +76,7 @@ export function ComposerNotices({
   pastedTextBytes: number;
   error?: string;
   attachmentError?: boolean;
+  compactError?: boolean;
   draftConflict?: ConversationDraftConflictDto;
   failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
@@ -106,7 +115,7 @@ export function ComposerNotices({
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
             >
-              View or edit
+              View Or Edit
             </Button>
           </Box>
           <Typography variant="caption" color="text.secondary">
@@ -115,24 +124,20 @@ export function ComposerNotices({
           <IconButton
             disabled={mutationLocked}
             size="small"
-            aria-label="Remove pasted text"
+            aria-label="Remove Pasted Text"
             onClick={onRemovePastedText}
           >
             <CloseIcon fontSize="small" />
           </IconButton>
         </Paper>
       ) : null}
-      {error ? (
-        <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
-          {attachmentError ? error : `Message not sent. ${error}`}
-        </Alert>
-      ) : null}
+      {!compactError && <MutationErrorDetails title={attachmentError ? "Attachment Needs Attention" : "Draft Needs Attention"} error={error}><Button size="small" onClick={onClearError}>Close</Button></MutationErrorDetails>}
       {failedDraftContents.map(item => (
-        <Alert
+        <MutationErrorDetails
           key={item.id}
-          severity="warning"
-          sx={{ mb: 1 }}
-          action={
+          title={`${item.name} Needs Restoration`}
+          error="This item could not be restored from the saved draft."
+        >
             <Stack direction="row" spacing={0.5}>
               <Button size="small" disabled={mutationLocked} onClick={() => onRetryDraftContent(item.id)}>
                 Retry
@@ -141,10 +146,7 @@ export function ComposerNotices({
                 Remove
               </Button>
             </Stack>
-          }
-        >
-          {item.name} could not be restored from this draft.
-        </Alert>
+        </MutationErrorDetails>
       ))}
       {draftConflict ? (
         <Alert
@@ -182,6 +184,14 @@ export function ComposerNotices({
   );
 }
 
+/** Fits the existing control row; opening Details never sends or clears a draft. */
+export function ComposerErrorReview({error}: {error?:string}): JSX.Element | null {
+  const [open,setOpen]=useState(false);
+  if(!error)return null;
+  return <><Tooltip title="Review Message Error"><IconButton color="warning" aria-label="Review Message Error" onClick={()=>setOpen(true)} sx={{width:44,height:44}}><ErrorOutlineIcon/></IconButton></Tooltip>
+    <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="sm"><DialogTitle>Message Needs Attention</DialogTitle><DialogContent sx={{overflowWrap:"anywhere",whiteSpace:"pre-wrap"}}>{error}</DialogContent><DialogActions><Button onClick={()=>setOpen(false)}>Close</Button></DialogActions></Dialog></>;
+}
+
 export function ComposerTextInput({
   text,
   inputRef,
@@ -203,6 +213,7 @@ export function ComposerTextInput({
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
+  canQueue,
   onTextChange,
   onFiles,
   onPastedText,
@@ -212,6 +223,7 @@ export function ComposerTextInput({
   onApplySuggestion,
   onClearRequiredRecipient,
   onSend,
+  onQueue,
 }: {
   text: string;
   inputRef: RefObject<ComposerEditorHandle>;
@@ -238,6 +250,7 @@ export function ComposerTextInput({
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
+  canQueue?: boolean;
   onTextChange(value: string, caret: number): void;
   onFiles(files: File[]): void;
   onPastedText(value: string): void;
@@ -247,6 +260,7 @@ export function ComposerTextInput({
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
   onSend(): void;
+  onQueue?(): void;
 }): JSX.Element {
   return (
     <>
@@ -269,6 +283,7 @@ export function ComposerTextInput({
         mentionDescriptors={mentionTokens}
         mentionBindings={mentionBindings}
         canSend={canSend}
+        canQueue={canQueue}
         onTextChange={onTextChange}
         onFiles={onFiles}
         onPastedText={onPastedText}
@@ -278,6 +293,7 @@ export function ComposerTextInput({
         onApplySuggestion={onApplySuggestion}
         onClearRequiredRecipient={onClearRequiredRecipient}
         onSend={onSend}
+        onQueue={onQueue}
       />
       <ComposerMentionStatus
         destinationMode={destinationMode}
@@ -333,10 +349,10 @@ export function ComposerCapabilityPicker({
   const folderInput = useRef<HTMLInputElement | null>(null);
   const folderPickerSupported = "webkitdirectory" in HTMLInputElement.prototype;
   const capabilityGroups = [
-    { label: "Available skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
-    { label: "Installed plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
-    { label: "Connected apps", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "connector") },
-    { label: "Unavailable options", items: visibleCapabilities.filter(item => item.status !== "available") },
+    { label: "Available Skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
+    { label: "Installed Plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
+    { label: "Connected Apps", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "connector") },
+    { label: "Unavailable Options", items: visibleCapabilities.filter(item => item.status !== "available") },
   ].filter(group => group.items.length > 0);
   const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
   const [browseCapabilities, setBrowseCapabilities] = useState(false);
@@ -369,7 +385,7 @@ export function ComposerCapabilityPicker({
     <>
       <input
         ref={fileInput}
-        aria-label="Choose files"
+        aria-label="Choose Files"
         hidden
         type="file"
         multiple
@@ -379,12 +395,12 @@ export function ComposerCapabilityPicker({
         }}
       />
       <input ref={element => { folderInput.current = element; if (element) element.webkitdirectory = true; }}
-        aria-label="Choose folder" hidden type="file" multiple onChange={event => {
+        aria-label="Choose Folder" hidden type="file" multiple onChange={event => {
           onFolderFiles(Array.from(event.target.files ?? [])); event.target.value = "";
         }} />
       <input
         ref={photoInput}
-        aria-label="Choose photos"
+        aria-label="Choose Photos"
         hidden
         type="file"
         accept="image/*"
@@ -394,11 +410,11 @@ export function ComposerCapabilityPicker({
           event.target.value = "";
         }}
       />
-      <Tooltip title={mobile ? "" : "Add an image, file, skill, plugin, or connector"}>
+      <Tooltip title={mobile ? "" : "Add An Image, File, Skill, Plugin, Or Connector"}>
         <span>
           <IconButton
             ref={buttonRef}
-            aria-label="Add attachment or capability"
+            aria-label="Add Attachment Or Capability"
             aria-haspopup="menu"
             aria-expanded={Boolean(menuAnchor)}
             aria-controls={menuAnchor ? listId : undefined}
@@ -446,14 +462,14 @@ export function ComposerCapabilityPicker({
                 value={filter}
                 onChange={event => onFilterChange(event.target.value)}
                 placeholder={mobile ? "Search skills & connectors" : "Find a skill, plugin, or connector"}
-                inputProps={{ "aria-label": "Filter runtime capabilities" }}
-                sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
+                inputProps={{ "aria-label": "Filter Runtime Capabilities" }}
+                sx={isIOSDevice() ? { "& input": { fontSize: "1rem" } } : undefined}
               />
             </Box>}
             <MenuList
               dense
               id={listId}
-              aria-label="Add attachment or runtime capability"
+              aria-label="Add Attachment Or Runtime Capability"
               sx={{
                 maxHeight: mobile ? 260 : "min(38vh, 300px)",
                 minHeight: 0,
@@ -477,7 +493,7 @@ export function ComposerCapabilityPicker({
               >
                 <Box>
                   <Typography variant="body2">{label}</Typography>
-                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles || (label === "Folder" && !folderPickerSupported)) && <Typography variant="caption" color="text.secondary">
+                  {(!mobile || label === "Folder" || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
@@ -485,7 +501,7 @@ export function ComposerCapabilityPicker({
                         ? "Remove an attachment before adding another."
                         : label === "Photos"
                           ? `PNG, JPEG, WebP, HEIC, GIF, or AVIF · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
-                          : label === "Folder" ? folderPickerSupported ? "ZIP preserving folder paths; hidden/sensitive files excluded · up to 2,048 entries" : "Folder selection is unavailable in this browser. Attach a ZIP instead."
+                          : label === "Folder" ? folderPickerSupported ? `ZIP with paths · up to 2,048 entries. ${FOLDER_PICKER_NOTE}` : "Folder selection is unavailable in this browser. Attach a ZIP instead."
                           : `Up to ${maximumFiles} files, including fonts, documents, code, media and archives · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>}
                 </Box>
@@ -509,7 +525,7 @@ export function ComposerCapabilityPicker({
                   </Typography> : null}
                 </Box>
               </MenuItem>)}
-              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; connectors</MenuItem>}
+              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; Connectors</MenuItem>}
               {!mobile && <Divider />}
               {showCapabilities && ((capabilities ?? []).length === 0 ? (
                 <MenuItem disabled sx={{ whiteSpace: "normal" }}>
@@ -663,7 +679,7 @@ export function ComposerAutocompleteMenu({
               hasCommands
                 ? "Commands"
                 : hasMentions
-                  ? "Agent tags"
+                  ? "Agent Tags"
                   : "Project Files & Results"
             }
             sx={{

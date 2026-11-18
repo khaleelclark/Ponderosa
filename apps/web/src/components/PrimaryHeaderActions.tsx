@@ -7,14 +7,17 @@ import {
   useMemo,
   useState,
   type ReactNode,
+  type ComponentProps,
 } from "react";
 import { createPortal } from "react-dom";
 import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
-type RegisterHeaderActionOutlet = (element: HTMLElement) => () => void;
+type HeaderActionTrigger = ComponentProps<typeof ProviderQuotaIndicator>["renderTrigger"];
+type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number, renderTrigger?: HeaderActionTrigger, showMobileUsageLabel?: boolean) => () => void;
+type HeaderActionOutlet = { element: HTMLElement; depth: number; renderTrigger?: HeaderActionTrigger; showMobileUsageLabel?: boolean };
 
 const PrimaryHeaderActionsContext = createContext<
-  RegisterHeaderActionOutlet | undefined
+  {register: RegisterHeaderActionOutlet; activeOutlet?: HTMLElement} | undefined
 >(undefined);
 
 /**
@@ -25,10 +28,12 @@ const PrimaryHeaderActionsContext = createContext<
 export function PrimaryHeaderActionsProvider({
   preferredProvider,
   onOpenProviderSettings,
+  suppressChrome = false,
   children,
   workspaceStatus,
 }: {
   preferredProvider?: string;
+  suppressChrome?: boolean;
   onOpenProviderSettings(): void;
   children: ReactNode;
   workspaceStatus?: ReactNode;
@@ -38,15 +43,29 @@ export function PrimaryHeaderActionsProvider({
   const coarsePointer = useMediaQuery("(pointer: coarse)");
   const mobile = narrow || coarsePointer;
   const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
-  const [outlets, setOutlets] = useState<HTMLElement[]>([]);
-  const register = useCallback<RegisterHeaderActionOutlet>((element) => {
-    setOutlets(current => [...current.filter(candidate => candidate !== element), element]);
+  const [outlets, setOutlets] = useState<HeaderActionOutlet[]>([]);
+  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0, renderTrigger, showMobileUsageLabel) => {
+    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth, renderTrigger, showMobileUsageLabel }]);
     return () => {
-      setOutlets(current => current.filter(candidate => candidate !== element));
+      setOutlets(current => current.filter(candidate => candidate.element !== element));
     };
   }, []);
-  const value = useMemo(() => register, [register]);
-  const activeOutlet = outlets.at(-1);
+  // Scoped Chat/Agent chrome outranks its Branch even when the outer header remounts.
+  const activeRegistration = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined);
+  const activeOutlet = activeRegistration?.element;
+  const value = useMemo(() => ({register, activeOutlet}), [register, activeOutlet]);
+
+  if (suppressChrome) return (
+    <PrimaryHeaderActionsContext.Provider value={value}>
+      {children}
+      <Box ref={setFallbackOutlet} data-core-workspace-status sx={{
+        position: "fixed", top: { xs: 76, sm: 76 }, right: 12,
+        zIndex: theme.zIndex.snackbar, display: "flex", alignItems: "center", gap: 1,
+        "&:empty": { display: "none" },
+      }} />
+      {workspaceStatus && fallbackOutlet ? createPortal(workspaceStatus, fallbackOutlet) : null}
+    </PrimaryHeaderActionsContext.Provider>
+  );
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>
@@ -79,8 +98,10 @@ export function PrimaryHeaderActionsProvider({
       </Box>
       {workspaceStatus && (activeOutlet ?? fallbackOutlet) ? createPortal(workspaceStatus, (activeOutlet ?? fallbackOutlet)!) : null}
       <ProviderQuotaIndicator
+        renderTrigger={activeRegistration?.renderTrigger}
         preferredProvider={preferredProvider}
         mobile={mobile}
+        showMobileUsageLabel={activeRegistration?.showMobileUsageLabel}
         portalTarget={activeOutlet ?? fallbackOutlet}
         onOpenProviderSettings={onOpenProviderSettings}
       />
@@ -88,14 +109,27 @@ export function PrimaryHeaderActionsProvider({
   );
 }
 
+/** Keep shared usage in the deepest mounted Chat/Agent header, with outer fallback. */
+export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.Element {
+  const owner=useContext(PrimaryHeaderActionsContext);
+  const register=owner?.register;
+  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0,renderTrigger,showMobileUsageLabel)=>{
+    const unregister=register?.(element,depth+1,renderTrigger,showMobileUsageLabel);
+    return ()=>unregister?.();
+  },[register]);
+  const value=useMemo(()=>({register:scopedRegister,activeOutlet:owner?.activeOutlet}),[scopedRegister,owner?.activeOutlet]);
+  return <PrimaryHeaderActionsContext.Provider value={value}>{children}</PrimaryHeaderActionsContext.Provider>;
+}
+
 /** The trailing action destination shared by primary and utility headers. */
-export function PrimaryHeaderActionsOutlet(): JSX.Element {
-  const register = useContext(PrimaryHeaderActionsContext);
+export function PrimaryHeaderActionsOutlet({renderTrigger, fallback, showMobileUsageLabel}: {renderTrigger?: HeaderActionTrigger; fallback?: ReactNode; showMobileUsageLabel?: boolean} = {}): JSX.Element {
+  const owner = useContext(PrimaryHeaderActionsContext);
+  const register = owner?.register;
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!element || !register) return;
-    return register(element);
-  }, [element, register]);
+    return register(element, 0, renderTrigger, showMobileUsageLabel);
+  }, [element, register, renderTrigger, showMobileUsageLabel]);
 
   return (
     <Box
@@ -108,6 +142,8 @@ export function PrimaryHeaderActionsOutlet(): JSX.Element {
         alignItems: "center",
         justifyContent: "flex-end",
       }}
-    />
+    >
+      {owner?.activeOutlet === element ? null : fallback}
+    </Box>
   );
 }

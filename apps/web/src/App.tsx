@@ -1,3 +1,8 @@
+import {availabilityFailure,distinctDiagnostics,workspaceRead} from "./workspaceAvailability";
+import { restoreOverlayFocus } from "./overlayFocus";
+import { PreferenceSaveFeedback, preferenceSaveReporter } from "./preferenceSaveFeedback";
+import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
+import {isBranchesPath,productApiPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
@@ -10,6 +15,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { createClientId } from "./clientId";
 import { ApiRequestError } from "./api/types";
+import {useWorkspaceSidebarNavigation} from "./components/useWorkspaceSidebarState";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
@@ -65,6 +71,7 @@ import {
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
 import { queryKeys } from "./queryKeys";
+import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
 import { MobileWorkspaceDrawer } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
@@ -93,7 +100,8 @@ function routeDocumentTitle(route: Route): string {
   switch (route.kind) {
     case "home": return "Home";
     case "create": return route.resource === "chat" ? "New Chat" : "New Agent";
-    case "allChat": return "Messages Across Ponderosa";
+    case "inbox": return "Inbox";
+    case "assistant": return "Assistant";
     case "manageChats": return "Manage Chats";
     case "manageAgents": return "Manage Agents";
     case "settings": return "Settings";
@@ -101,7 +109,7 @@ function routeDocumentTitle(route: Route): string {
     case "workspaceFile": return "File";
     case "projectWork": return "Agent Work";
     case "browser": return "Browser";
-    case "conversation": return "Chat";
+    case "conversation": return "chat";
     case "agent": return "Agent";
     case "review": return "Review";
   }
@@ -137,9 +145,16 @@ export default function App({
         void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
       }
     },
-    onError: () => notify({ key: "workspace-preferences", message: "Workspace settings could not be saved.", severity: "error" }),
   });
   const { route, navigate } = useRoute();
+  const sidebarNavigation=useWorkspaceSidebarNavigation(route,true);
+  const routedConversationId = route.kind === "conversation" ? route.conversationId : undefined;
+  const routedProjectId = routeProjectId(route);
+  // Overlap the existing Chat and membership reads with Project metadata.
+  // ProjectShell still owns its membership, unavailable and error gates.
+  useEffect(() => {
+    if (routedConversationId) void prefetchConversationWorkspace(queryClient, routedConversationId, routedProjectId);
+  }, [queryClient, routedConversationId, routedProjectId]);
   const [pageVisible, setPageVisible] = useState(
     () => document.visibilityState === "visible",
   );
@@ -191,7 +206,6 @@ export default function App({
   });
   const projectsQuery = useProjects();
   const routedAgentQuery = useAgent(route.kind === "agent" ? route.agentId : undefined);
-  const routedProjectId = routeProjectId(route);
   const projectPage = projectsQuery.data ?? [];
   const routedProjectQuery = useQuery({
     queryKey: queryKeys.projects.detail(routedProjectId),
@@ -232,8 +246,8 @@ export default function App({
   useEffect(() => {
     // Conversation and Agent views own their resolved entity titles. Skipping
     // them here prevents a later Project-list refresh from restoring a generic
-    // "Chat" or "Agent" title over the resolved title.
-    if (route.kind === "conversation" || route.kind === "agent") return;
+    // "chat" or "Agent" title over the resolved title.
+    if (route.kind === "conversation" || route.kind === "agent" || route.kind === "assistant") return;
     document.title = `${routeDocumentTitle(route)} · Ponderosa`;
   }, [route]);
   useEffect(() => {
@@ -264,6 +278,10 @@ export default function App({
   const providerRecheckInFlight = useRef(new Set<string>());
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
+  const [desktopNavigationMounted, setDesktopNavigationMounted] = useState(!mobileWorkspace);
+  useEffect(() => {
+    if (!mobileWorkspace) setDesktopNavigationMounted(true);
+  }, [mobileWorkspace]);
 
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -284,31 +302,10 @@ export default function App({
       ? document.activeElement
       : undefined;
   };
-  const restoreFocus = (previous: HTMLElement | undefined) => {
-    window.requestAnimationFrame(() => {
-      if (
-        previous?.isConnected &&
-        previous.getClientRects().length > 0 &&
-        !previous.closest('[aria-hidden="true"]')
-      ) {
-        previous.focus();
-        return;
-      }
-      const stableNavigationTarget = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]',
-        ),
-      ].find(candidate => (
-        candidate.getClientRects().length > 0 &&
-        !candidate.closest('[aria-hidden="true"]')
-      ));
-      stableNavigationTarget?.focus();
-    });
-  };
   const restoreOverlayTrigger = () => {
     const previous = overlayReturnFocus.current;
     overlayReturnFocus.current = undefined;
-    restoreFocus(previous);
+    restoreOverlayFocus(previous);
   };
   const openGlobalSearch = (initial?: { query: string; scope: "chats" }) => {
     rememberOverlayTrigger();
@@ -326,10 +323,6 @@ export default function App({
     setNotificationPanelOpen(false);
     restoreOverlayTrigger();
   };
-  const openEngineStatus = () => {
-    stopSpeech();
-    navigate({ kind: "settings", section: "activity" });
-  };
   const setMobileNavigationOpen = (open: boolean) => {
     if (open) rememberOverlayTrigger();
     setMobileNavOpen(open);
@@ -342,7 +335,7 @@ export default function App({
     setMobileNavOpen(false);
     // Let the Drawer transition release its focus trap before moving focus to
     // the equivalent desktop navigation control.
-    const focusTimer = window.setTimeout(() => restoreFocus(drawerTrigger), 400);
+    const focusTimer = window.setTimeout(() => restoreOverlayFocus(drawerTrigger), 400);
     return () => window.clearTimeout(focusTimer);
   }, [mobileWorkspace]);
   useEffect(() => {
@@ -493,7 +486,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { revision: 0, projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: true, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: preferencesQuery.isError ? "Profile unavailable" : "Loading profile…", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { revision: 0, projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: false, broadcasts: false }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: true, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: preferencesQuery.isError ? "Profile unavailable" : "Loading profile…", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const defaultUsageProvider = engines.some(engine =>
     engine.id === preferences.defaultUsageProvider &&
     engine.enabled !== false &&
@@ -503,24 +496,16 @@ export default function App({
     : engines.find(engine =>
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
+  const preferenceFeedback = useRef(new PreferenceSaveFeedback());
+  const reportPreferenceSave = () => preferenceSaveReporter({notify,namespace:productApiPath("/api/workspace/preferences"),incident:createClientId("preference-feedback-"),acknowledge:true});
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    preferencesWriter.current!.enqueue(patch);
+    void preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave(), true, preferences).catch(() => {});
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
-    preferencesWriter.current!.enqueueAndWait(patch);
-  useEffect(() => {
-    const families = {
-      inter:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      system:
-        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      sans: "Arial, Helvetica, sans-serif",
-    } as const;
-    document.documentElement.style.setProperty(
-      "--ponderosa-font-family",
-      families[preferences.fontFamily],
-    );
-  }, [preferences.fontFamily]);
+    preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave(), false, preferences);
+  useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -542,10 +527,11 @@ export default function App({
       );
     }
   };
-  const navigateWorkspace = (next: Route) => {
+  const navigateWorkspace = (next: Route, options?: {replace?: boolean}) => {
+    if (!navigate(next, {replace: options?.replace ?? (route.kind === "create" && route.resource === "chat" && next.kind === "conversation")})) return false;
     stopSpeech();
     recordWorkspaceRouteUse(next);
-    navigate(next, { replace: route.kind === "create" && route.resource === "chat" && next.kind === "conversation" });
+    return true;
   };
   useEffect(() => {
     if (route.kind === "create" && route.resource === "chat" && !route.creationKey) {
@@ -603,7 +589,7 @@ export default function App({
       )
         return;
       const target = new URL(event.data.url, window.location.origin);
-      if (target.origin !== window.location.origin) return;
+      if (target.origin !== window.location.origin || isBranchesPath(target.pathname)) return;
       navigateWorkspace(parseRoute(target.pathname, target.search));
     };
     navigator.serviceWorker?.addEventListener("message", openNotificationRoute);
@@ -624,13 +610,11 @@ export default function App({
     if (!removedCurrent) return;
     navigateWorkspace({ kind: "home" });
   };
-  const handleProjectDeleted = (projectId: string) => {
-    reconcileDeletedProject(projectId);
-  };
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
   return (
+    <WorkspaceRefreshProvider connection={workspaceConnection}>
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser, openAgent: (id, runId) => {
         if (!selectedProjectId) return;
@@ -649,7 +633,7 @@ export default function App({
           }
           setSidebarPresentation(current => ({ ...current, collapsed: false }));
           window.requestAnimationFrame(() => {
-            document.querySelector<HTMLElement>('[aria-label="Collapse sidebar"]')?.focus();
+            document.querySelector<HTMLElement>('[aria-label="Collapse Sidebar"]')?.focus();
           });
         }}
       >
@@ -715,7 +699,8 @@ export default function App({
               overflow: "hidden",
             }}
           >
-            <WorkspaceSidebar
+            {(!mobileWorkspace || desktopNavigationMounted) && <WorkspaceSidebar
+              navigation={sidebarNavigation}
               projects={projects}
               preferences={preferences}
               route={route}
@@ -740,7 +725,7 @@ export default function App({
               onWidthChange={width =>
                 setSidebarPresentation(current => ({ ...current, width }))
               }
-            />
+            />}
           </Box>
           <Box
             component="main"
@@ -762,7 +747,6 @@ export default function App({
                 position: "relative",
               }}
             >
-              <WorkspaceRefreshProvider>
               <Box
                 sx={{
                   gridRow: 2,
@@ -773,8 +757,9 @@ export default function App({
               >
               <WorkspaceConnectionProvider value={workspaceConnection}>
               <PrimaryHeaderActionsProvider
+                suppressChrome={route.kind === "assistant"}
                 workspaceStatus={<>
-                  <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />
+                  {route.kind !== "assistant" && <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />}
                   <ChatCreationRecovery key={JSON.stringify(route)}
                     activeCreationKey={route.kind === "create" && route.resource === "chat" ? route.creationKey : undefined}
                     onCreated={(projectId, conversationId) => navigateWorkspace({ kind: "conversation", projectId, conversationId })} />
@@ -794,7 +779,7 @@ export default function App({
                     projectResolution={projectResolution}
                     onRetryProject={() => void routedProjectQuery.refetch()}
                     projects={projects}
-                    projectsLoaded={projectsQuery.isSuccess}
+                    projectsLoaded={projectsQuery.data !== undefined}
                     engines={engines}
                     enginesLoaded={enginesQuery.data !== undefined}
                     notifications={presentedNotifications}
@@ -804,6 +789,7 @@ export default function App({
                     preferencesLoaded={preferencesQuery.data !== undefined}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
+                    workspaceReads={[workspaceRead("workspace","Engines",enginesQuery),workspaceRead("workspace","Chats",projectsQuery),workspaceRead("workspace","Preferences",preferencesQuery),workspaceRead(`project:${selectedProjectId}`,"Project",routedProjectQuery)]}
                     loadError={
                       retainedDataFailure(
                         enginesQuery.data !== undefined,
@@ -819,6 +805,11 @@ export default function App({
                           preferencesQuery.isError,
                         ) === "initial")
                     }
+                    loadErrorDetails={distinctDiagnostics([
+                      enginesQuery.data === undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
+                      !isProjectRoute(route) && projectsQuery.data === undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
+                      route.kind === "settings" && preferencesQuery.data === undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
+                    ]).join(" ")}
                     refreshError={
                       retainedDataFailure(
                         enginesQuery.data !== undefined,
@@ -833,6 +824,11 @@ export default function App({
                         preferencesQuery.isError,
                       ) === "refresh"
                     }
+                    refreshErrorDetails={distinctDiagnostics([
+                      enginesQuery.data !== undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
+                      projectsQuery.data !== undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
+                      preferencesQuery.data !== undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
+                    ]).join(" ")}
                     onRetryLoad={() => {
                       void projectsQuery.refetch();
                       void enginesQuery.refetch();
@@ -844,9 +840,6 @@ export default function App({
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
                     onOpenInbox={openNotifications}
-                    onProjectDeleted={handleProjectDeleted}
-                    onConversationAction={openSidebarConversationAction}
-                    onOpenEngineStatus={openEngineStatus}
                     onBrowserRequestHandled={requestId =>
                       setProjectBrowserRequest(current =>
                         consumeProjectBrowserRequest(current, requestId),
@@ -854,17 +847,21 @@ export default function App({
                     }
                     onResourceDeleted={removeWorkspaceView}
                     onToggleColorMode={onToggleColorMode}
+                    onOpenAssistantNavigation={() => {
+                      if (mobileWorkspace) setMobileNavigationOpen(true);
+                      else setSidebarPresentation(current => ({...current,collapsed:false}));
+                    }}
                   />
                 </WorkspaceErrorBoundary>
               </PrimaryHeaderActionsProvider>
               </WorkspaceConnectionProvider>
               </Box>
-              </WorkspaceRefreshProvider>
             </Box>
           </Box>
         </Box>
 
         <MobileWorkspaceDrawer
+          navigation={sidebarNavigation}
           open={mobileWorkspace && mobileNavOpen}
           projects={projects}
           preferences={preferences}
@@ -913,6 +910,9 @@ export default function App({
         <ContextualCreateDialog
           request={creationRequest}
           projects={projects}
+          projectsLoaded={projectsQuery.data !== undefined}
+          projectsError={projectsQuery.isError && projectsQuery.data === undefined && !availabilityFailure(projectsQuery.error) ? projectsQuery.error.message : undefined}
+          onRetryProjects={() => void projectsQuery.refetch()}
           engines={engines}
           enginesLoaded={enginesQuery.data !== undefined}
           preferences={preferences}
@@ -946,5 +946,6 @@ export default function App({
         /> : null}
       </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
+    </WorkspaceRefreshProvider>
   );
 }

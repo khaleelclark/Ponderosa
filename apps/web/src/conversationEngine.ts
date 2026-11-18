@@ -43,18 +43,18 @@ export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "
 }
 
 export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "installed" | "reachability" | "resourceAdmission">): {
-  label: "Checking" | "Reachable" | "Intake ready" | "Needs attention" | "Inactive" | "Host resources";
+  label: "Checking" | "Reachable" | "Intake Ready" | "Needs Attention" | "Inactive" | "Host Resources";
   color: "success" | "warning" | "default";
 } {
   if (engine.enabled === false || engine.installed === false) return { label: "Inactive", color: "default" };
-  if (engine.resourceAdmission?.state === "held") return { label: "Host resources", color: "warning" };
+  if (engine.resourceAdmission?.state === "held") return { label: "Host Resources", color: "warning" };
   if (engine.authentication === "checking" || engine.reachability === "checking") {
     return { label: "Checking", color: "default" };
   }
   if (engine.reachability === "reachable") return { label: "Reachable", color: "success" };
   return engine.intakeReady
-    ? { label: "Intake ready", color: "success" }
-    : { label: "Needs attention", color: "warning" };
+    ? { label: "Intake Ready", color: "success" }
+    : { label: "Needs Attention", color: "warning" };
 }
 
 function conciseAvailabilityDetail(detail: string | undefined): string | undefined {
@@ -65,12 +65,12 @@ function conciseAvailabilityDetail(detail: string | undefined): string | undefin
 }
 
 export function engineAvailabilityPresentation(engines: EngineDto[]): {
-  label: "Engine ready" | "Needs attention" | "Inactive" | "Checking engines";
+  label: "Engine Ready" | "Needs Attention" | "Inactive" | "Checking Engines";
   severity: "success" | "warning" | "default";
   detail: string;
 } {
   if (engines.length === 0) {
-    return { label: "Checking engines", severity: "warning", detail: "Ponderosa is still checking its AI providers." };
+    return { label: "Checking Engines", severity: "warning", detail: "Ponderosa is still checking its AI providers." };
   }
 
   const enabled = engines.filter((engine) => engine.enabled !== false && engine.installed !== false);
@@ -110,8 +110,8 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     missingSummary,
   ].filter(Boolean).join(" ");
 
-  if (unavailable.length > 0) return { label: "Needs attention", severity: "warning", detail };
-  return { label: "Engine ready", severity: "success", detail };
+  if (unavailable.length > 0) return { label: "Needs Attention", severity: "warning", detail };
+  return { label: "Engine Ready", severity: "success", detail };
 }
 
 /**

@@ -1,7 +1,12 @@
+import type { VoiceConversationContext } from "../speech/VoiceConversation";
 import type { ChatComposerContract } from "./composerContracts";
 import type { AgentMentionBindingDto } from "@ponderosa/core";
 
 export interface ComposerProps extends ChatComposerContract {
+  /** Designated Assistant presentation and steering-only intake; ordinary Outputs omit this. */
+  assistantMessages?: boolean;
+  /** Ordinary Agent surface for reviewing retained Queue intents without rewriting them. */
+  queueReviewHref?: string;
   /** Blocks submission while retaining editable text, selection and paste. */
   submissionDisabled?: boolean;
   /** Keep the composer available while other Agents in this shared chat are working. */
@@ -20,6 +25,8 @@ export interface ComposerProps extends ChatComposerContract {
   attachmentsUnavailableReason?: string;
   /** Expose browser dictation on a composer with structurally resolved routing. */
   enableVoiceDictation?: boolean;
+  /** Canonical owner supplied by the workspace; absent when no call target is resolved. */
+  voiceContext?: VoiceConversationContext;
   busyMentionHandles?: string[];
   allowUnmentionedSend?: boolean;
   /** Explains why a valid-looking draft cannot use the ordinary send path. */
@@ -27,6 +34,8 @@ export interface ComposerProps extends ChatComposerContract {
   agentResponding?: boolean;
   onCancel?(): void;
   cancelPending?: boolean;
+  /** Canonical Assistant Run controls; editable steering remains independent. */
+  runControl?: {paused:boolean;pending:boolean;resumeDisabled:boolean;onPauseResume():void};
   draftStorageKey?: string;
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };
@@ -52,7 +61,7 @@ export interface ComposerProps extends ChatComposerContract {
   onCommandTargetHandleChange?(handle?: string): void;
   /** Reports the stable identity of a structurally selected Agent destination. */
   onCommandTargetAgentIdChange?(agentId?: string): void;
-  /** One shared visible destination used by Project, Agent, and All Messages composers. */
+  /** One shared visible destination used by Project, Agent, and Inbox composers. */
   defaultDestination?: {
     handle: string;
     /** Stable recipient identity; visible handle text is presentation only. */

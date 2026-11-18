@@ -56,14 +56,22 @@ export function AddAgentsFlow({
   const [step, setStep] = useState<AddStep>("choose");
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId ?? "");
   const [sourceId, setSourceId] = useState("");
-  const sourceProjectId = fixedProjectId ?? selectedProjectId;
+  const sourceProjectId = selectedProjectId || fixedProjectId || "";
   useEffect(() => {
     if (!open) return;
     setStep("choose");
-    setSelectedProjectId(initialProjectId ?? (projects.length === 1 ? projects[0]!.id : ""));
+    setSelectedProjectId(initialProjectId ?? fixedProjectId ?? (projects.length === 1 ? projects[0]!.id : ""));
     setSourceId("");
-  }, [open, initialProjectId, projects.length]);
+  }, [open, initialProjectId, fixedProjectId, projects.length]);
   const pickingSource = open && (step === "pick-source" || step === "duplicate");
+  // A Chat-owned Project contains only that Chat. Discover other source Chats
+  // when this flow is opened from a destination Chat.
+  const sourceProjectsQuery = useQuery({
+    queryKey: queryKeys.projects.all,
+    queryFn: () => api.listProjects(),
+    enabled: pickingSource && Boolean(fixedProjectId && initialConversation) && projects.length === 0,
+  });
+  const sourceProjects = projects.length ? projects : sourceProjectsQuery.data ?? [];
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(sourceProjectId),
     queryFn: () => api.listAgents(sourceProjectId),
@@ -87,18 +95,18 @@ export function AddAgentsFlow({
       <DialogContent>
         <Stack spacing={1.5} sx={{ pt: 1 }}>
           <Button variant="outlined" startIcon={<AddIcon />} onClick={() => { onClose(); onCreate(); }}>
-            Create new Agent
+            Create New Agent
           </Button>
           <Button variant="outlined" startIcon={<ContentCopyOutlinedIcon />} disabled={!fixedProjectId && !projects.length}
             onClick={() => setStep("pick-source")}>
-            Duplicate existing Agent
+            Duplicate Existing Agent
           </Button>
           <Button variant="outlined" startIcon={<FileUploadOutlinedIcon />} disabled={!fixedProjectId && !projects.length}
             onClick={() => setStep("import")}>
-            Import Agent package
+            Import Agent Package
           </Button>
           <Typography variant="body2" color="text.secondary">
-            Duplicate creates a separate Agent in a chat. Import accepts a portable JSON package.
+            Duplicate an Agent or import a JSON package.
           </Typography>
         </Stack>
       </DialogContent>
@@ -117,14 +125,14 @@ export function AddAgentsFlow({
     />
 
     <Dialog open={open && step === "pick-source"} onClose={() => setStep("choose")} fullWidth maxWidth="sm">
-      <DialogTitle>Duplicate existing Agent</DialogTitle>
+      <DialogTitle>Duplicate Existing Agent</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {!fixedProjectId ? <FormControl fullWidth size="small">
-            <InputLabel id="duplicate-source-project-label">Source workspace</InputLabel>
-            <Select labelId="duplicate-source-project-label" label="Source workspace" value={selectedProjectId}
+          {sourceProjects.length > 0 ? <FormControl fullWidth size="small">
+            <InputLabel id="duplicate-source-project-label">Source Workspace</InputLabel>
+            <Select labelId="duplicate-source-project-label" label="Source Workspace" value={selectedProjectId}
               onChange={event => { setSelectedProjectId(event.target.value); setSourceId(""); }}>
-              {projects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
+              {sourceProjects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
             </Select>
           </FormControl> : null}
           {sourceProjectId ? <Autocomplete<AgentDto>
@@ -136,12 +144,15 @@ export function AddAgentsFlow({
             onChange={(_event, value) => setSourceId(value?.id ?? "")}
             renderInput={params => <TextField {...params} label="Source Agent" size="small" />}
           /> : <Typography variant="body2" color="text.secondary">Choose a source workspace first.</Typography>}
+          {sourceProjectsQuery.isError ? <Alert severity="warning">
+            Could not load other source Chats. <Button size="small" onClick={() => { void sourceProjectsQuery.refetch(); }}>Retry</Button>
+          </Alert> : null}
           {agentsQuery.isError || chatsQuery.isError ? <Alert severity="error">
             Could not load Agents or chats from this workspace. <Button size="small" onClick={() => { void agentsQuery.refetch(); void chatsQuery.refetch(); }}>Retry</Button>
           </Alert> : null}
           {sourceProjectId && agentsQuery.isSuccess && agents.length === 0 ? <Alert severity="info">No Agents to duplicate in this workspace.</Alert> : null}
           <Typography variant="body2" color="text.secondary">
-            Choose the source Agent here; the next step lets you select scope, contents, destination chat, and the new root name.
+            Select an Agent to duplicate.
           </Typography>
         </Stack>
       </DialogContent>
@@ -156,13 +167,14 @@ export function AddAgentsFlow({
       open={open && step === "duplicate"}
       source={source}
       agents={agents}
-      conversations={chats}
-      initialConversationId={initialConversation?.projectId === source.projectId ? initialConversation.id : undefined}
+      conversations={initialConversation ? [initialConversation] : chats}
+      sourceConversation={chats.find(chat => chat.id === source.conversationId)}
+      initialConversationId={initialConversation?.id}
       onClose={() => setStep("pick-source")}
-      onCreated={agentId => {
+      onCreated={(agentId, destinationProjectId) => {
         notify({ message: "Agent duplicated.", severity: "success" });
         onClose();
-        onCreated?.(source.projectId, agentId);
+        onCreated?.(destinationProjectId, agentId);
       }}
     /> : null}
   </>;

@@ -1,3 +1,5 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -44,6 +46,7 @@ function parseDraftSurfaceIds(value: string | null | undefined): string[] {
 function projectDeletionReceipt(row: typeof projectDeletionReceipts.$inferSelect): ProjectDeletionReceipt {
   return {
     projectId: row.projectId,
+    productScope:row.productScope as ProjectDeletionReceipt['productScope'],
     tombstoneName: row.tombstoneName,
     ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
     removalStarted: row.removalStarted === 1,
@@ -80,6 +83,7 @@ export class AgentProjectDeletionAuthority {
   }
 
   markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
+    requireGenerationExitDeletionReady(this.client,{projectId});
     if (!this.getProject(projectId)) throw new Error("project not found");
     const draftSurfaceIds = this.draftSurfaceIds(projectId);
     this.db.insert(projectDeletionPending).values({
@@ -186,6 +190,7 @@ export class AgentProjectDeletionAuthority {
       // Revalidate after the removal-started commit. A replacement at the exact
       // path must never inherit the authority granted to the earlier inode.
       validateProjectDeletionTombstone(tombstone, identity);
+      touchSourceMutation();
       rmSync(tombstone, { recursive: true, force: true });
       afterTombstoneRemoval?.(current.projectId);
     }
@@ -249,11 +254,13 @@ export class AgentProjectDeletionAuthority {
       tombstoneName,
       ownershipToken,
     } satisfies ProjectDeletionIdentity);
+    touchSourceMutation();
     renameSync(canonicalDir, deletingDir);
     fsyncDirectory(parentDir);
     const now = new Date().toISOString();
     try {
       this.db.transaction(() => {
+        requireGenerationExitDeletionReady(this.client,{projectId:id});
         const pendingConversationDeletion = this.client.prepare(`
           SELECT 1 FROM conversation_deletion_receipts
           WHERE project_id = ? AND (
@@ -277,6 +284,9 @@ export class AgentProjectDeletionAuthority {
         if (pendingAgentDeletion) {
           throw new Error("Project deletion cannot commit while Agent deletion cleanup is pending");
         }
+        const products=this.client.prepare(`SELECT DISTINCT CASE WHEN branch_id IS NULL THEN 'dev' ELSE 'branches' END product
+          FROM (SELECT branch_id FROM conversations WHERE project_id=? UNION ALL SELECT branch_id FROM conversation_deletion_receipts WHERE project_id=?)`).all(id,id) as Array<{product:'dev'|'branches'}>;
+        const productScope:ProjectDeletionReceipt['productScope']=products.length>1?'mixed':products[0]?.product??'dev';
         beforeProjectionDelete?.(id);
         this.client.prepare(`DELETE FROM events WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
@@ -288,6 +298,10 @@ export class AgentProjectDeletionAuthority {
           .run(id);
         this.client.prepare(`DELETE FROM provider_inputs WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM imported_history_messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM imported_history_indexes WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
         this.client.prepare(`DELETE FROM agent_conversation_memberships WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
@@ -310,6 +324,7 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
         this.db.insert(projectDeletionReceipts).values({
           projectId: id,
+          productScope,
           tombstoneName,
           ownershipToken,
           storageCleanupCompleted: 0,
@@ -321,6 +336,7 @@ export class AgentProjectDeletionAuthority {
         }).run();
       });
     } catch (error) {
+      touchSourceMutation();
       renameSync(deletingDir, canonicalDir);
       fsyncDirectory(parentDir);
       throw error;
@@ -370,6 +386,7 @@ export class AgentProjectDeletionAuthority {
         tombstoneName,
         ownershipToken: row.ownershipToken,
       });
+      touchSourceMutation();
       renameSync(tombstone, canonical);
       fsyncDirectory(root);
     }

@@ -1,3 +1,5 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -40,7 +42,7 @@ export class AgentDeletionAuthority {
       targetAgentIds: readonly string[],
       consumeApproval?: boolean,
     ) => void,
-    private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly refreshInboxFeedProject: (projectId: string) => void,
     private readonly forgetAgentProjection: (agentId: string) => void,
     private readonly attachmentSources: (projectId: string) => { events: CommunicationEvent[]; projections: CommunicationProjection[] },
     private readonly retainSharedArtifacts: (projectId: string, agentId: string, sourceDirectory: string) => void,
@@ -49,13 +51,14 @@ export class AgentDeletionAuthority {
 
   getAgentDeletionReceiptByPreviewHash(previewHash: string): AgentDeletionReceipt | undefined {
     const row = this.client.prepare(`SELECT * FROM agent_deletion_receipts WHERE preview_hash = ?`).get(previewHash) as {
-      id: string; project_id: string; preview_hash: string; root_agent_ids_json: string;
+      id: string; project_id: string; product_scope:AgentDeletionReceipt['productScope']; preview_hash: string; root_agent_ids_json: string;
       deleted_agent_ids_json: string; storage_cleanup_completed: number; server_cleanup_completed: number;
       last_error: string | null; created_at: string; updated_at: string; completed_at: string | null;
     } | undefined;
     return row ? {
       id: row.id,
       projectId: row.project_id,
+      productScope:row.product_scope,
       previewHash: row.preview_hash,
       rootAgentIds: JSON.parse(row.root_agent_ids_json) as string[],
       deletedAgentIds: JSON.parse(row.deleted_agent_ids_json) as string[],
@@ -139,6 +142,7 @@ export class AgentDeletionAuthority {
       const agent = byId.get(id)!;
       return { id: agent.id, title: agent.title, ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}) };
     });
+    for (const agent of affectedAgents) requireGenerationExitDeletionReady(this.client,{agentId:agent.id});
     const previewHash = createHash("sha256").update(JSON.stringify({
       projectId,
       rootAgentIds: normalizedRoots,
@@ -204,6 +208,7 @@ export class AgentDeletionAuthority {
     // subsequent point therefore restores only exact marker/token matches.
     this.client.transaction(() => {
       for (const row of stagedDirectories.values()) {
+        requireGenerationExitDeletionReady(this.client,{agentId:row.agentId});
         this.db.insert(agentDeletionPending).values({
           agentId: row.agentId,
           projectId: row.projectId,
@@ -218,6 +223,7 @@ export class AgentDeletionAuthority {
     try {
       for (const row of stagedDirectories.values()) {
         validateAgentDeletionDirectory(row.canonical, row);
+        touchSourceMutation();
         renameSync(row.canonical, row.tombstone);
         row.renamed = true;
       }
@@ -230,9 +236,14 @@ export class AgentDeletionAuthority {
         }
         committedPreview = current;
         const receiptId = `agent-deletion-${current.previewHash}`;
+        const scopes=new Set([...stagedDirectories.values()].map(owner=>{
+          const chat=owner.conversationId?this.client.prepare('SELECT branch_id FROM conversations WHERE id=? AND project_id=?').get(owner.conversationId,owner.projectId) as {branch_id:string|null}|undefined:undefined;
+          return !chat?'unknown' as const:chat.branch_id?'branches' as const:'dev' as const;
+        }));
         tx.insert(agentDeletionReceipts).values({
           id: receiptId,
           projectId: current.projectId,
+          productScope:scopes.size>1?'mixed':[...scopes][0]??'unknown',
           previewHash: current.previewHash,
           rootAgentIdsJson: JSON.stringify(current.rootAgentIds),
           deletedAgentIdsJson: JSON.stringify(current.affectedAgents.map((agent) => agent.id)),
@@ -294,6 +305,7 @@ export class AgentDeletionAuthority {
           throw new Error("Agent deletion rollback lost its owned tombstone", { cause: error });
         }
         validateAgentDeletionDirectory(row.tombstone, row);
+        touchSourceMutation();
         renameSync(row.tombstone, row.canonical);
       }
       for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
@@ -315,7 +327,7 @@ export class AgentDeletionAuthority {
     catch (error) {
       this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Agent storage cleanup failed");
     }
-    this.refreshAllChatFeedProject(committedPreview!.projectId);
+    this.refreshInboxFeedProject(committedPreview!.projectId);
     return committedPreview!;
   }
 
@@ -379,11 +391,13 @@ export class AgentDeletionAuthority {
       validateAgentDeletionDirectory(auditDirectory, owned);
       for (const entry of readdirSync(auditDirectory)) {
         if (entry === "agent.json" || entry === AGENT_DELETION_IDENTITY_FILE) continue;
+        touchSourceMutation();
         rmSync(join(auditDirectory, entry), { recursive: true, force: true });
       }
       if (hasTombstone) {
         validateAgentDeletionDirectory(tombstone, owned);
         if (pathEntryExists(canonical)) throw new Error("deleted Agent audit destination already exists");
+        touchSourceMutation();
         renameSync(tombstone, canonical);
         afterAuditRename?.(agentId);
       }
@@ -407,7 +421,7 @@ export class AgentDeletionAuthority {
     this.client.transaction(() => {
       for (const table of ["events", "messages", "runs", "provider_inputs", "work_items",
         "artifacts", "activity_projection", "tool_output_projection", "run_output_segments", "run_output_heads",
-        "changed_file_projection", "changed_file_execution_projection", "imported_history_messages",
+        "changed_file_projection", "changed_file_execution_projection", "imported_history_messages", "imported_history_indexes",
         "continuation_handoffs", "agent_health_projection", "agent_event_head_projection"]) {
         this.client.prepare(`DELETE FROM ${table} WHERE agent_id = ?`).run(agentId);
       }
@@ -446,6 +460,7 @@ export class AgentDeletionAuthority {
       }
       if (hasTombstone) {
         validateAgentDeletionDirectory(tombstone, owned);
+        touchSourceMutation();
         renameSync(tombstone, canonical);
         fsyncDirectory(directory);
       } else {

@@ -1,8 +1,11 @@
+import { projectNativeHistory, projectNativeRewind } from "./native-history-projection.js";
+import type { NativeTask, NativeTaskStopOutcome } from "@ponderosa/core";
+import { canonicalProviderFailureEvent, redactProviderDiagnostic } from "./provider-failure-event.js";
 import { isProxy } from "node:util/types";
 import {
+  PROVIDER_STDERR_DETAIL_LIMIT,
   classifyProviderFailure,
   publicProviderFailure,
-  publicProviderFailureEvent,
   type AgentEvent,
   type RuntimeProcessIdentity,
   type RuntimeProcessHandle,
@@ -206,7 +209,7 @@ export class ProviderRuntimeBoundaryError extends Error {
     super(publicFailure.summary);
     this.name = "ProviderRuntimeBoundaryError";
     this.operation = operation;
-    this.restrictedDetail = detail;
+    this.restrictedDetail = redactProviderDiagnostic(detail);
     this.code = code;
     this.category = category;
     providerBoundaryErrors.add(this);
@@ -303,7 +306,7 @@ export function providerEventStream(
           try {
             const event = projectAgentEvent(result.value);
             yield event.type === "error"
-              ? preserveEngineSessionRecoverySignal(event, publicProviderFailureEvent(event))
+              ? preserveEngineSessionRecoverySignal(event, canonicalProviderFailureEvent(event))
               : event;
           } catch (error) {
             throw boundaryError("project provider event", error);
@@ -346,18 +349,46 @@ export function projectProviderRootExitDetail(value: unknown): ProviderRootExitD
       if (member !== null && (typeof member !== "string" || member.length > 64)) throw new Error(INVALID_PROVIDER_STRUCTURE);
       detail.signal = member as string | null;
     } else if (key === "stderr") {
-      if (typeof member !== "string" || member.length > 8192) throw new Error(INVALID_PROVIDER_STRUCTURE);
-      detail.stderr = member;
+      if (typeof member !== "string" || member.length > PROVIDER_STDERR_DETAIL_LIMIT) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.stderr = redactProviderDiagnostic(member);
     } else if (key === "outputDraining") {
       if (typeof member !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
       detail.outputDraining = member;
     } else {
       const event = projectAgentEvent(member);
       if (event.type !== "error") throw new Error(INVALID_PROVIDER_STRUCTURE);
-      detail.terminalEvent = preserveEngineSessionRecoverySignal(event, publicProviderFailureEvent(event));
+      detail.terminalEvent = preserveEngineSessionRecoverySignal(event, canonicalProviderFailureEvent(event));
     }
   }
   return detail;
+}
+
+function nativeTasks(value: unknown): NativeTask[] {
+  const array = target(value);
+  const length = dataMember(array, "length");
+  if (!Array.isArray(array) || !Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > 1000) throw new Error(INVALID_PROVIDER_STRUCTURE);
+  const result: NativeTask[] = [], seen = new Set<string>();
+  for (let index = 0; index < (length as number); index++) {
+    const row = target(dataMember(array, String(index)));
+    const text = (name: string, optional = false): string | undefined => {
+      const value = dataMember(row, name);
+      if (optional && value === undefined) return undefined;
+      if (typeof value !== "string" || !value || value.length > 4096 || UNSAFE_IDENTITY_CONTROL.test(value)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      return value;
+    };
+    const taskKey = text("taskKey")!, taskId = text("taskId")!, kind = text("kind")!;
+    const taskRunId = text("taskRunId", true), itemId = text("itemId", true), processId = text("processId", true);
+    const cancellable = dataMember(row, "cancellable");
+    if (typeof cancellable !== "boolean" || seen.has(taskKey)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+    seen.add(taskKey);
+    result.push({ taskKey, taskId, kind, cancellable, ...(taskRunId ? {taskRunId} : {}), ...(itemId ? {itemId} : {}), ...(processId ? {processId} : {}) });
+  }
+  return result;
+}
+
+function nativeStopOutcome(value: unknown): NativeTaskStopOutcome {
+  if (!["acknowledged", "terminated", "not_found", "unknown"].includes(value as string)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+  return value as NativeTaskStopOutcome;
 }
 
 /** Copy a provider-returned RuntimeSession into one closed, code-owned facade.
@@ -372,11 +403,17 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let isAliveMethod: (...args: unknown[]) => unknown;
   let closeMethod: (...args: unknown[]) => unknown;
   let startTurnMethod: (...args: unknown[]) => unknown;
+  let startNativeGoalMethod: ((...args: unknown[]) => unknown) | undefined;
+  let pauseNativeGoalMethod: ((...args: unknown[]) => unknown) | undefined;
   let steerMethod: (...args: unknown[]) => unknown;
   let interruptMethod: (...args: unknown[]) => unknown;
   let contextUsageMethod: ((...args: unknown[]) => unknown) | undefined;
   let rateLimitStatusMethod: ((...args: unknown[]) => unknown) | undefined;
   let capabilitiesMethod: ((...args: unknown[]) => unknown) | undefined;
+  let nativeHistoryMethod: ((...args: unknown[]) => unknown) | undefined;
+  let rewindFilesMethod: ((...args: unknown[]) => unknown) | undefined;
+  let listNativeTasksMethod: ((...args: unknown[]) => unknown) | undefined;
+  let stopNativeTaskMethod: ((...args: unknown[]) => unknown) | undefined;
   let invokeCommandMethod: ((...args: unknown[]) => unknown) | undefined;
   try {
     raw = target(value);
@@ -389,16 +426,29 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     isAliveMethod = method(raw, "isAlive")!;
     closeMethod = method(raw, "close")!;
     startTurnMethod = method(raw, "startTurn")!;
+    startNativeGoalMethod = method(raw, "startNativeGoal", false);
+    pauseNativeGoalMethod = method(raw, "pauseNativeGoal", false);
     steerMethod = method(raw, "steer")!;
     interruptMethod = method(raw, "interrupt")!;
     contextUsageMethod = method(raw, "contextUsage", false);
     rateLimitStatusMethod = method(raw, "rateLimitStatus", false);
     capabilitiesMethod = method(raw, "capabilities", false);
     invokeCommandMethod = method(raw, "invokeCommand", false);
+    nativeHistoryMethod = method(raw,"nativeHistory",false);
+    rewindFilesMethod = method(raw,"rewindFiles",false);
+    listNativeTasksMethod = method(raw, "listNativeTasks", false);
+    stopNativeTaskMethod = method(raw, "stopNativeTask", false);
   } catch (error) {
     throw boundaryError("project provider session", error);
   }
 
+  let nativeMutationActive=false;
+  const nativeMutation=async (operation:string,work:()=>unknown):Promise<unknown>=>{
+    if(nativeMutationActive)throw new Error("Another retained native operation is active");
+    nativeMutationActive=true;
+    try{return await providerRuntimeOperation(operation,work);}
+    finally{nativeMutationActive=false;}
+  };
   const facade: RuntimeSession = {
     engineAgentId,
     events,
@@ -420,6 +470,12 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
       try { return turnStartResult(value); }
       catch (error) { throw boundaryError("project provider turn start", error); }
     },
+    ...(startNativeGoalMethod ? { startNativeGoal: async (input) => {
+      await providerRuntimeOperation("start native goal", () => Reflect.apply(startNativeGoalMethod!, raw, [input]));
+    } } : {}),
+    ...(pauseNativeGoalMethod ? { pauseNativeGoal: async () => {
+      await providerRuntimeOperation("pause native goal", () => Reflect.apply(pauseNativeGoalMethod!, raw, []));
+    } } : {}),
     steer: async (input) => {
       const value = await providerRuntimeOperation(
         "steer provider turn",
@@ -457,9 +513,25 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
         catch (error) { throw boundaryError("project provider capabilities", error); }
       },
     } : {}),
+    ...(nativeHistoryMethod ? { nativeHistory: async () => { if(nativeMutationActive)throw new Error("Native operation is active");return projectNativeHistory(await providerRuntimeOperation("read native history", () => Reflect.apply(nativeHistoryMethod!,raw,[]))); } } : {}),
+    ...(rewindFilesMethod ? { rewindFiles: async (messageId:string,dryRun:boolean) => projectNativeRewind(await nativeMutation("rewind native files", () => Reflect.apply(rewindFilesMethod!,raw,[messageId,dryRun]))) } : {}),
+    ...(listNativeTasksMethod ? {
+      listNativeTasks: async () => {
+        const value = await providerRuntimeOperation("list native tasks", () => Reflect.apply(listNativeTasksMethod!, raw, []));
+        try { return nativeTasks(value); }
+        catch (error) { throw boundaryError("project native tasks", error); }
+      },
+    } : {}),
+    ...(stopNativeTaskMethod ? {
+      stopNativeTask: async taskKey => {
+        const value = await nativeMutation("stop native task", () => Reflect.apply(stopNativeTaskMethod!, raw, [taskKey]));
+        try { return nativeStopOutcome(value); }
+        catch (error) { throw boundaryError("project native task stop", error); }
+      },
+    } : {}),
     ...(invokeCommandMethod ? {
       invokeCommand: async (name, argumentsText) => {
-        const value = await providerRuntimeOperation(
+        const value = await nativeMutation(
           "invoke provider command",
           () => Reflect.apply(invokeCommandMethod!, raw, [name, argumentsText]),
         );
@@ -476,11 +548,15 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
 export function providerProcessHandleFacade(value: unknown): RuntimeProcessHandle {
   let raw: object;
   let identity: RuntimeProcessIdentity | undefined;
+  let validatesResumeBeforeTurn: boolean | undefined;
   let isAliveMethod: (...args: unknown[]) => unknown;
   let closeMethod: (...args: unknown[]) => unknown;
   try {
     raw = target(value);
     identity = processIdentity(dataMember(raw, "processIdentity"));
+    const validation = dataMember(raw, "validatesResumeBeforeTurn");
+    if (validation !== undefined && typeof validation !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
+    validatesResumeBeforeTurn = validation as boolean | undefined;
     isAliveMethod = method(raw, "isAlive")!;
     closeMethod = method(raw, "close")!;
   } catch (error) {
@@ -488,6 +564,7 @@ export function providerProcessHandleFacade(value: unknown): RuntimeProcessHandl
   }
   return Object.freeze({
     ...(identity ? { processIdentity: identity } : {}),
+    ...(validatesResumeBeforeTurn !== undefined ? { validatesResumeBeforeTurn } : {}),
     isAlive(): boolean {
       let alive: unknown;
       try { alive = Reflect.apply(isAliveMethod, raw, []); }

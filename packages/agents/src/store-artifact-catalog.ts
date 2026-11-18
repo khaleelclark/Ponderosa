@@ -1,3 +1,7 @@
+import {validWorkingFileTransportPart,type WorkingFileTransportPart} from "./working-file-transport.js";
+import {activeChatOwnerSql} from "./product-scope-sql.js";
+import {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "@ponderosa/native-host/fs";
@@ -9,7 +13,7 @@ import type {
 } from "@ponderosa/core";
 import { relative, resolve, sep } from "node:path";
 import { readSecureFile } from "@ponderosa/native-host";
-import { publishManagedArtifactContent } from "./managed-artifact-files.js";
+import { removeManagedArtifactContent, publishManagedArtifactContent } from "./managed-artifact-files.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
@@ -17,6 +21,7 @@ import type {
   ArtifactProjectionReadRow,
   ManagedArtifactAccess,
   ManagedArtifactEvent,
+  ManagedProjectArtifact,
 } from "./store-types.js";
 
 type CursorBoundary = { orderKey: string; rowKey: string };
@@ -36,6 +41,7 @@ export class AgentArtifactCatalog {
     private readonly agentById: (agentId: string) => ArtifactAgent | undefined,
     private readonly projectExists: (projectId: string) => boolean,
     private readonly readAgentEvents: (agentId: string) => StoredLogEvent[],
+    private readonly progress: ProjectionProgress,
   ) {}
 
   retainDeletedAgentArtifactBytes(projectId: string, agentId: string, sourceDirectory: string): void {
@@ -222,10 +228,7 @@ export class AgentArtifactCatalog {
       WHERE project_id = ? ORDER BY created_at, artifact_id
     `).all(projectId) as Array<{ artifact_json: string }>;
     return rows
-      .map((row) => JSON.parse(row.artifact_json) as ArtifactDto & {
-        projectId: string;
-        originAgentId: string;
-      })
+      .map((row) => JSON.parse(row.artifact_json) as ManagedProjectArtifact)
       .map((artifact) => this.withProjectUrls(projectId, artifact));
   }
 
@@ -262,7 +265,7 @@ export class AgentArtifactCatalog {
    * the same stable key before the response page is formed. */
   getProjectArtifactPage(
     projectId: string,
-    input: { limit: number; cursor?: string; conversationId?: string; search?: string },
+    input: { limit: number; cursor?: string; conversationId?: string; search?: string;productScope?:'dev'|'branches' },
   ): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     const conversationId = input.conversationId?.trim() || undefined;
@@ -272,7 +275,8 @@ export class AgentArtifactCatalog {
     const baseScope = conversationId
       ? `${projectId}:conversation:${conversationId}`
       : projectId;
-    const cursorScope = search ? `${baseScope}:search:${createHash("sha256").update(search).digest("hex")}` : baseScope;
+    const scopedBase=input.productScope?`${baseScope}:product:${input.productScope}`:baseScope;
+    const cursorScope = search ? `${scopedBase}:search:${createHash("sha256").update(search).digest("hex")}` : scopedBase;
     const boundary = input.cursor
       ? this.decodeHistoryCursor(input.cursor, "project:artifacts", cursorScope)
       : undefined;
@@ -283,6 +287,7 @@ export class AgentArtifactCatalog {
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
+        ${input.productScope?`AND ${artifactAgentProductSql('agent',input.productScope)}`:''}
         ${conversationId ? `AND (agent.conversation_id = ? OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = artifact.agent_id
@@ -307,8 +312,11 @@ export class AgentArtifactCatalog {
     });
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
-        ${conversationId ? `AND (EXISTS (
+      WHERE project_id = ? AND owner_kind != 'working_file_part'
+        AND (json_extract(audience_json, '$.kind') = 'organization' OR owner_kind = 'operator_chat')
+        AND (owner_kind != 'operator_chat' OR EXISTS(SELECT 1 FROM conversations operator_chat WHERE operator_chat.id=owner_id AND operator_chat.project_id=managed_artifact_projection.project_id AND operator_chat.branch_execution_id IS NULL AND ${activeChatOwnerSql('operator_chat')}))
+        ${input.productScope?`AND ${managedArtifactProductSql('managed_artifact_projection',input.productScope)}`:''}
+        ${conversationId ? `AND ((owner_kind='operator_chat' AND owner_id=?) OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = json_extract(artifact_json, '$.originAgentId')
             AND membership.conversation_id = ?
@@ -332,16 +340,13 @@ export class AgentArtifactCatalog {
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, ...terms, limit + 1]
-        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), ...terms, limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, ...terms, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId, conversationId] : []), ...terms, limit + 1]
     )) as Array<{ artifact_json: string }>;
     const managed = managedRows.map((row) =>
       this.withProjectUrls(
         projectId,
-        JSON.parse(row.artifact_json) as ArtifactDto & {
-          projectId: string;
-          originAgentId: string;
-        },
+        JSON.parse(row.artifact_json) as ManagedProjectArtifact,
       ));
     const merged = new Map<string, ArtifactDto>();
     for (const artifact of executionArtifacts) merged.set(artifact.id, artifact);
@@ -380,10 +385,7 @@ export class AgentArtifactCatalog {
     if (!row) return undefined;
     return this.withProjectUrls(
       projectId,
-      JSON.parse(row.artifact_json) as ArtifactDto & {
-        projectId: string;
-        originAgentId: string;
-      },
+      JSON.parse(row.artifact_json) as ManagedProjectArtifact,
     );
   }
 
@@ -420,6 +422,7 @@ export class AgentArtifactCatalog {
       }
       return {
         id: artifact.id,
+        artifactKind: artifact.kind,
         agentId: artifact.originAgentId ?? artifact.agentId,
         name: artifact.summary ?? artifact.path.split("/").at(-1) ?? artifact.id,
         mediaType: artifact.mediaType!,
@@ -458,14 +461,22 @@ export class AgentArtifactCatalog {
     }
   }
 
+  isWorkingFileTransportPart(projectId:string,artifactIdValue:string):boolean {
+    const row=this.client.prepare("SELECT owner_kind FROM managed_artifact_projection WHERE project_id=? AND artifact_id=?").get(projectId,artifactIdValue) as {owner_kind?:string}|undefined;
+    return row?.owner_kind==='working_file_part';
+  }
+
   projectArtifactIsOrganizationVisible(projectId: string, artifactIdValue: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     return this.getProjectArtifactAccess(projectId, artifactIdValue)?.audience.kind
       === "organization";
   }
 
   projectArtifactBelongsToConversation(projectId: string, artifactIdValue: string, conversationId: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     const artifact = this.getProjectArtifact(projectId, artifactIdValue);
     const originId = artifact?.originAgentId ?? artifact?.agentId;
+    if (artifact?.origin?.kind === "operator") return artifact.origin.conversationId === conversationId && this.operatorCanReadProjectArtifact(projectId, artifactIdValue);
     if (!artifact || !originId) return false;
     // Canonical memberships/current custody or retained deletion attribution;
     // never infer from a profile namespace, rendered panel or last-use value.
@@ -476,13 +487,19 @@ export class AgentArtifactCatalog {
   }
 
   operatorCanReadProjectArtifact(projectId: string, artifactIdValue: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     // The single local operator owns the Project audit surfaces (including
     // Team Chat), but private artifacts still stay out of the organizational
     // catalog and future-agent context.
-    return Boolean(
-      this.projectExists(projectId)
-      && this.getProjectArtifactAccess(projectId, artifactIdValue),
-    );
+    const artifact = this.getProjectArtifact(projectId, artifactIdValue);
+    if (artifact?.origin?.kind === "operator") {
+      const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
+      return Boolean(artifact.agentId === artifact.origin.conversationId && artifact.originAgentId === undefined && artifact.executionId === undefined && artifact.kind === "document" && access?.ownerKind === "operator_chat" && access.ownerId === artifact.origin.conversationId &&
+        access.audience.kind === "user" && access.audience.userId === "local-operator" && this.client.prepare(
+          `SELECT 1 FROM conversations chat WHERE chat.id=? AND chat.project_id=? AND chat.branch_execution_id IS NULL AND ${activeChatOwnerSql('chat')}`,
+        ).get(artifact.origin.conversationId, projectId));
+    }
+    return Boolean(this.projectExists(projectId) && this.getProjectArtifactAccess(projectId, artifactIdValue));
   }
 
   agentCanReadProjectArtifact(
@@ -490,10 +507,12 @@ export class AgentArtifactCatalog {
     artifactIdValue: string,
     agentId: string,
   ): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     const agent = this.agentById(agentId);
     const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
     if (!agent || agent.projectId !== projectId || !access) return false;
     const artifact = this.getProjectArtifact(projectId, artifactIdValue);
+    if (artifact?.origin?.kind === "operator") return false;
     const originId = artifact?.originAgentId ?? artifact?.agentId;
     const origin = originId ? this.agentById(originId) : undefined;
     let ownerChat = origin?.conversationId;
@@ -517,7 +536,8 @@ export class AgentArtifactCatalog {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+      WHERE project_id = ? AND owner_kind != 'working_file_part'
+        AND json_extract(audience_json, '$.kind') = 'organization'
         AND (pinned = 1 OR visibility = 'published')
         AND (? IS NULL OR json_extract(artifact_json, '$.originAgentId') IN
           (SELECT id FROM agents WHERE conversation_id = ?))
@@ -526,11 +546,28 @@ export class AgentArtifactCatalog {
     return rows.map((row) =>
       this.withProjectUrls(
         projectId,
-        JSON.parse(row.artifact_json) as ArtifactDto & {
-          projectId: string;
-          originAgentId: string;
-        },
+        JSON.parse(row.artifact_json) as ManagedProjectArtifact,
       ));
+  }
+
+  recordOperatorChatArtifact(artifact: ArtifactDto & {projectId: string; origin: {kind: "operator"; conversationId: string}}): void {
+    if (artifact.agentId !== artifact.origin.conversationId || artifact.originAgentId !== undefined || artifact.executionId !== undefined || artifact.kind !== "document" || artifact.visibility !== "project" || artifact.pinned) throw new Error("Operator documents require exact Chat storage ownership without Agent/Run attribution");
+    this.assertOperatorChat(artifact.projectId, artifact.origin.conversationId);
+    this.progress.run([managedArtifactsLogPath(this.dataDir, artifact.projectId)], () => this.writeProjectArtifacts([{artifact,
+      access: {ownerKind: "operator_chat", ownerId: artifact.origin.conversationId, audience: {kind: "user", userId: "local-operator"}}}]));
+  }
+
+  purgeOperatorChatArtifacts(projectId: string, conversationId: string): void {
+    if (!this.client.prepare("SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=? AND project_id=? AND canonical_deletion_completed=1").get(conversationId, projectId)) throw new Error("Operator artifact cleanup requires the exact committed Chat deletion receipt");
+    const artifacts = this.getProjectArtifacts(projectId).filter(artifact => artifact.origin?.kind === "operator" && artifact.origin.conversationId === conversationId);
+    for (const artifact of artifacts) {
+      if (existsSync(managedArtifactContentPath(this.dataDir, projectId, artifact.id)) && !removeManagedArtifactContent(this.dataDir, projectId, artifact.id, artifact.size!, artifact.sha256!)) throw new Error("Operator Chat artifact cleanup remains pending");
+      this.deleteProjectArtifact(projectId, artifact.id, "operator_chat_deleted");
+    }
+  }
+
+  private assertOperatorChat(projectId: string, conversationId: string): void {
+    if (!this.client.prepare(`SELECT 1 FROM conversations chat WHERE chat.id=? AND chat.project_id=? AND chat.branch_execution_id IS NULL AND ${activeChatOwnerSql('chat')}`).get(conversationId, projectId)) throw new Error("Operator artifact destination Chat is unavailable");
   }
 
   recordProjectArtifact(
@@ -548,16 +585,50 @@ export class AgentArtifactCatalog {
     entries: ReadonlyArray<{
       artifact: ArtifactDto & { projectId: string; originAgentId: string };
       access?: ManagedArtifactAccess;
+      transportPart?:WorkingFileTransportPart;
     }>,
   ): void {
     if (entries.length === 0) return;
+    this.progress.run([managedArtifactsLogPath(this.dataDir, entries[0]!.artifact.projectId)],
+      () => this.writeProjectArtifacts(entries));
+  }
+
+  private writeProjectArtifacts(entries: ReadonlyArray<{
+    artifact: ManagedProjectArtifact;
+    access?: ManagedArtifactAccess;
+    transportPart?:WorkingFileTransportPart;
+  }>): void {
     const projectId = entries[0]!.artifact.projectId;
     if (!this.projectExists(projectId)) throw new Error("artifact project not found");
     const ids = new Set<string>();
     const events: ManagedArtifactEvent[] = [];
+    // Host association must cover the complete logical original in this
+    // publication batch. Never hide an unrelated user artifact based on MIME.
+    const transportGroups=new Map<string,{count:number;size:number;indices:Set<number>}>();
+    for(const entry of entries){
+      const part=entry.transportPart;if(!part)continue;
+      if(!validWorkingFileTransportPart(part,entry.artifact.id)||!entry.artifact.originAgentId||!Number.isSafeInteger(entry.artifact.size)||entry.artifact.size!<1)
+        throw Error('Invalid host working-file transport part');
+      const key=JSON.stringify([part.operationId,entry.artifact.originAgentId,part.filePath,part.fileByteLength,part.fileSha256,part.partCount]);
+      const group=transportGroups.get(key)??{count:part.partCount,size:0,indices:new Set<number>()};
+      if(group.indices.has(part.partIndex))throw Error('Duplicate working-file transport part');
+      group.indices.add(part.partIndex);group.size+=entry.artifact.size!;
+      if(!Number.isSafeInteger(group.size)||group.size>part.fileByteLength)throw Error('Working-file transport size differs');
+      transportGroups.set(key,group);
+    }
+    for(const [key,group] of transportGroups){
+      const [,,,size]=JSON.parse(key) as [string,string,string,number,string,number];
+      if(group.indices.size!==group.count||group.size!==size)throw Error('Incomplete working-file transport association');
+    }
     for (const entry of entries) {
-      const { artifact } = entry;
-      const access = entry.access ?? {
+      if(Object.hasOwn(entry.artifact,'transportPart')||entry.transportPart&&(!validWorkingFileTransportPart(entry.transportPart,entry.artifact.id)||entry.access)
+        ||entry.access?.ownerKind==='working_file_part')throw Error('Invalid host working-file transport part');
+      const artifact:ManagedProjectArtifact=entry.transportPart?{...entry.artifact,transportPart:entry.transportPart}:entry.artifact;
+      const access = entry.transportPart ? {
+        ownerKind: "working_file_part" as const,
+        ownerId: artifact.id,
+        audience: {kind:"organization" as const,organizationId:artifact.projectId},
+      } : entry.access ?? {
         ownerKind: "project" as const,
         ownerId: artifact.id,
         audience: {
@@ -574,10 +645,13 @@ export class AgentArtifactCatalog {
         || !Number.isSafeInteger(artifact.size)
         || artifact.size < 1
         || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "")
-        || !artifact.originAgentId.trim()
+        || (artifact.origin?.kind === "operator"
+          ? artifact.agentId !== artifact.origin.conversationId || artifact.originAgentId !== undefined || artifact.executionId !== undefined || artifact.kind !== "document" || access.ownerKind !== "operator_chat" || access.ownerId !== artifact.origin.conversationId || access.audience.kind !== "user" || access.audience.userId !== "local-operator"
+          : !artifact.originAgentId?.trim() || access.ownerKind === "operator_chat")
       ) {
         throw new Error("managed artifact immutable metadata is required");
       }
+      if (artifact.origin?.kind === "operator") this.assertOperatorChat(projectId, artifact.origin.conversationId);
       ids.add(artifact.id);
       const existing = this.getProjectArtifact(projectId, artifact.id);
       if (existing) {
@@ -604,6 +678,8 @@ export class AgentArtifactCatalog {
           immutableFields.every((field) =>
             existing[field] === artifact[field]
           )
+          && JSON.stringify(existing.origin) === JSON.stringify(artifact.origin)
+          && JSON.stringify((existing as ManagedProjectArtifact).transportPart) === JSON.stringify(artifact.transportPart)
           && JSON.stringify(existingAccess) === JSON.stringify(access)
         ) continue;
         throw new Error("managed artifact identity and provenance are immutable");
@@ -740,10 +816,7 @@ export class AgentArtifactCatalog {
     if (!row) {
       return;
     }
-    const artifact = JSON.parse(row.artifact_json) as ArtifactDto & {
-      projectId: string;
-      originAgentId: string;
-    };
+    const artifact = JSON.parse(row.artifact_json) as ManagedProjectArtifact;
     this.client.prepare(`
       UPDATE managed_artifact_projection SET visibility = ?, pinned = ?, artifact_json = ?
       WHERE project_id = ? AND artifact_id = ?

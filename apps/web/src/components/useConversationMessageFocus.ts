@@ -1,3 +1,4 @@
+import { mergeMainHistoryPage, type MainHistoryState } from "./ConversationView.helpers";
 import type {
   ConversationDecisionEventDto,
   ConversationMessageDto,
@@ -19,16 +20,10 @@ import {
 } from "../messageFocus";
 import {
   mergeConversationMessages,
-  mergeDecisionEvents,
 } from "./ConversationView.helpers";
 import type { ConversationActiveView } from "./useConversationActiveView";
 
-type OlderMain = {
-  messages: ConversationMessageDto[];
-  decisionEvents: ConversationDecisionEventDto[];
-  cursor?: string;
-  hasMore: boolean;
-};
+type OlderMain = MainHistoryState;
 
 type OlderCollaboration = {
   messages: ConversationMessageDto[];
@@ -152,20 +147,7 @@ export function useConversationMessageFocusEffect({
           void api
             .getConversation(conversationId, 100, undefined, focusMessageId)
             .then(page => {
-              setOlderMain(current => ({
-                messages: mergeConversationMessages(
-                  page.messages,
-                  current?.messages ?? [],
-                  detailQuery.data?.messages ?? [],
-                ),
-                decisionEvents: mergeDecisionEvents(
-                  page.decisionEvents ?? [],
-                  current?.decisionEvents ?? [],
-                  detailQuery.data?.decisionEvents ?? [],
-                ),
-                cursor: page.history?.cursor,
-                hasMore: page.history?.hasMore ?? false,
-              }));
+              setOlderMain(current => mergeMainHistoryPage(page, current, detailQuery.data));
               focusedMessage.current = page.messages.length
                 ? undefined
                 : `missing:${focusMessageId}`;

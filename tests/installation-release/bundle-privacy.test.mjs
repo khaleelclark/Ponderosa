@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertNoBuildMachinePaths, pruneNativeBuildFiles, prunePackageManagerMetadata } from "../../packaging/bundle-privacy.mjs";
+import { assertNoBuildMachinePaths, pruneNativeBuildFiles, prunePackageManagerMetadata, pruneOnnxLinuxX64Payloads } from "../../packaging/bundle-privacy.mjs";
 
 test("pnpm wrapper cleanup removes only build metadata and retains arguments, line endings and executable mode", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ponderosa-shim-privacy-"));
@@ -16,6 +16,7 @@ test("pnpm wrapper cleanup removes only build metadata and retains arguments, li
     for (const [name, newline] of [["shim", "\n"], ["shim-crlf", "\r\n"]]) {
       const body = ['#!/bin/sh', '# runtime comment', 'printf "%s\\n" "$@"', ''].join(newline);
       writeFileSync(path.join(bins, name), body + '# cmd-shim-target=C:/Users/build-user/staging/script.js' + newline, { mode: 0o755 });
+      if (process.platform !== "win32") chmodSync(path.join(bins, name), 0o755);
       writeFileSync(path.join(bins, name + ".cmd"), "@echo untouched\r\n");
       prunePackageManagerMetadata(root);
       assert.equal(readFileSync(path.join(bins, name), "utf8"), body);
@@ -106,4 +107,45 @@ test("only the pinned upstream libvips image may retain its public build paths",
     writeFileSync(path.join(root, "other.dylib"), upstream);
     assert.throws(() => assertNoBuildMachinePaths(root, ["/Users/runner"]), /Build-machine path remains/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function onnxPayloadFixture(root) {
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "1.27.0" }));
+  const header = Buffer.alloc(64); header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); header.writeUInt16LE(62, 18);
+  const target = path.join(root, "bin", "napi-v6", "linux", "x64"); mkdirSync(target, { recursive: true });
+  for (const name of ["onnxruntime_binding.node", "libonnxruntime.so.1"]) writeFileSync(path.join(target, name), Buffer.concat([header, Buffer.from(name)]));
+  for (const relative of ["darwin/arm64", "win32/x64", "linux/arm64"]) {
+    const directory = path.join(root, "bin", "napi-v6", relative); mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "non-target-binary"), "preserve unless this platform is excluded");
+  }
+  writeFileSync(path.join(root, "README.md"), "package documentation");
+  return target;
+}
+
+test("Linux x64 ONNX staging removes only non-target platform payloads and preserves exact target bytes", { skip: process.platform !== "linux" }, () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ponderosa-onnx-target-"));
+  try {
+    const target = onnxPayloadFixture(root);
+    const before = Object.fromEntries(readdirSync(target).map(name => [name, readFileSync(path.join(target, name))]));
+    assert.deepEqual(pruneOnnxLinuxX64Payloads(root).sort(), ["bin/napi-v6/darwin", "bin/napi-v6/linux/arm64", "bin/napi-v6/win32"]);
+    assert.deepEqual(readdirSync(path.join(root, "bin", "napi-v6")), ["linux"]);
+    assert.deepEqual(readdirSync(path.join(root, "bin", "napi-v6", "linux")), ["x64"]);
+    for (const [name, bytes] of Object.entries(before)) assert.deepEqual(readFileSync(path.join(target, name)), bytes);
+    assert.equal(readFileSync(path.join(root, "README.md"), "utf8"), "package documentation");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("ONNX target validation refuses missing/wrong-architecture target, versions and links before pruning", { skip: process.platform !== "linux" }, () => {
+  for (const mutation of ["missing", "wrong-architecture", "version", "symlink"]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "ponderosa-onnx-refusal-"));
+    try {
+      const target = onnxPayloadFixture(root); const library = path.join(target, "libonnxruntime.so.1");
+      if (mutation === "missing") rmSync(library);
+      if (mutation === "wrong-architecture") { const bytes = readFileSync(library); bytes.writeUInt16LE(183, 18); writeFileSync(library, bytes); }
+      if (mutation === "version") writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "9.0.0" }));
+      if (mutation === "symlink") { const directory = path.join(root, "bin", "napi-v6", "darwin"); rmSync(directory, { recursive: true }); symlinkSync(target, directory); }
+      assert.throws(() => pruneOnnxLinuxX64Payloads(root));
+      assert.equal(existsSync(path.join(root, "bin", "napi-v6", "linux", "arm64", "non-target-binary")), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });

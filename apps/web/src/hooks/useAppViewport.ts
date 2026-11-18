@@ -32,8 +32,9 @@ export function appViewportBlockSize({
  * origin and height separately; adding the pan offset to its height would put
  * its bottom below the visible region. Other platforms keep their layout.
  */
-export function useAppViewport(): void {
+export function useAppViewport(enabled = true): void {
   useLayoutEffect(() => {
+    if (!enabled) return;
     const root = document.documentElement;
     const viewport = window.visualViewport;
     const ios = isIOSDevice();
@@ -75,5 +76,5 @@ export function useAppViewport(): void {
       root.style.removeProperty("--ponderosa-app-viewport-top");
       delete root.dataset.iosViewport;
     };
-  }, []);
+  }, [enabled]);
 }

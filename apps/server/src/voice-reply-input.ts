@@ -1,0 +1,98 @@
+import {activeChatResourceOwner} from "./branch-resource-owner.js";
+import type { CommunicationEvent, ReplyStreamPublication } from "@ponderosa/core";
+import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
+import { canonicalDefaultReplyRoute } from "./required-reply-route.js";
+
+/** Read eligibility from this Run's canonical intake, never caller flags or
+ * provider history. Run startup, prompt selection and the tool route share it;
+ * Callers enforce capability, lease/fence, steering and receipt checks. */
+export function canonicalVoiceReplyInput(
+  store: AgentStore,
+  coordination: CoordinationV3Store,
+  scope: { runId: string; agentId: string; conversationId?: string },
+  presentation: "voice" | "text" = "voice",
+  publication?: Extract<ReplyStreamPublication, {kind: "message"}>,
+): { input: CommunicationEvent; activationId: string } | undefined {
+  if (presentation === "text") return canonicalTextReplyInput(store, coordination, scope, publication);
+  const { runId, agentId, conversationId } = scope;
+  if (!conversationId) return undefined;
+  // A steering packet owns its own source. Older attached work and satisfied
+  // call turns cannot authorize this turn or borrow its response.
+  const latest = coordination.latestAcknowledgedPromptInjection(runId);
+  const ids = latest ? coordination.activationIdsForInjection(latest.id, runId)
+    : coordination.activationIdsAttachedToRun(runId, agentId);
+  if (ids.length !== 1) return undefined;
+  if (coordination.requiredReplyObligationsForRun(runId).some(o =>
+      o.sourceActivationId === ids[0] && o.state !== "pending")) return undefined;
+  const activations = coordination.activationPayloads(agentId, ids, runId);
+  if (activations.length !== 1 || activations[0]!.kind !== "human_message" ||
+      activations[0]!.promptClass !== "human") return undefined;
+  const payload = activations[0]!.payload as {
+    communication?: Partial<CommunicationEvent>; dispatch?: { voiceReply?: unknown };
+  } | undefined;
+  const eventId = payload?.communication?.eventId;
+  if (typeof eventId !== "string" || payload?.dispatch?.voiceReply !== true) return undefined;
+  const canonical = coordination.runtimeCommunicationForEvent(eventId, agentId);
+  if (!canonical?.activations?.some(a => a.id === ids[0] && a.agentId === agentId)) return undefined;
+  const accepted = canonical.payload as {
+    communication?: CommunicationEvent;
+    dispatch?: { voiceReply?: unknown; activeRunDelivery?: unknown; conversationId?: unknown; recipients?: Array<{ agentId?: unknown }> };
+  } | undefined;
+  const input = accepted?.communication;
+  const dispatch = accepted?.dispatch;
+  const agent = store.getAgent(agentId);
+  const chat = store.getConversation(conversationId);
+  if (!input || input.eventId !== eventId || input.intent !== "user_dm" || input.sender?.kind !== "user" ||
+      input.sender.userId !== "local-operator" || input.audience?.kind !== "user_agents" ||
+      input.audience.userId !== input.sender.userId || !Array.isArray(input.audience.agentIds) ||
+      input.audience.agentIds.length !== 1 || input.audience.agentIds[0] !== agentId ||
+      input.conversationId !== conversationId || input.document !== undefined ||
+      dispatch?.voiceReply !== true || dispatch.activeRunDelivery !== "steer" || dispatch.conversationId !== conversationId ||
+      !Array.isArray(dispatch.recipients) || dispatch.recipients.length !== 1 || dispatch.recipients[0]?.agentId !== agentId ||
+      !agent || !activeChatResourceOwner(store,"agent",agent.id) || !chat || !activeChatResourceOwner(store,"conversation",chat.id) || agent.projectId !== input.projectId ||
+      chat.projectId !== input.projectId || canonical.projectId !== input.projectId || agent.conversationId !== chat.id ||
+      coordination.voiceReplyRunTiming(eventId, agentId)?.runId !== runId) return undefined;
+  return { input, activationId: ids[0]! };
+}
+
+/** Text publication uses the canonical default route, including shared Chat and
+ * passive peer messages. Explicit mixed-route selection is checked against the
+ * accepted source; correlated results use the separate Request selection. */
+export function canonicalTextReplyInput(store: AgentStore, coordination: CoordinationV3Store,
+  scope: { runId: string; agentId: string; conversationId?: string },
+  publication?: Extract<ReplyStreamPublication, {kind: "message"}>,
+): { input: CommunicationEvent; activationId: string } | undefined {
+  const {runId,agentId,conversationId}=scope;
+  const route=publication??canonicalDefaultReplyRoute(coordination,runId,agentId);
+  const agent=store.getAgent(agentId),chat=conversationId?store.getConversation(conversationId):undefined;
+  if(!route || !agent || !chat || agent.conversationId!==chat.id || agent.projectId!==chat.projectId ||
+      !activeChatResourceOwner(store,"agent",agentId) || !activeChatResourceOwner(store,"conversation",chat.id) ||
+      (!publication && coordination.requestIdsAttachedToRun(runId,agentId).length))return undefined;
+  const ids=coordination.activationIdsAttachedToRun(runId,agentId);
+  const sources=coordination.activationPayloads(agentId,ids,runId);
+  let selected: {input:CommunicationEvent;activationId:string}|undefined;
+  for(const source of sources){
+    const opening=source.kind==="managed_agent_opening";
+    if(!opening && !["human_message","urgent_message","ordinary_message"].includes(source.kind))continue;
+    const payload=source.payload as {communication?:CommunicationEvent;dispatch?:{voiceReply?:boolean}}|undefined;
+    const id=payload?.communication?.eventId;
+    if(!id || payload?.dispatch?.voiceReply===true)continue;
+    const canonical=coordination.runtimeCommunicationForEvent(id, agentId);
+    const input=(canonical?.payload as {communication?:CommunicationEvent}|undefined)?.communication;
+    if(!input || input.eventId!==id || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
+        !canonical?.activations?.some(a=>a.id===source.id&&a.agentId===agentId))continue;
+    // Creation's first human turn is canonical intake, not a general opening bypass.
+    if(opening && (source.promptClass!=="human" || input.eventId!==`agent-opening:${agentId}` ||
+        input.sender?.kind!=="user" || input.sender.userId!=="local-operator"))continue;
+    const direct=route.intent==='direct_to_user' && input.intent==='user_dm' && input.sender.kind==='user' &&
+      input.sender.userId==='local-operator' && (input.audience.kind==='user_agent' ? input.audience.agentId===agentId
+      : input.audience.kind==='user_agents' && input.audience.agentIds.includes(agentId));
+    const shared=route.intent==='broadcast' && input.intent==='broadcast' && input.sender.kind==='user';
+    const peer=route.intent==='collaboration' && input.intent==='collaboration' && input.sender.kind==='agent' &&
+      input.audience.agentIds.includes(agentId) && route.recipientAgentIds?.length===1 && route.recipientAgentIds[0]===input.sender.agentId;
+    const obligations=coordination.requiredReplyObligationsForRun(runId).filter(o=>o.sourceActivationId===source.id);
+    if((direct||shared||peer) && (!obligations.length || obligations.some(o=>o.state==='pending')))
+      selected={input,activationId:source.id};
+  }
+  return selected;
+}

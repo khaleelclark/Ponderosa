@@ -1,6 +1,10 @@
+import type { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
+import { CapabilityPolicyStore } from "./capability-policy-store.js";
+import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   publicProviderFailureSummary,
+  isGrantOnlyRestrictionsChange, runtimeRestrictions,
   TERMINAL_REQUEST_STATES,
   type CoordinationReplyAuthority,
   type CoordinationRequestState,
@@ -11,6 +15,8 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { hasUnresolvedHumanSteering, unfinishedHumanSourceActivationIds } from "./coordination-v3-required-reply-authority.js";
+import { renderUnfinishedHumanTaskContext } from "./coordination-v3-task-objective.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -24,6 +30,28 @@ function boundedInternalRolloverFailure(error: string): string {
     return "Context rollover failed due to an internal runtime error.";
   }
   return value.slice(0, MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS);
+}
+
+/** The old tuple owns the isolated handoff; the target tuple owns the
+ * replacement and the still-pending user work. */
+export interface SettingsTransition {
+  reason:"settings"|"voice"|"prompt";
+  targetSystemPromptHash?:string; targetRestrictionsHash?:string;
+  activationId:string; sourceRunId:string; sourceFence:number;
+  oldSessionId:string; oldContractHash:string;
+  engineId:string; model:string; effort?:string; speed?:string;
+  targetModel:string; targetEffort?:string; targetSpeed?:string;
+  authorizationSignatureHash?:string; authorizationOriginRunId?:string;
+}
+
+/** One operator working-folder choice, retained on its existing rollover. */
+export interface WorkingCopyTransition {
+  mode:"shared"|"separate_git";
+  oldCopy:{id:string;mode:"shared"|"separate_git";rootPath:string};
+  appliedCopy?:{id:string;mode:"shared"|"separate_git";rootPath:string};
+  mutationStarted?:boolean; keptCurrent?:boolean; failureMessage?:string;
+  sourceRunId:string; oldSessionId:string; sourceFence:number; oldContractHash:string; settingsHash:string;
+  authorizationSignatureHash?:string; authorizationOriginRunId?:string;
 }
 
 interface RolloverRow {
@@ -60,15 +88,248 @@ export class CoordinationV3ContextRolloverAuthority {
   constructor(
     private readonly sqlite: Database.Database,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly recoveryAuthority: () => CoordinationV3ContextRecoveryAuthority,
   ) {}
+
+  /** The original handoff Activation is retained as durable transition
+   * evidence even after consumption; retries must carry the identical marker. */
+  private settingsTransition(id:string):SettingsTransition|undefined {
+    const rows=this.sqlite.prepare(`SELECT activation.payload_json FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id=activation.id
+      WHERE source.source_kind='context_rollover' AND source.source_id=? AND activation.kind='context_rollover_handoff'
+      ORDER BY activation.created_at,activation.id`).all(id) as Array<{payload_json:string}>;
+    let marker:SettingsTransition|undefined;
+    for(const row of rows){
+      const candidate=JSON.parse(row.payload_json)?.settingsTransition as SettingsTransition|undefined;
+      if(!candidate)continue;
+      if(marker && stableJson(marker)!==stableJson(candidate))throw new Error("Settings transition evidence is ambiguous");
+      marker=candidate;
+    }
+    return marker;
+  }
+
+  workingCopyTransition(id:string):WorkingCopyTransition|undefined {
+    const rows=this.sqlite.prepare(`SELECT a.payload_json FROM agent_activations a
+      JOIN activation_sources s ON s.activation_id=a.id
+      WHERE s.source_kind='context_rollover' AND s.source_id=? AND a.kind='context_rollover_handoff'
+      ORDER BY a.created_at,a.id`).all(id) as Array<{payload_json:string}>;
+    let marker:WorkingCopyTransition|undefined;
+    for(const row of rows){const next=JSON.parse(row.payload_json)?.workingCopyTransition as WorkingCopyTransition|undefined;
+      if(!next)continue;
+      if(marker&&stableJson(marker)!==stableJson(next))throw Error('Working-folder transition evidence is ambiguous');
+      marker=next;}
+    return marker;
+  }
+
+  workingCopyTransitionForAgent(agentId:string):{rollover:ContextRolloverV3;change:WorkingCopyTransition}|undefined {
+    const row=this.sqlite.prepare(`SELECT r.id FROM context_rollovers r WHERE r.agent_id=?
+      AND EXISTS(SELECT 1 FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id
+        WHERE s.source_kind='context_rollover' AND s.source_id=r.id AND a.kind='context_rollover_handoff'
+          AND json_type(a.payload_json,'$.workingCopyTransition')='object')
+      ORDER BY r.rowid DESC LIMIT 1`).get(agentId) as {id:string}|undefined;
+    const rollover=row&&this.get(row.id),change=row&&this.workingCopyTransition(row.id);
+    return rollover&&change?{rollover,change}:undefined;
+  }
+
+  updateWorkingCopyTransition(id:string,runId:string,fencingToken:number,fields:{mutationStarted?:true;failureMessage?:string}):void {
+    this.sqlite.transaction(()=>{
+      const r=this.get(id),marker=this.workingCopyTransition(id);
+      const owned=r&&this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE run.id=? AND run.agent_id=? AND run.fencing_token=? AND run.status IN ('leased','running') AND attached.activation_id=?`)
+        .get(runId,r.agentId,fencingToken,r.continuationActivationId);
+      if(!r||!marker||r.state!=='continuation_ready'||!owned)throw Error('The working-folder result lost its exact Run custody.');
+      for(const [key,value] of Object.entries(fields))this.sqlite.prepare(`UPDATE agent_activations
+        SET payload_json=json_set(payload_json,?,json(?)) WHERE kind='context_rollover_handoff'
+        AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`)
+        .run('$.workingCopyTransition.'+key,JSON.stringify(value),id);
+    })();
+  }
+
+  canKeepWorkingCopyTransition(id:string):boolean {
+    const r=this.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(id) as RolloverRow|undefined,marker=this.workingCopyTransition(id);
+    if(!r||!marker||marker.mutationStarted||marker.appliedCopy||r.state!=='failed'||!r.handoff_event_id||r.replacement_input_committed_at||r.replacement_session_id)return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
+      AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.mode')=? AND json_extract(a.working_copy_json,'$.rootPath')=?
+      AND json_extract(a.working_copy_json,'$.state')='ready'
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND (run.status IN ('leased','running')
+        OR run.fencing_token>=? AND (run.status='outcome_unknown' OR run.prompt_injection_state='injecting')))
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE attached.activation_id=? AND (run.prompt_injection_state<>'not_injected' OR run.provider_session_id IS NOT NULL))
+      AND NOT EXISTS(SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=a.id AND p.state IN ('paused','resume_requested'))
+      AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests p WHERE p.agent_id=a.id AND p.state='unsupported_fenced')`)
+      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,marker.oldCopy.id,marker.oldCopy.mode,marker.oldCopy.rootPath,marker.sourceFence,r.continuation_activation_id));
+  }
+
+  keepWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
+    this.sqlite.transaction(()=>{
+      if(!this.canKeepWorkingCopyTransition(id))throw Error('This folder change may have applied or submitted provider input. Its context must remain held.');
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.keptCurrent',json('true'))
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET state='completed',completion_reason=NULL,last_error=NULL,
+        terminal_at=?,updated_at=? WHERE id=? AND state='failed'`).run(now,now,id);
+    })();
+  }
+
+  /** Bind only setMode's returned canonical tuple under the exact replacement lease. */
+  recordWorkingCopyTransitionCopy(input:{id:string;runId:string;fencingToken:number;
+    previous:WorkingCopyTransition['oldCopy'];copy:WorkingCopyTransition['oldCopy']}):void {
+    this.sqlite.transaction(()=>{
+      const marker=this.workingCopyTransition(input.id),r=this.get(input.id);
+      const known=marker?.appliedCopy??marker?.oldCopy;
+      const owner=r&&this.sqlite.prepare(`SELECT a.working_copy_json FROM agents a JOIN scheduler_runs run ON run.agent_id=a.id
+        JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE a.id=? AND a.project_id=? AND run.id=? AND run.fencing_token=? AND run.status IN ('leased','running')
+          AND attached.activation_id=?`).get(r.agentId,r.projectId,input.runId,input.fencingToken,r.continuationActivationId) as {working_copy_json:string}|undefined;
+      const copy=owner&&JSON.parse(owner.working_copy_json);
+      if(!r||r.state!=='continuation_ready'||!known||stableJson(known)!==stableJson(input.previous)||
+        !copy||copy.id!==input.copy.id||copy.mode!==input.copy.mode||copy.rootPath!==input.copy.rootPath)
+        throw Error('Working-folder receipt lost its exact intent or Run ownership; preserve the folder and handoff.');
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.appliedCopy',json(?))
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`)
+        .run(JSON.stringify(input.copy),r.id);
+    })();
+  }
+
+  /** Explicit Save retry only before any replacement provider input. Never replay a handoff. */
+  retryWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
+    this.sqlite.transaction(()=>{
+      const row=this.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(id) as RolloverRow|undefined;
+      const marker=this.workingCopyTransition(id);
+      if(!row||!marker||row.state!=='failed'||!row.handoff_event_id||row.replacement_input_committed_at||row.replacement_session_id)
+        throw Error('Working-folder recovery is uncertain. Inspect Activity before another change.');
+      const prior=this.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(row.continuation_activation_id) as {payload_json:string}|undefined;
+      const injected=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id
+        WHERE attached.activation_id=? AND (r.prompt_injection_state<>'not_injected' OR r.provider_session_id IS NOT NULL
+          OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND (i.submitted_at IS NOT NULL OR i.state='outcome_unknown')))`)
+        .get(row.continuation_activation_id);
+      const known=marker.appliedCopy??marker.oldCopy;
+      const accepted=this.sqlite.prepare(`SELECT 1 FROM agents WHERE id=? AND active_session_id=? AND active_session_contract_hash=?
+        AND json_extract(working_copy_json,'$.id')=? AND json_extract(working_copy_json,'$.mode')=? AND json_extract(working_copy_json,'$.rootPath')=?`)
+        .get(row.agent_id,row.old_provider_session_id,marker.oldContractHash,known.id,known.mode,known.rootPath);
+      if(!prior||injected||!accepted)throw Error('Working-folder continuation cannot be safely retried; inspect its retained context.');
+      const attempts=(this.sqlite.prepare(`SELECT count(*) n FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+        WHERE s.source_kind='context_rollover' AND s.source_id=? AND a.kind='context_rollover_continuation'`).get(id) as {n:number}).n;
+      const activationId=this.createActivation({projectId:row.project_id,agentId:row.agent_id,scopeKey:row.scope_key,
+        kind:'context_rollover_continuation',priority:110,dispatchPolicy:'next_run',promptClass:'blocker',
+        dedupeKey:`working-folder-retry:${id}:${attempts}`,payload:JSON.parse(prior.payload_json),sourceKind:'context_rollover',sourceId:id,now});
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_remove(payload_json,'$.workingCopyTransition.failureMessage')
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET state='continuation_ready',continuation_activation_id=?,
+        replacement_run_id=NULL,last_error=NULL,failure_signal=NULL,terminal_at=NULL,updated_at=? WHERE id=?`)
+        .run(activationId,now,id);
+    })();
+  }
+
+  /** Read the exact same eligibility used by the transaction that reserves
+   * a transition; callers must still recheck under that transaction. */
+  settingsTransitionUnsubmittedActivation(input:{projectId:string;agentId:string;activationId:string;scopeKey:string}):boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+      WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=?
+        AND ${transitionUnsubmittedActivationSql('a')}`)
+      .get(input.activationId,input.projectId,input.agentId,input.scopeKey));
+  }
+
+  /** Record only an exact, provably unsubmitted activation. The fingerprint is
+   * caller-computed from the observed source session and effective settings;
+   * it is not a credential or a provider payload. */
+  holdSettingsTransitionReservation(input: { projectId:string; agentId:string; activationId:string; fingerprint:string }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND ${transitionUnsubmittedActivationSql('a')}`)
+        .get(input.activationId,input.agentId,input.projectId);
+      if (!pending) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_reservation_wait',?)`).run(input.activationId,input.fingerprint);
+      return true;
+    })();
+  }
+
+  /** Fence exact queued work whose old attempt evidence is uncertain. This
+   * records no permission to execute or retry; later reads re-prove eligibility. */
+  holdUncertainSettingsTransitionReservation(input: {
+    projectId:string;agentId:string;activationId:string;scopeKey:string;fingerprint:string;
+  }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const queued=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=? AND a.state IN ('pending','retry_pending')`)
+        .get(input.activationId,input.projectId,input.agentId,input.scopeKey);
+      if (!queued) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_reservation_wait',?)`).run(input.activationId,input.fingerprint);
+      return true;
+    })();
+  }
+
+  /** Re-evaluate only after the observed identity/settings fingerprint changes.
+   * Uncertain rollover holds are independent and cannot be released here. */
+  settingsTransitionReservationHeld(input: { projectId:string; agentId:string; activationId:string; fingerprint:string }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND ${transitionUnsubmittedActivationSql('a')}`)
+        .get(input.activationId,input.agentId,input.projectId);
+      if (!pending) return Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources held
+        JOIN agent_activations a ON a.id=held.activation_id WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND a.state IN ('pending','retry_pending','attached','outcome_unknown')
+          AND held.source_kind='settings_transition_reservation_wait'`).get(input.activationId,input.agentId,input.projectId));
+      const removed=this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id=?
+        AND source_kind='settings_transition_reservation_wait' AND source_id<>?`).run(input.activationId,input.fingerprint);
+      const stillHeld=Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
+        AND source_kind='settings_transition_reservation_wait' AND source_id=?`).get(input.activationId,input.fingerprint));
+      // A changed fingerprint permits a fresh admission check, not steering the
+      // old Run before that check has established the new context is safe.
+      if(removed.changes&&!stillHeld)this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_retry_pending','preflight')`).run(input.activationId);
+      return stillHeld;
+    })();
+  }
+
+  /** A changed effective target can release only a failure before any handoff
+   * Run attached, with the exact original session still active. Anything that
+   * might have reached a provider stays held for explicit recovery. */
+  releaseUnstartedFailedSettingsTransition(input: {
+    projectId:string; agentId:string; activationId:string; rolloverId:string;
+    targetModel:string; targetEffort?:string; targetSpeed?:string;
+  }): boolean {
+    return this.sqlite.transaction(() => {
+      const rollover=this.get(input.rolloverId);
+      const marker=this.settingsTransition(input.rolloverId);
+      if (!rollover || !marker || rollover.state!=='failed' ||
+          rollover.projectId!==input.projectId || rollover.agentId!==input.agentId ||
+          marker.activationId!==input.activationId || !input.targetModel?.trim() ||
+          (marker.targetModel===input.targetModel && (marker.targetEffort??null)===(input.targetEffort??null) &&
+           (marker.targetSpeed??null)===(input.targetSpeed??null))) return false;
+      const safe=this.sqlite.prepare(`SELECT 1 FROM agent_activations original JOIN agents ag ON ag.id=original.agent_id
+        WHERE original.id=? AND original.project_id=? AND original.agent_id=?
+          AND ${transitionUnsubmittedActivationSql('original')}
+          AND ag.project_id=original.project_id AND ag.deleted_at IS NULL AND ag.active_session_id=?
+          AND ag.active_session_contract_hash=?
+          AND NOT EXISTS(SELECT 1 FROM activation_sources src JOIN scheduler_run_activations attached
+            ON attached.activation_id=src.activation_id
+            WHERE src.source_kind='context_rollover' AND src.source_id=?)`)
+        .get(input.activationId,input.projectId,input.agentId,marker.oldSessionId,marker.oldContractHash,input.rolloverId);
+      if (!safe || rollover.handoffEventId || rollover.replacementRunId) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_release',?)`).run(input.activationId,input.rolloverId);
+      return true;
+    })();
+  }
 
   request(input: {
     projectId: string; agentId: string; oldProviderSessionId: string;
     providerSessionGeneration: string; detectedOccupancy?: number; aggregateTokens?: number;
     threshold: number; contextWindow?: number; lowWaterMark: number;
     triggerKind?: "automatic" | "human";
+    settingsTransition?: SettingsTransition;
+    workingCopyTransition?: WorkingCopyTransition;
     /** Explicit idle recovery with no provider-held unfinished work. */
     canonicalOnlyRefresh?: { fencingToken: number };
+    /** Internal fallback: exact invoked recovery, not permission to replay its work. */
+    recoveryReconstruction?: { recoveryId:string };
     sourceRunId: string;
     compactionCutoffOrdinal: number; compactionCutoffEventId: string;
     recentTail: Array<{ communicationEventId: string; contentSha256: string }>;
@@ -77,7 +338,7 @@ export class CoordinationV3ContextRolloverAuthority {
   }): { rollover: ContextRolloverV3; created: boolean } {
     const now = input.now ?? new Date().toISOString();
     if (input.detectedOccupancy !== undefined && (!Number.isSafeInteger(input.detectedOccupancy) ||
-        input.detectedOccupancy < 0) || input.triggerKind !== "human" && input.detectedOccupancy === undefined) {
+        input.detectedOccupancy < 0) || input.triggerKind !== "human" && !input.settingsTransition && !input.recoveryReconstruction && input.detectedOccupancy === undefined) {
       throw new Error("context rollover requires valid measured occupancy or an explicit human refresh");
     }
     if (!Number.isSafeInteger(input.compactionCutoffOrdinal) || input.compactionCutoffOrdinal <= 0 ||
@@ -91,6 +352,105 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      let reconstructionPredecessorId:string|undefined;
+      if(input.recoveryReconstruction) {
+        if(input.canonicalOnlyRefresh||input.settingsTransition||input.workingCopyTransition||input.triggerKind==='human'||input.detectedOccupancy!==undefined)
+          throw new Error('Reconstruction cannot impersonate a native measurement or another transition');
+        const r=this.recoveryAuthority().assertReconstruction(input.agentId,input.recoveryReconstruction.recoveryId);
+        if(r.projectId!==input.projectId||r.sourceRunId!==input.sourceRunId||r.scopeKey!==input.scopeKey||
+          r.providerSessionId!==input.oldProviderSessionId||r.providerSessionId!==input.providerSessionGeneration)
+          throw new Error('Reconstruction does not match its recovery source');
+        reconstructionPredecessorId=this.recoveryAuthority().reconstructionPredecessor(r);
+      }
+      if(input.workingCopyTransition){
+        const t=input.workingCopyTransition;
+        if(input.triggerKind!=='human'||input.settingsTransition||input.canonicalOnlyRefresh||t.sourceRunId!==input.sourceRunId||t.oldSessionId!==input.oldProviderSessionId||
+          !['shared','separate_git'].includes(t.mode)||!['shared','separate_git'].includes(t.oldCopy.mode)||
+          !t.oldCopy.id||!t.oldCopy.rootPath||!Number.isSafeInteger(t.sourceFence)||t.sourceFence<1||
+          !/^[a-f0-9]{64}$/.test(t.oldContractHash)||!/^[a-f0-9]{64}$/.test(t.settingsHash))throw Error('Invalid exact working-folder transition');
+        const source=this.sqlite.prepare(`SELECT 1 FROM agents a JOIN scheduler_runs r ON r.agent_id=a.id
+          WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
+            AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.rootPath')=? AND json_extract(a.working_copy_json,'$.mode')=?
+            AND r.id=? AND r.provider_session_id=a.active_session_id AND r.fencing_token=? AND r.scope_key=?
+            AND r.status='completed' AND r.prompt_injection_state='injected'
+            AND EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.kind='turn' AND i.state='acknowledged')
+            AND NOT EXISTS(SELECT 1 FROM scheduler_runs later WHERE later.agent_id=a.id AND (later.status IN ('leased','running')
+              OR later.fencing_token>r.fencing_token AND (later.status='outcome_unknown' OR later.prompt_injection_state='injecting' OR later.prompt_injection_state<>'not_injected')))`)
+          .get(input.agentId,input.projectId,input.oldProviderSessionId,t.oldContractHash,t.oldCopy.id,t.oldCopy.rootPath,t.oldCopy.mode,input.sourceRunId,t.sourceFence,input.scopeKey);
+        if(!source)throw Error('The saved working-folder context boundary changed; context and folder were retained.');
+      }
+      if(input.settingsTransition){
+        const t=input.settingsTransition;
+        const sameRuntimeSettings=t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??'standard')===(t.targetSpeed??'standard');
+        if(input.triggerKind==='human' || input.canonicalOnlyRefresh || t.sourceRunId!==input.sourceRunId ||
+           !Number.isSafeInteger(t.sourceFence) || t.sourceFence<1 || !['codex','claude'].includes(t.engineId) ||
+           !t.activationId || input.sourceActivationIds.includes(t.activationId) || !t.model?.trim() || !t.targetModel?.trim() ||
+           !/^[a-f0-9]{64}$/u.test(t.oldContractHash) ||
+           ((t.authorizationSignatureHash===undefined)!==(t.authorizationOriginRunId===undefined)) ||
+           (t.authorizationSignatureHash!==undefined && (!/^[a-f0-9]{64}$/u.test(t.authorizationSignatureHash) || !t.authorizationOriginRunId?.trim())) || t.oldSessionId!==input.oldProviderSessionId ||
+           t.oldSessionId!==input.providerSessionGeneration ||
+           (t.reason!=='settings' && t.reason!=='voice' && t.reason!=='prompt') ||
+           (t.targetSystemPromptHash!==undefined && !/^[a-f0-9]{64}$/u.test(t.targetSystemPromptHash)) ||
+           (t.targetRestrictionsHash!==undefined && !/^[a-f0-9]{64}$/u.test(t.targetRestrictionsHash)) ||
+           (t.reason==='prompt' && (!/^[a-f0-9]{64}$/u.test(t.targetSystemPromptHash??'') ||
+            t.model!==t.targetModel || (t.effort??null)!==(t.targetEffort??null) ||
+            (t.speed??'standard')!==(t.targetSpeed??'standard'))) ||
+           (t.reason==='settings' && sameRuntimeSettings && !t.targetRestrictionsHash))
+          throw new Error("Invalid exact settings transition");
+        const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id
+          WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=?
+            AND ${transitionUnsubmittedActivationSql('a')}
+            AND ag.project_id=a.project_id AND ag.deleted_at IS NULL AND ag.active_engine=?
+            AND ag.active_session_id=? AND ag.active_session_contract_hash=?`)
+          .get(t.activationId,input.projectId,input.agentId,input.scopeKey,t.engineId,t.oldSessionId,t.oldContractHash);
+        if (t.reason === "voice") {
+          const row = this.sqlite.prepare(`SELECT a.kind,a.prompt_class,a.payload_json,r.id AS runtime_id,r.payload_json AS runtime_payload
+            FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id AND s.source_kind='communication'
+            JOIN runtime_communications r ON r.id=s.source_id AND r.project_id=a.project_id
+            JOIN agents ag ON ag.id=a.agent_id AND ag.project_id=a.project_id
+            JOIN conversations c ON c.id=ag.conversation_id AND c.project_id=a.project_id
+            WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND c.id=?`)
+            .get(t.activationId,input.agentId,input.projectId,input.conversationId ?? '') as
+              {kind:string;prompt_class:string;payload_json:string;runtime_id:string;runtime_payload:string}|undefined;
+          let activation:any, accepted:any;
+          try { activation=JSON.parse(row?.payload_json??'null'); accepted=JSON.parse(row?.runtime_payload??'null'); } catch { /* hold */ }
+          const eventId=activation?.communication?.eventId, event=accepted?.communication, dispatch=accepted?.dispatch;
+          const canonicalId=typeof eventId==='string' && this.sqlite.prepare("SELECT 1 FROM runtime_communications WHERE id=?").get(eventId)
+            ? eventId : `dispatch:${eventId}:${input.agentId}`;
+          if (!row || row.kind!=='human_message' || row.prompt_class!=='human' || typeof eventId!=='string' ||
+              row.runtime_id!==canonicalId || activation?.dispatch?.voiceReply!==true ||
+              event?.eventId!==eventId || event?.projectId!==input.projectId || event?.conversationId!==input.conversationId ||
+              event?.intent!=='user_dm' || event?.sender?.kind!=='user' || event?.sender?.userId!=='local-operator' ||
+              event?.audience?.kind!=='user_agents' || event?.audience?.userId!=='local-operator' ||
+              !Array.isArray(event?.audience?.agentIds) || event.audience.agentIds.length!==1 ||
+              event.audience.agentIds[0]!==input.agentId || event.document!==undefined ||
+              dispatch?.voiceReply!==true || !['queue','steer'].includes(dispatch.activeRunDelivery) || dispatch.conversationId!==input.conversationId ||
+              !Array.isArray(dispatch.recipients) || dispatch.recipients.length!==1 || dispatch.recipients[0]?.agentId!==input.agentId)
+            throw new Error("Settings transition requires exact canonical unsubmitted voice work");
+        }
+        const source=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.id=? AND r.project_id=? AND r.agent_id=? AND r.scope_key=?
+          AND r.status='completed' AND r.terminal_at IS NOT NULL AND r.prompt_injection_state='injected'
+          AND r.provider_session_id=? AND r.fencing_token=?
+          AND EXISTS (SELECT 1 FROM scheduler_prompt_injections turn WHERE turn.run_id=r.id AND turn.kind='turn' AND turn.state='acknowledged')
+          AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections unresolved WHERE unresolved.run_id=r.id AND unresolved.state IN ('pending','submitted','outcome_unknown'))
+          AND NOT EXISTS (SELECT 1 FROM scheduler_runs later WHERE later.agent_id=r.agent_id AND later.id<>r.id
+            AND (later.status IN ('leased','running') OR later.fencing_token>r.fencing_token AND later.prompt_injection_state<>'not_injected'))`)
+          .get(input.sourceRunId,input.projectId,input.agentId,input.scopeKey,t.oldSessionId,t.sourceFence);
+        const packet=this.sqlite.prepare("SELECT source_manifest_json,system_prompt_hash FROM provider_inputs WHERE execution_id=? AND scheduler_run_id=? AND agent_id=? AND project_id=?")
+          .get(input.sourceRunId,input.sourceRunId,input.agentId,input.projectId) as {source_manifest_json:string;system_prompt_hash:string}|undefined;
+        let contract:any;
+        try{const manifest=JSON.parse(packet?.source_manifest_json??'null');if(manifest?.schemaVersion===3)contract=manifest.normalRuntimeContract;}catch{/* hold */}
+        if(!pending || !source || !contract || contract.contractHash!==t.oldContractHash || contract.engineId!==t.engineId ||
+           (contract.model??null)!==t.model || (contract.effort??null)!==(t.effort??null) || (contract.speed??null)!==(t.speed??null))
+          throw new Error("Settings transition source or pending work changed; original work remains queued");
+        if(t.reason==='settings' && sameRuntimeSettings){
+          const current=runtimeRestrictions(new CapabilityPolicyStore(this.sqlite).resolveForAgent(input.agentId),t.engineId);
+          if(!isGrantOnlyRestrictionsChange(contract.capabilityRestrictions,current) ||
+             t.targetRestrictionsHash!==createHash('sha256').update(JSON.stringify(current)).digest('hex') ||
+             t.targetSystemPromptHash!==packet?.system_prompt_hash)
+            throw new Error("Same-setting transition requires an exact capability grant with unchanged instructions");
+        }
+      }
       let sourceActivationIds = input.sourceActivationIds;
       if (input.canonicalOnlyRefresh) {
         const latest = this.sqlite.prepare(`SELECT id, status, provider_session_id, fencing_token, prompt_injection_state
@@ -162,7 +522,7 @@ export class CoordinationV3ContextRolloverAuthority {
         ORDER BY cycle_number DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration,
         input.compactionCutoffOrdinal, input.compactionCutoffEventId) as RolloverRow | undefined;
-      const existing = matchingBoundary ?? latest;
+      const existing = input.settingsTransition ? latest : matchingBoundary ?? latest;
       // Automatic pressure owns at most one attempt per durable cycle. A
       // restored headroom can start a later cycle in a later Run.
       // Failed handoffs cannot manufacture a rollover loop. A human may retry only
@@ -170,7 +530,27 @@ export class CoordinationV3ContextRolloverAuthority {
       // became durable. That retry receives a new rollover ID and fresh frozen
       // boundary; recovery of a committed handoff remains bound to the original
       // record and can never be mistaken for a manual retry.
-      if (existing) {
+      if(existing&&input.workingCopyTransition&&!(existing.state==='completed'&&this.workingCopyTransition(existing.id)?.keptCurrent===true)){
+        const retained=this.workingCopyTransition(existing.id);
+        if(!retained||stableJson(retained)!==stableJson(input.workingCopyTransition))
+          throw Error('Another context transition already owns this saved session; inspect its status before changing folders.');
+      }
+      if (existing && input.settingsTransition) {
+        const prior=this.settingsTransition(existing.id);
+        if(prior && stableJson(prior)===stableJson(input.settingsTransition)) {
+          if(existing.project_id!==input.projectId || existing.source_run_id!==input.sourceRunId ||
+             existing.scope_key!==input.scopeKey || existing.compaction_cutoff_ordinal!==input.compactionCutoffOrdinal ||
+             existing.compaction_cutoff_event_id!==input.compactionCutoffEventId ||
+             existing.recent_tail_event_ids_json!==JSON.stringify(input.recentTail.map(binding=>binding.communicationEventId)) ||
+             existing.recent_tail_hashes_json!==JSON.stringify(input.recentTail.map(binding=>binding.contentSha256)))
+            throw new Error("Settings transition replay conflicts with its durable boundary");
+          return {rollover:this.view(existing),created:false};
+        }
+        if(existing.state!=='completed' || existing.project_id!==input.projectId ||
+           existing.old_provider_session_id!==input.oldProviderSessionId)
+          throw new Error("A prior context transition remains active or uncertain");
+      }
+      if (existing && !input.settingsTransition && !input.recoveryReconstruction) {
         const terminalFailure = ["failed", "outcome_unknown"].includes(existing.state);
         const explicitSafeRetry = input.triggerKind === "human" &&
           terminalFailure &&
@@ -178,13 +558,21 @@ export class CoordinationV3ContextRolloverAuthority {
           existing.handoff_event_id === null &&
           existing.replacement_run_id === null;
         const nextHeadroomCycle = existing.id === latest?.id &&
-          existing.state === "completed" && ["native_compaction", "headroom_restored"].includes(existing.completion_reason ?? "") &&
+          existing.state === "completed" && (["native_compaction", "headroom_restored"].includes(existing.completion_reason ?? "") || input.workingCopyTransition&&this.workingCopyTransition(existing.id)?.keptCurrent===true) &&
           (input.triggerKind === "human" || !matchingBoundary &&
             existing.compaction_cutoff_ordinal < input.compactionCutoffOrdinal &&
             existing.source_run_id !== input.sourceRunId);
         if (input.triggerKind === "human" && existing.trigger_kind === "automatic" &&
             !explicitSafeRetry && !nextHeadroomCycle) {
           throw new Error("context_refresh_already_underway");
+        }
+        // Further pressure from the same live source does not refreeze its tail.
+        // The isolated handoff captures all accepted steering at the boundary.
+        if (existing.state === 'requested' && existing.source_run_id === input.sourceRunId &&
+            existing.project_id === input.projectId && existing.old_provider_session_id === input.oldProviderSessionId &&
+            input.triggerKind !== 'human' && this.sqlite.prepare(`SELECT 1 FROM scheduler_runs
+              WHERE id=? AND agent_id=? AND status='running'`).get(input.sourceRunId,input.agentId)) {
+          return { rollover: this.view(existing), created: false };
         }
         if (existing.project_id !== input.projectId ||
             existing.old_provider_session_id !== input.oldProviderSessionId ||
@@ -200,6 +588,7 @@ export class CoordinationV3ContextRolloverAuthority {
         }
       }
       const id = randomUUID();
+      if(input.recoveryReconstruction)this.recoveryAuthority().bindReconstruction(input.agentId,input.recoveryReconstruction.recoveryId,id,reconstructionPredecessorId);
       this.sqlite.prepare(`
         INSERT INTO context_rollovers (
           id, project_id, agent_id, state, old_provider_session_id,
@@ -230,7 +619,7 @@ export class CoordinationV3ContextRolloverAuthority {
         input.visibleResponseCommitted ? now : null,
         now, now,
       );
-      if (input.canonicalOnlyRefresh) {
+      if (input.canonicalOnlyRefresh || input.recoveryReconstruction) {
         this.sqlite.prepare(`UPDATE context_rollovers SET state='completed', completion_reason='no_continuation_required',
           terminal_at=? WHERE id=?`).run(now, id);
         return { rollover: this.get(id)!, created: true };
@@ -250,15 +639,78 @@ export class CoordinationV3ContextRolloverAuthority {
         dedupeKey: `context-rollover-handoff:${id}`,
         payload: {
           rolloverId: id,
+          ...(input.workingCopyTransition?{workingCopyTransition:input.workingCopyTransition}:{}),
+          ...(input.settingsTransition?{settingsTransition:input.settingsTransition,dispatch:{
+            engine:input.settingsTransition.engineId,model:input.settingsTransition.model,
+            ...(input.settingsTransition.effort?{effort:input.settingsTransition.effort}:{}),
+            ...(input.settingsTransition.speed?{speed:input.settingsTransition.speed}:{}),
+          }}:{}),
           ...(input.detectedOccupancy === undefined ? {} : { detectedOccupancy: input.detectedOccupancy }),
           threshold: input.threshold,
-          instruction: `The pressure source Run has ended. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
+          instruction: `${input.settingsTransition?'The settings transition source Run has ended.':'The pressure source Run has ended.'} ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
         sourceKind: "context_rollover",
         sourceId: id,
         now,
       });
       return { rollover: this.get(id)!, created: true };
+    })();
+  }
+
+  /** Freeze again only at the isolated handoff boundary, after live steering ends. */
+  rebindHandoffBoundary(input: {
+    id: string; handoffRunId: string; fencingToken: number;
+    bind: (communicationEventIds: string[]) => {
+      canonicalOrdinal: number; communicationEventId: string;
+      recentTail: Array<{ communicationEventId: string; contentSha256: string }>;
+    };
+    now?: string;
+  }): ContextRolloverV3 {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      const current = this.get(input.id);
+      if (!current) throw new Error('context rollover not found');
+      const handoff = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run
+        JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        JOIN activation_sources source ON source.activation_id=activation.id
+        WHERE run.id=? AND run.fencing_token=? AND run.status='leased' AND run.lease_expires_at>?
+          AND run.prompt_injection_state='not_injected' AND run.side_effects_fenced_at IS NULL
+          AND run.agent_id=? AND run.project_id=? AND run.scope_key=?
+          AND activation.kind='context_rollover_handoff' AND source.source_kind='context_rollover' AND source.source_id=?`)
+        .get(input.handoffRunId, input.fencingToken, now, current.agentId, current.projectId, current.scopeKey, input.id);
+      const source = this.sqlite.prepare(`SELECT status FROM scheduler_runs
+        WHERE id=? AND agent_id=? AND project_id=? AND scope_key=? AND provider_session_id=?`)
+        .get(current.sourceRunId, current.agentId, current.projectId, current.scopeKey, current.oldProviderSessionId) as {status:string}|undefined;
+      if (current.state !== 'requested' || !handoff || source?.status !== 'completed') {
+        throw new Error('context rollover boundary requires the exact live handoff after its completed source');
+      }
+      const uncertain = this.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections
+        WHERE run_id=? AND state IN ('pending','submitted','outcome_unknown') LIMIT 1`).get(current.sourceRunId);
+      if (uncertain) throw new Error('context rollover boundary has unresolved source input');
+      const activations = this.sqlite.prepare(`SELECT DISTINCT activation.id FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        WHERE attached.run_id=? AND activation.agent_id=? AND activation.project_id=? AND activation.scope_key=?
+          AND EXISTS (SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+            WHERE injection.run_id=attached.run_id AND injection.state='acknowledged' AND member.value=activation.id)
+        ORDER BY activation.id`).all(current.sourceRunId,current.agentId,current.projectId,current.scopeKey) as Array<{id:string}>;
+      const communications = this.sqlite.prepare(`SELECT DISTINCT json_extract(runtime.payload_json,'$.communication.eventId') AS id
+        FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id
+        JOIN runtime_communications runtime ON runtime.id=source.source_id AND source.source_kind='communication'
+        WHERE attached.run_id=? AND runtime.project_id=?
+          AND attached.activation_id IN (SELECT value FROM json_each(?))`)
+        .all(current.sourceRunId,current.projectId,JSON.stringify(activations.map(row=>row.id))) as Array<{id:string|null}>;
+      // The binder checks canonical scope, current revisions, hashes and rendered size.
+      const boundary = input.bind([...new Set([...current.recentTailCommunicationEventIds,
+        ...communications.flatMap(row=>row.id ? [row.id] : [])])]);
+      const ids = activations.map(row=>row.id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET compaction_cutoff_ordinal=?, compaction_cutoff_event_id=?,
+        recent_tail_event_ids_json=?,recent_tail_hashes_json=?,source_activation_ids_json=?,
+        updated_at=?
+        WHERE id=? AND state='requested'`).run(boundary.canonicalOrdinal,boundary.communicationEventId,
+          JSON.stringify(boundary.recentTail.map(row=>row.communicationEventId)),
+          JSON.stringify(boundary.recentTail.map(row=>row.contentSha256)),JSON.stringify(ids),now,current.id);
+      return this.get(current.id)!;
     })();
   }
 
@@ -332,6 +784,7 @@ export class CoordinationV3ContextRolloverAuthority {
       `).get(id) as { count: number }).count;
       if (handoffAttempts >= 2) return { rollover: current, scheduled: false };
       const diagnostic = boundedInternalRolloverFailure(validationError);
+      const transition=this.settingsTransition(id),folder=this.workingCopyTransition(id);
       this.sqlite.prepare(`
         UPDATE context_rollovers SET last_error = ?, updated_at = ?
         WHERE id = ? AND state = 'requested' AND handoff_event_id IS NULL
@@ -348,6 +801,9 @@ export class CoordinationV3ContextRolloverAuthority {
         payload: {
           rolloverId: id,
           retryAttempt: 1,
+          ...(folder?{workingCopyTransition:folder}:{}),
+          ...(transition?{settingsTransition:transition,dispatch:{engine:transition.engineId,model:transition.model,
+            ...(transition.effort?{effort:transition.effort}:{}),...(transition.speed?{speed:transition.speed}:{})}}:{}),
           instruction: `The previous continuation handoff could not be used because ${diagnostic}. Retry once. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
         sourceKind: "context_rollover",
@@ -597,7 +1053,10 @@ export class CoordinationV3ContextRolloverAuthority {
       if (!current) throw new Error("context rollover not found");
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
-      if (current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
+      if (hasUnresolvedHumanSteering(this.sqlite, current.sourceRunId)) return current;
+      const transition=this.settingsTransition(input.id);
+      if (transition && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) return current;
+      if (!transition && current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
         const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
           scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })
           .find(id => this.wakeBelongsToTask(current, id));
@@ -610,8 +1069,8 @@ export class CoordinationV3ContextRolloverAuthority {
           return this.get(current.id)!;
         }
       }
-      if (current.triggerKind !== "human" && (
-        current.visibleResponseCommitted ||
+      if (!transition && current.triggerKind !== "human" && (
+        current.visibleResponseCommitted && !this.hasPendingSourceReply(current) ||
         !this.continuationObligationRemains(current)
       )) {
         this.sqlite.prepare(`
@@ -635,9 +1094,16 @@ export class CoordinationV3ContextRolloverAuthority {
         payload: {
           rolloverId: current.id,
           sourceRunId: current.sourceRunId,
-          sourceActivationIds: current.sourceActivationIds,
-          ...(current.replyAuthority ? { replyAuthority: current.replyAuthority } : {}),
-          instruction: current.triggerKind === "human"
+          sourceActivationIds: transition ? [] : current.sourceActivationIds,
+          ...(!transition && current.replyAuthority ? { replyAuthority: current.replyAuthority } : {}),
+          ...(transition?{settingsTransition:transition,dispatch:{
+            engine:transition.engineId,model:transition.targetModel,
+            ...(transition.targetEffort?{effort:transition.targetEffort}:{}),
+            ...(transition.targetSpeed?{speed:transition.targetSpeed}:{}),
+          }}:{}),
+          instruction: transition
+            ? "Verify this settings-transition rollover in the fresh provider session. Use the bounded handoff only as non-authoritative continuity context. Do not publish Communication or resume queued work; provide one concise Work-log confirmation after reconstruction."
+            : current.triggerKind === "human"
             ? "Verify this human-requested safe rollover in the fresh provider session. Use the bounded handoff only as non-authoritative continuity context. Do not publish Communication or resume unrelated work; provide one concise Work-log confirmation after reconstruction."
             : "Continue the unfinished task from the bounded continuation handoff in this fresh provider session. Preserve the original reply route and do not duplicate already committed communication.",
         },
@@ -645,7 +1111,7 @@ export class CoordinationV3ContextRolloverAuthority {
         sourceId: current.id,
         now,
       });
-      if (current.sourceActivationIds.length > 0) {
+      if (!transition && current.sourceActivationIds.length > 0) {
         const placeholders = current.sourceActivationIds.map(() => "?").join(", ");
         // The continuation executes only its bounded handoff Activation, but
         // inherits the source Run's canonical lineage. Request capability,
@@ -877,7 +1343,7 @@ export class CoordinationV3ContextRolloverAuthority {
   commitReplacementInputForRun(runId: string, agentId: string, now = new Date().toISOString()): ContextRolloverV3 | undefined {
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare(`
-        SELECT rollover.*, provider.prompt_hash, provider.system_prompt_hash,
+        SELECT rollover.*, provider.provider_prompt, provider.prompt_hash, provider.system_prompt_hash,
           provider.source_manifest_json,
           CASE WHEN EXISTS (
             SELECT 1 FROM scheduler_run_activations recovery_attached
@@ -910,6 +1376,7 @@ export class CoordinationV3ContextRolloverAuthority {
           )
         LIMIT 1
       `).get(runId, runId, agentId) as (RolloverRow & {
+        provider_prompt: string;
         prompt_hash: string;
         system_prompt_hash: string;
         source_manifest_json: string;
@@ -982,14 +1449,31 @@ export class CoordinationV3ContextRolloverAuthority {
           (!recovery && JSON.stringify(manifestActivationIds) !== JSON.stringify(attachedActivationIds))) {
         throw new Error("context rollover replacement manifest activation binding is mismatched");
       }
+      // Original human objectives are reconstruction data, not additional
+      // attached work. Resolve their exact scoped obligation lineage in the
+      // same transaction and verify each original payload is in this packet.
+      const taskSourceIds = unfinishedHumanSourceActivationIds(this.sqlite, runId)
+        .filter(id => !manifestActivationIds.includes(id));
+      const taskSources = taskSourceIds.map(id => {
+        const source = this.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND scope_key=?')
+          .get(id, row.agent_id, row.project_id, row.scope_key) as {payload_json:string} | undefined;
+        const communication = source && (JSON.parse(source.payload_json) as {communication?: {eventId?:unknown; text?:unknown; sender?:{kind?:unknown}}}).communication;
+        if (!communication || communication.sender?.kind !== 'user' || typeof communication.eventId !== 'string' || typeof communication.text !== 'string')
+          throw new Error('context rollover original human objective is unavailable');
+        return {id, eventId:communication.eventId as string, communication, hash:createHash('sha256').update(communication.text).digest('hex')};
+      });
+      const taskBlock = renderUnfinishedHumanTaskContext(taskSources.map(source => ({sourceActivationId:source.id,communication:source.communication})));
+      if (taskBlock && row.provider_prompt.split('\n\n').filter(section => section === taskBlock).length !== 1)
+        throw new Error('context rollover original human objective is unavailable');
       const recentTail = JSON.parse(row.recent_tail_event_ids_json) as string[];
       const recentTailHashes = JSON.parse(row.recent_tail_hashes_json) as string[];
       if (manifest.historyMessageCount !== recentTail.length) {
         throw new Error("context rollover replacement history count does not match its frozen tail");
       }
       const communicationEventIds = manifest.communicationEventIds.filter((id): id is string => typeof id === "string");
+      const expectedCommunicationEventIds = [...new Set([...recentTail, ...taskSources.map(source => source.eventId)])];
       if (communicationEventIds.length !== manifest.communicationEventIds.length ||
-          JSON.stringify(communicationEventIds) !== JSON.stringify(recentTail)) {
+          JSON.stringify(communicationEventIds) !== JSON.stringify(expectedCommunicationEventIds)) {
         throw new Error("context rollover replacement manifest does not exactly match its frozen recent tail");
       }
       const communicationSources = manifest.sources.filter((source): source is {
@@ -997,11 +1481,15 @@ export class CoordinationV3ContextRolloverAuthority {
       } => Boolean(source && typeof source === "object" &&
         (source as { kind?: unknown }).kind === "communication" &&
         typeof (source as { ref?: unknown }).ref === "string"));
-      if (communicationSources.length !== recentTail.length || recentTail.some((eventId, index) => {
+      if (communicationSources.length !== expectedCommunicationEventIds.length || recentTail.some((eventId, index) => {
         const source = communicationSources[index];
         return source?.ref !== eventId || source.delivery !== "submitted" ||
           source.hash !== recentTailHashes[index];
-      })) throw new Error("context rollover replacement sources do not match frozen canonical content hashes");
+      }) || communicationSources.slice(recentTail.length).some((source, index) =>
+        source.ref !== expectedCommunicationEventIds[recentTail.length + index] ||
+        source.delivery !== 'submitted' ||
+        (source.hash !== undefined && source.hash !== taskSources.find(task => task.eventId === source.ref)?.hash)))
+        throw new Error("context rollover replacement sources do not match frozen canonical content hashes");
       const handoffSources = manifest.sources.filter((source): source is { kind: string; ref: string; hash?: string; delivery?: string } =>
         Boolean(source && typeof source === "object" &&
           (source as { kind?: unknown }).kind === "continuation_handoff" &&
@@ -1100,7 +1588,7 @@ export class CoordinationV3ContextRolloverAuthority {
       const policySources = sourcesOf("policy");
       const teamSources = sourcesOf("team_directory");
       const activationSources = sourcesOf("activation");
-      const expectedActivationSourceIds = recovery ? manifestActivationIds : attachedActivationIds;
+      const expectedActivationSourceIds = [...(recovery ? manifestActivationIds : attachedActivationIds), ...taskSourceIds].sort();
       if (identitySources.length !== 1 || identitySources[0]!.ref !== row.agent_id ||
           policySources.length !== 1 || !/^[a-f0-9]{64}$/u.test(policySources[0]!.hash ?? "") ||
           teamSources.length !== 1 || !/^[a-f0-9]{64}$/u.test(teamSources[0]!.hash ?? "") ||
@@ -1194,7 +1682,7 @@ export class CoordinationV3ContextRolloverAuthority {
           AND state IN ('requested','handoff_committed','session_retiring')
         ORDER BY updated_at DESC, id DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration, input.providerSessionId) as RolloverRow | undefined;
-      if (!row || row.trigger_kind !== "automatic" || row.detected_occupancy === null ||
+      if (!row || row.trigger_kind !== "automatic" || this.settingsTransition(row.id) || row.detected_occupancy === null ||
           input.usedTokens >= row.low_water_mark || input.usedTokens >= row.detected_occupancy) return undefined;
       this.sqlite.prepare(`
         UPDATE context_rollovers SET state = 'completed', completion_reason = 'headroom_restored',
@@ -1245,9 +1733,19 @@ export class CoordinationV3ContextRolloverAuthority {
     return result;
   }
 
+  /** Historical response commitment cannot discharge a later canonical reply root. */
+  private hasPendingSourceReply(rollover: ContextRolloverV3): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations obligation
+      JOIN json_each(?) source ON source.value=obligation.source_activation_id
+      WHERE obligation.run_id=? AND obligation.agent_id=? AND obligation.project_id=? AND obligation.scope_key=?
+        AND obligation.state IN ('pending','recovery_pending','retried') LIMIT 1`)
+      .get(JSON.stringify(rollover.sourceActivationIds),rollover.sourceRunId,rollover.agentId,rollover.projectId,rollover.scopeKey));
+  }
+
   private continuationObligationRemains(
     rollover: ContextRolloverV3,
   ): boolean {
+    if (this.hasPendingSourceReply(rollover)) return true;
     const requests = this.sqlite.prepare(`
       ${REQUEST_SOURCE_LINEAGE_CTE}
       SELECT DISTINCT request.id, request.state, request.recipient_agent_id

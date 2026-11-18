@@ -1,3 +1,8 @@
+import {productApiPath} from "../api/productScope";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
+import { loadAgentWorkInspector } from "../projectShellLoader";
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
   Alert,
   Box,
@@ -16,11 +21,14 @@ import type {
   AgentDto,
   ConversationMessageDto,
   WorkspacePreferencesDto,
+  QueuedConversationMessageDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
 import {
+  type ComponentProps,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -28,6 +36,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { providerCommandResultSx, providerCommandResultText } from "../providerCommandResult";
 import type { AgentStatus } from "../agents";
 import {
   useAgents,
@@ -50,11 +59,10 @@ import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { AgentWorkInspector } from "./AgentWorkInspector";
-import { AttentionSurface } from "./AttentionSurface";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
-import { AgentsTab } from "./AgentsTab";
+import type { AgentsTab } from "./AgentsTab";
+import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
 import type { ConversationDetailView } from "../routing";
 import {
   conversationComposerRuntime,
@@ -79,6 +87,9 @@ import {
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
+import { ProviderFailureBanner } from "./ProviderFailureBanner";
+import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
+import { deletionCleanupNotice } from "./deletionCleanupNotice";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -88,13 +99,19 @@ import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionStateFeedback } from "./CollectionPrimitives";
 import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import { ChatContextSettings } from "./ChatContextSettings";
+import { ChatDecisionPanel } from "./decisions/ChatDecisionPanel";
 
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
-import { notificationTechnicalFocusId } from "../technicalFocus";
-import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
+import { pendingRuntimeSelection, runtimeMutationKey, runtimeMutationOptions, runtimeFeedbackKey, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
+
+const loadConversationAgents = () => import("./AgentsTab").then(module => ({ default: module.AgentsTab }));
+function ConversationAgentsPanel(props: ComponentProps<typeof AgentsTab>): JSX.Element {
+  return <RecoverableLazyRoute load={loadConversationAgents} componentProps={props} />;
+}
 
 export function ConversationView({
+  titleControl,
   conversationId,
   focusMessageId,
   initialView,
@@ -108,14 +125,15 @@ export function ConversationView({
   onOpenProject,
   onOpenProjectBrowser,
   onOpenAgent,
+  onOpenProviderError,
   onAgentsDeleted,
   onOpenReview,
-  onOpenAgentWork,
   onOpenBrowser,
   onOpenFileActivity,
   onNewAgent,
   onDeleted,
 }: {
+  titleControl?: ReactNode;
   conversationId: string;
   focusMessageId?: string;
   initialView?: ConversationDetailView;
@@ -137,9 +155,9 @@ export function ConversationView({
     view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
+  onOpenProviderError?(agentId: string, runId: string, activityId?: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string, executionId?: string): void;
-  onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(agentId: string, runId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
@@ -147,11 +165,15 @@ export function ConversationView({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onDeleted(): void;
 }): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useConversationActiveViewState(
+  const notify = useMutationNotification();
+  const runtimeNamespace=productApiPath("/api/conversations");
+  const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
   );
+  const activeView=auditOnly&&storedView==='agents'?'main':storedView;
   const {
     agents,
     collaborationHistory,
@@ -332,20 +354,24 @@ export function ConversationView({
     detailQuery,
     focusedMessage,
     focusedMessageHighlightDisposer,
-    focusMessageId,
+    focusMessageId: focusMessageId?.startsWith('decision:') ? undefined : focusMessageId,
     initialView,
     messages,
     setActiveView,
     setOlderCollaboration,
     setOlderMain,
   });
+  useEffect(() => {
+    if (!focusMessageId?.startsWith('decision:')) return;
+    setAgentWorkOpen(false); setActiveView('main');
+  }, [conversationId, focusMessageId]);
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const runtimeTargetAgentId = commandTargetAgent?.id;
   const runtimeOwner = commandTargetAgent ? `agent:${commandTargetAgent.id}` : `conversation:${conversationId}`;
   const runtimeSaving = useRuntimeSaving(runtimeOwner);
   const persistDefaults = useMutation({
-    ...runtimeMutationOptions(`conversation:${conversationId}`),
+    ...runtimeMutationOptions(`conversation:${conversationId}`,notify),
     mutationFn: ({ conversationId, ...patch }: {
       conversationId: string;
       defaultEngine?: EngineDto["id"];
@@ -354,6 +380,7 @@ export function ConversationView({
       defaultSpeed?: string | null;
     }) => api.updateConversation(conversationId, patch),
     onSuccess: updated => {
+      notify({key:runtimeFeedbackKey(`conversation:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       queryClient.setQueriesData<unknown>(
         { queryKey: queryKeys.conversations.detailPrefix(updated.id) },
         (current: unknown) => current && typeof current === "object" && "conversation" in current
@@ -373,13 +400,13 @@ export function ConversationView({
     // engine save fails, a later effort save still represents the user's intent
     // without pinning fields they left inherited.
     const queued = queryClient.getMutationCache().findAll({
-      mutationKey: queryKeys.runtimeSelection(`conversation:${conversationId}`), exact: true, status: "pending",
+      mutationKey: runtimeMutationKey(`conversation:${conversationId}`,runtimeNamespace), exact: true, status: "pending",
     });
     persistDefaults.mutate(Object.assign({}, ...queued.map(item => item.state.variables), { conversationId, ...patch }));
   };
 
   const persistTargetRuntime = useMutation({
-    ...runtimeMutationOptions(`agent:${runtimeTargetAgentId ?? ""}`),
+    ...runtimeMutationOptions(`agent:${runtimeTargetAgentId ?? ""}`,notify),
     mutationFn: ({
       agentId,
       activeEngine,
@@ -394,6 +421,7 @@ export function ConversationView({
       speed: string | null;
     }) => api.updateAgent(agentId, { activeEngine, model, effort, speed }),
     onSuccess: updated => {
+      notify({key:runtimeFeedbackKey(`agent:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
@@ -492,7 +520,14 @@ export function ConversationView({
 
   const deleteConversation = useMutation({
     mutationFn: (expectedAgentIds: string[]) => api.deleteConversation(conversationId, expectedAgentIds),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const message = deletionCleanupNotice("Chat", result);
+      if (message) notify({ message, severity: "warning", persistent: true, key: `chat-cleanup:${conversationId}` });
+      if (!result.deleted) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+        setDeleteOpen(false);
+        return;
+      }
       queryClient.removeQueries({
         queryKey: queryKeys.conversations.detailPrefix(conversationId),
       });
@@ -575,6 +610,14 @@ export function ConversationView({
     ),
     [mainTimeline, queuedMessagesQuery.data],
   );
+  const queuedAttachmentNames = useCallback((queued: QueuedConversationMessageDto) =>
+    messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name), [messages]);
+  const steerQueuedMessage = useCallback((message: QueuedConversationMessageDto) =>
+    steerQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId }), [steerQueued.mutateAsync]);
+  const editQueuedMessage = useCallback((message: QueuedConversationMessageDto, text: string) =>
+    editQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId, text }), [editQueued.mutateAsync]);
+  const deleteQueuedMessage = useCallback((message: QueuedConversationMessageDto) =>
+    cancelQueued.mutateAsync(message.deliveryId), [cancelQueued.mutateAsync]);
   const visibleMainTimeline = reconciledQueuedMessages.timeline;
   const visibleMessageLayoutKey = visibleMainTimeline
     .map(entry => entry.id)
@@ -621,7 +664,9 @@ export function ConversationView({
     attachments: message.attachments,
     document: message.document,
   }), [agentTitle]);
-  const mainTranscriptMarkdown = useMemo(
+  // Transcript formatting resolves bound prose mentions across the loaded page.
+  // Do that only for the explicit Copy/Download action, not every Chat render.
+  const mainTranscriptMarkdown = useCallback(
     () =>
       conversation
         ? buildMarkdownTranscript(
@@ -632,7 +677,7 @@ export function ConversationView({
         : "",
     [transcriptMessage, conversation?.title, messages, mainHistory.hasMore],
   );
-  const collaborationTranscriptMarkdown = useMemo(
+  const collaborationTranscriptMarkdown = useCallback(
     () =>
       conversation
         ? buildMarkdownTranscript(
@@ -652,27 +697,7 @@ export function ConversationView({
     );
   }
 
-  if (detailQuery.isError && !detailQuery.data) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => void detailQuery.refetch()}
-            >
-              Retry
-            </Button>
-          }
-        >
-          This Chat could not be loaded. Check the server connection and
-          try again.
-        </Alert>
-      </Box>
-    );
-  }
+  if (detailQuery.isError && !detailQuery.data) return <WorkspaceQueryError initial read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>;
 
   if (!detailQuery.data || !conversation) {
     return (
@@ -704,7 +729,6 @@ export function ConversationView({
     collaborationQuery.isPending &&
     collaborationMessages.length === 0 &&
     operationalEvents.length === 0;
-  const detailRefreshFailed = detailQuery.isError && detailQuery.data !== undefined;
 
   const transcriptTitle =
     activeView === "collaboration"
@@ -865,12 +889,11 @@ export function ConversationView({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: detailRefreshFailed
-          ? "auto auto minmax(0, 1fr) auto"
-          : "auto minmax(0, 1fr) auto",
+        gridTemplateRows: "auto minmax(0, 1fr) auto",
       }}
     >
       <ConversationHeader
+        titleControl={titleControl}
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
@@ -892,15 +915,7 @@ export function ConversationView({
       />
 
       {contextSettingsOpen ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
-      {detailRefreshFailed ? (
-        <Alert
-          severity="warning"
-          action={<Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>Retry</Button>}
-          sx={{ m: 1 }}
-        >
-          This Chat could not be refreshed. The last loaded messages remain available.
-        </Alert>
-      ) : null}
+
 
       <Box
         sx={{
@@ -925,11 +940,32 @@ export function ConversationView({
           }}
         >
           <ChatSurface
+            overlay={<Box
+            sx={{
+              position: "absolute",
+              insetInline: 0,
+              bottom: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+            }}
+          >
+            <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
+            <MasterRespondingIndicator
+              messages={messages}
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+            </ProviderFailureBanner>
+          </Box>}
+            bottomPanel={<ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
+              focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />}
             showOutgoingMessage
+            outgoingInTimeline
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
-            label="Chat messages"
+            label="Chat Messages"
+            initialTranscript={{ rowIds: visibleMainTimeline.map(entry => entry.id), reveal: Boolean(focusMessageId || agentWorkOpen || activeView !== "main") }}
             follow={{
               kind: "latest",
               storageKey: chatStateKey(
@@ -945,6 +981,7 @@ export function ConversationView({
             }}
             beforeMessages={
               <>
+                <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>
                 {olderError ? (
                   <Alert
                     severity="error"
@@ -954,17 +991,6 @@ export function ConversationView({
                     {olderError}
                   </Alert>
                 ) : null}
-                <AttentionSurface
-                  notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
-                  projectId={conversation.projectId}
-                  conversationId={conversationId}
-                  onOpen={item => {
-                    const focusId = notificationTechnicalFocusId(item);
-                    if (item.agentId)
-                      onOpenAgent(item.agentId, "technical", focusId);
-                    else onOpenAgentWork(focusId);
-                  }}
-                />
                 {(activeBrowsers.data ?? [])
                   .filter(session => conversationAgents.some(agent => agent.id === session.agentId))
                   .map(session => {
@@ -974,7 +1000,7 @@ export function ConversationView({
                         key={session.id}
                         severity="info"
                         role="region"
-                        aria-label={`${agentTitle} browser status`}
+                        aria-label={`${agentTitle} Browser Status`}
                         action={
                           <Button
                             color="inherit"
@@ -999,7 +1025,8 @@ export function ConversationView({
               </>
             }
           >
-            <MainConversationTimeline
+            {firstMountedIndex => <MainConversationTimeline
+              firstMountedIndex={firstMountedIndex}
               mainTimeline={visibleMainTimeline}
               operatorProfile={preferencesQuery.data?.profile}
               projectId={conversation.projectId}
@@ -1013,7 +1040,7 @@ export function ConversationView({
               mentionAgent={mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
               notifications={notificationsQuery.data?.items ?? []}
-            />
+            />}
           </ChatSurface>
         </Box>
 
@@ -1037,7 +1064,7 @@ export function ConversationView({
             <ChatSurface
               layout="project"
               layoutKey={`collaboration:${collaborationLayoutKey}:${operationalLayoutKey}`}
-              label="Team chat messages"
+              label="Team Chat Messages"
               follow={{
                 kind: "latest",
                 storageKey: chatStateKey(
@@ -1055,7 +1082,7 @@ export function ConversationView({
               }}
               beforeMessages={<>
                 <Alert severity="info" icon={false} sx={{ mx: 1.5, mt: 1.5, mb: olderError ? 0 : 1.5 }}>
-                  Team Chat shows how Agents coordinate. It is read-only; to talk to an Agent, use Chat and mention them.
+                  Read-only · Use Chat to message Agents.
                 </Alert>
                 {olderError ? <Alert
                   severity="error"
@@ -1113,12 +1140,10 @@ export function ConversationView({
         ) : null}
 
         {agentWorkOpen ? (
-          <AgentWorkInspector
-            open
-            projectId={conversation.projectId}
-            conversationId={conversationId}
-            onClose={() => setAgentWorkOpen(false)}
-          />
+          <RecoverableLazyRoute  load={loadAgentWorkInspector} componentProps={{open: true,
+projectId: conversation.projectId,
+conversationId: conversationId,
+onClose: () => setAgentWorkOpen(false)}} />
         ) : activeView === "files" ? (
           <Box
             id="chat-workspace-files-panel"
@@ -1138,11 +1163,10 @@ export function ConversationView({
             agents={conversationAgents}
           /></Box>
         ) : activeView === "agents" ? (
-          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><AgentsTab
+          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><ConversationAgentsPanel
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
-            collectionRequest={membersRequest}
             relationshipAgents={projectAgents}
             projectId={conversation.projectId}
             engines={engines}
@@ -1164,102 +1188,44 @@ export function ConversationView({
               totalCount: membersQuery.data?.pages[0]?.total,
               variant: "embedded",
             }}
-            collectionFooter={(
-              <CollectionStateFeedback
-                resourceLabel="Agents"
-                request={membersRequest}
-                itemCount={conversationAgents.length}
-                filtersActive={Boolean(memberSearch.trim())}
-                emptyTitle="No Agents Yet"
-                suppressEmpty
-              />
-            )}
+            collectionRequest={membersRequest}
+            organizationDataComplete={!memberSearch&&membersRequest.hasResolved&&!membersRequest.hasNextPage&&!membersRequest.isPaginationError&&!membersRequest.isRefreshError}
+            collectionFooter={filteredCount=><CollectionStateFeedback resourceLabel="Agents" request={membersRequest} itemCount={filteredCount} filtersActive={Boolean(memberSearch.trim())} emptyTitle="No Agents Yet" suppressEmpty/>}
           /></Box>
         ) : null}
-        {activeView === "main" && !agentWorkOpen ? (
-          <Box
-            sx={{
-              position: "absolute",
-              insetInline: 0,
-              bottom: 2,
-              zIndex: 2,
-              pointerEvents: "none",
-            }}
-          >
-            <MasterRespondingIndicator
-              messages={messages}
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-          </Box>
-        ) : null}
+
       </Box>
 
-      <ChatComposerDock
+      {auditOnly?<Alert severity="info" sx={{m:1}}>Temporary workflow Chat · messages and results</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
           <Alert
             severity="info"
-            sx={{
-              mx: 1.5,
-              mt: 1,
-              minWidth: 0,
-              "& .MuiAlert-message": {
-                minWidth: 0,
-                overflowWrap: "anywhere",
-              },
-            }}
+            tabIndex={0}
+            sx={providerCommandResultSx}
           >
             {queuedMessageNotice}
           </Alert>
         ) : null}
-        {persistTargetRuntime.error || persistDefaults.error ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Runtime selection was not saved. The last saved selection was restored.
-          </Alert>
-        ) : null}
-        {cancelOperationError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Cancellation failed. {cancelOperationError.message}
-          </Alert>
-        ) : null}
-        {queuedMessageFailure ? (
-          <Alert
-            severity="error"
-            sx={{ mx: 1.5, mt: 1 }}
-            action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>
-              Retry
-            </Button>}
-          >
-            Queued messages could not be updated. {queuedMessageFailure.error.message}
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Runtime Selection Needs Attention" error={persistTargetRuntime.error ?? persistDefaults.error}/>
+        <MutationErrorDetails title="Stop Needs Review" error={cancelOperationError}/>
+        <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Queued Messages",queuedMessagesQuery)}/>
+        {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
+
         {activeView === "main" ? (
           <QueuedMessageTray
             messages={reconciledQueuedMessages.queuedMessages}
             scope={conversationId}
-            attachmentNamesForMessage={queued => messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
-            agentNameForId={agentTitle}
+            attachmentNamesForMessage={queuedAttachmentNames}
             busy={
               cancelQueued.isPending ||
               editQueued.isPending ||
               steerQueued.isPending
             }
-            onSteer={message =>
-              steerQueued.mutateAsync({
-                deliveryId: message.deliveryId,
-                targetAgentId: message.targetAgentId,
-              })
-            }
-            onEdit={(message, text) =>
-              editQueued.mutateAsync({
-                deliveryId: message.deliveryId,
-                targetAgentId: message.targetAgentId,
-                text,
-              })
-            }
-            onDelete={message => cancelQueued.mutateAsync(message.deliveryId)}
+            onSteer={steerQueuedMessage}
+            onEdit={editQueuedMessage}
+            onDelete={deleteQueuedMessage}
           />
         ) : null}
         {activeView === "main" && targetedNextRunReceipts.data ? (
@@ -1267,6 +1233,13 @@ export function ConversationView({
         ) : null}
         <Composer
           enableVoiceDictation
+          voiceContext={activeView === "main" && !agentWorkOpen ? {
+            onOpenRecovery: id => onOpenAgent(id),
+            projectId: conversation.projectId,
+            conversationId,
+            agents: routingAgents,
+            selectedAgentId: commandTargetAgent?.conversationId === conversationId ? commandTargetAgent.id : undefined,
+          } : undefined}
           draftStorageKey={chatStateKey(
             "draft",
             `conversation.${conversationId}.main`,
@@ -1316,10 +1289,9 @@ export function ConversationView({
                   );
                   return invocation.then(result => {
                     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-                    setQueuedMessageNotice(
-                      result.message ??
-                        `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                    );
+                    const message = providerCommandResultText(result);
+                    if (message) setQueuedMessageNotice(message);
+                    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
                   });
                 }
               : undefined
@@ -1346,6 +1318,7 @@ export function ConversationView({
               context?.persistPendingSubmission,
               context?.onAgentCreated,
               context?.capturedSubmission,
+              context?.beforeDispatch,
             )
           }
           onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1362,6 +1335,7 @@ export function ConversationView({
               context?.persistPendingSubmission,
               context?.onAgentCreated,
               context?.capturedSubmission,
+              context?.beforeDispatch,
             )
           }
           agentResponding={false}
@@ -1369,9 +1343,9 @@ export function ConversationView({
           onCancel={stopOperation}
           cancelPending={cancelOperationPending}
         />
-      </ChatComposerDock>
+      </ChatComposerDock>}
 
-      <ConversationDialogs
+      {!auditOnly&&<ConversationDialogs
         conversation={conversation}
         engines={engines}
         addAgentsOpen={addAgentsOpen}
@@ -1396,11 +1370,10 @@ export function ConversationView({
         }}
         onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
-        onRenameValueChange={setRenameValue}
-        onRename={() => rename.mutate(renameValue.trim())}
+        onRename={value => rename.mutate(value)}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
-      />
+      />}
 
     </Box></OutgoingMessageProvider>
   );

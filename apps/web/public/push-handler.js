@@ -40,7 +40,7 @@ self.addEventListener("push", (event) => {
       body: payload.body || "New activity",
       icon: "/icons/app-icon.png",
       badge: "/icons/app-icon.png",
-      tag: payload.notificationId,
+      tag: payload.displayTag || payload.notificationId,
       renotify: false,
       data: { url: payload.url || "/", notificationId: payload.notificationId },
     });

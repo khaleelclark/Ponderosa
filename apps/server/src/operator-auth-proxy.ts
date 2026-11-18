@@ -5,20 +5,11 @@ import { existsSync, lstatSync, mkdirSync, chmodSync, statSync, unlinkSync } fro
 import { dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * Optional, host-local bridge for identity-aware proxies that cannot inject a
- * backend credential themselves. The public proxy must connect to this private
- * Unix socket, overwrite the configured identity header, and never expose the
- * Ponderosa listener directly. It binds Ponderosa's canonical identity header
- * to that verified identity; it is not a browser credential issuer.
- */
+/** Optional Unix-socket HTTP bridge. Network access is managed by the user. */
 export interface OperatorAuthProxyOptions {
   socketPath: string;
   backendPort: number;
-  backendToken: string;
   publicOrigin: string;
-  identityHeader: string;
-  allowedIdentities: readonly string[];
 }
 
 export interface OperatorAuthProxyServer extends Server {
@@ -30,8 +21,8 @@ const hopByHop = new Set([
   "te", "trailer", "transfer-encoding", "upgrade",
 ]);
 
-function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, publicHost: string, identityHeader: string, identity: string): IncomingHttpHeaders {
-  const removed = new Set([...hopByHop, "authorization", OPERATOR_IDENTITY_HEADER, "tailscale-user-login", identityHeader]);
+function forwardedHeaders(headers: IncomingHttpHeaders, publicHost: string): IncomingHttpHeaders {
+  const removed = new Set([...hopByHop, OPERATOR_IDENTITY_HEADER, "tailscale-user-login"]);
   const connection = headers.connection;
   if (typeof connection === "string") {
     for (const name of connection.split(",")) removed.add(name.trim().toLowerCase());
@@ -40,13 +31,6 @@ function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, pu
   for (const [name, value] of Object.entries(headers)) {
     if (!removed.has(name)) forwarded[name] = value;
   }
-  forwarded.authorization = `Bearer ${backendToken}`;
-  // Never trust a second client-supplied identity. The backend reads this
-  // canonical header regardless of which upstream identity header was used.
-  forwarded[OPERATOR_IDENTITY_HEADER] = identity;
-  // Some front proxies (including Tailscale Serve for Unix targets) rewrite
-  // Host to localhost. The configured public origin, not a forwarded claim,
-  // is authoritative for Ponderosa's Host/Origin mutation check.
   forwarded.host = publicHost;
   return forwarded;
 }
@@ -56,44 +40,21 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
   if (!Number.isInteger(options.backendPort) || options.backendPort < 1 || options.backendPort > 65_535) {
     throw new Error("proxy backend port is invalid");
   }
-  if (options.backendToken.length < 32) throw new Error("proxy backend token must have at least 32 characters");
   let publicOrigin: URL;
   try { publicOrigin = new URL(options.publicOrigin); }
-  catch { throw new Error("proxy public origin must be an exact HTTPS origin"); }
-  if (publicOrigin.protocol !== "https:" || publicOrigin.origin !== options.publicOrigin ||
+  catch { throw new Error("proxy public origin must be an exact HTTP(S) origin"); }
+  if (!["http:", "https:"].includes(publicOrigin.protocol) || publicOrigin.origin !== options.publicOrigin ||
       publicOrigin.username || publicOrigin.password) {
-    throw new Error("proxy public origin must be an exact HTTPS origin");
+    throw new Error("proxy public origin must be an exact HTTP(S) origin");
   }
-  const identityHeader = options.identityHeader.trim().toLowerCase();
-  if (!/^[a-z0-9-]+$/u.test(identityHeader) || ["authorization", "host", "cookie"].includes(identityHeader)) {
-    throw new Error("proxy identity header is invalid");
-  }
-  const allowed = new Set(options.allowedIdentities.map((value) => value.trim().toLowerCase()).filter(Boolean));
-  if (allowed.size === 0) throw new Error("proxy requires at least one allowed identity");
-
-  const checkedIdentity = (headers: IncomingHttpHeaders): string | 401 | 421 => {
-    const asserted = headers[identityHeader];
-    const identity = typeof asserted === "string" ? asserted.trim().toLowerCase() : "";
-    if (!allowed.has(identity)) return 401;
-    const forwardedHost = headers["x-forwarded-host"];
-    if (forwardedHost !== undefined && forwardedHost !== publicOrigin.host) return 421;
-    return identity;
-  };
-
   const upgradedSockets = new Set<Duplex>();
   const server = createServer((incoming, response) => {
-    const identity = checkedIdentity(incoming.headers);
-    if (typeof identity === "number") {
-      response.writeHead(identity, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-      response.end(identity === 401 ? '{"error":"operator identity required"}' : '{"error":"unrecognized proxy host"}');
-      return;
-    }
     const upstream = httpRequest({
       hostname: "127.0.0.1",
       port: options.backendPort,
       path: incoming.url,
       method: incoming.method,
-      headers: forwardedHeaders(incoming.headers, options.backendToken, publicOrigin.host, identityHeader, identity),
+      headers: forwardedHeaders(incoming.headers, publicOrigin.host),
     }, (result) => {
       const headers: IncomingHttpHeaders = {};
       for (const [name, value] of Object.entries(result.headers)) {
@@ -124,13 +85,11 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
     const reject = (status: number) => {
       if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 421 ? "Misdirected Request" : status === 404 ? "Not Found" : "Bad Gateway"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
-    const identity = checkedIdentity(incoming.headers);
-    if (typeof identity === "number") return reject(identity);
     // These are the only browser WebSocket routes. The backend still validates
     // the one-use desktop ticket or the sandboxed preview capability.
     if (incoming.method !== "GET" || incoming.headers.upgrade?.toLowerCase() !== "websocket" ||
         (incoming.url !== "/api/hosted-browser/desktop" && !incoming.url?.startsWith("/api/link-previews/"))) return reject(404);
-    const headers = forwardedHeaders(incoming.headers, options.backendToken, publicOrigin.host, identityHeader, identity);
+    const headers = forwardedHeaders(incoming.headers, publicOrigin.host);
     headers.connection = "Upgrade";
     headers.upgrade = "websocket";
     const upstream = httpRequest({
@@ -206,10 +165,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const options: OperatorAuthProxyOptions = {
     socketPath: process.env.PONDEROSA_PROXY_SOCKET_PATH ?? "",
     backendPort: Number(process.env.PONDEROSA_PROXY_BACKEND_PORT),
-    backendToken: process.env.PONDEROSA_PROXY_BACKEND_TOKEN ?? process.env.PONDEROSA_AUTH_TOKEN ?? "",
     publicOrigin: process.env.PONDEROSA_PROXY_PUBLIC_ORIGIN ?? "",
-    identityHeader: process.env.PONDEROSA_PROXY_IDENTITY_HEADER ?? "",
-    allowedIdentities: (process.env.PONDEROSA_PROXY_ALLOWED_IDENTITIES ?? process.env.PONDEROSA_OPERATOR_IDENTITIES ?? "").split(","),
   };
   const server = await listenOperatorAuthProxy(options);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {

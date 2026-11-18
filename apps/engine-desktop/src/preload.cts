@@ -6,6 +6,7 @@ const {
 contextBridge.exposeInMainWorld("ponderosaEngine", {
   snapshot: () => ipcRenderer.invoke("engine:snapshot"),
   openPonderosa: () => ipcRenderer.invoke("engine:open"),
+  openBranches: () => ipcRenderer.invoke("engine:open-branches"),
   restart: () => ipcRenderer.invoke("engine:restart"),
   quit: () => ipcRenderer.invoke("engine:quit"),
   copyLogs: (text: string) => ipcRenderer.invoke("engine:copy-logs", text),

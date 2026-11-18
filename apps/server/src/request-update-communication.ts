@@ -3,6 +3,7 @@ import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import type {
   CommunicationEvent,
   CoordinationRequestUpdateKind,
+  CoordinationStoredRequestUpdateKind,
 } from "@ponderosa/core";
 
 const REQUEST_COMMUNICATION_HANDOFF_KINDS:
@@ -15,8 +16,9 @@ const REQUEST_COMMUNICATION_HANDOFF_KINDS:
 
 /** Only consequential Request handoffs belong in Team and Agent chat audits. */
 export function isRequestCommunicationHandoffKind(
-  kind: CoordinationRequestUpdateKind,
+  kind: CoordinationStoredRequestUpdateKind,
 ): boolean {
+  if(kind==='historical_question'||kind==='historical_answer')return false;
   return REQUEST_COMMUNICATION_HANDOFF_KINDS.has(kind);
 }
 

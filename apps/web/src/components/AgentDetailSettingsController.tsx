@@ -1,3 +1,6 @@
+import {useMutationNotification} from "./MutationNotifications";
+import {createClientId} from "../clientId";
+import {productApiPath} from "../api/productScope";
 import type { AgentDto, ConversationDto, EngineDto } from "@ponderosa/core";
 import { effortSelectionIsCompatible } from "../conversationEngine";
 import { api } from "../api";
@@ -16,7 +19,6 @@ interface AgentDetailSettingsControllerProps {
   settingsModels: ComponentProps<typeof AgentSettingsPane>["settingsModels"];
   settingsEfforts: ComponentProps<typeof AgentSettingsPane>["settingsEfforts"];
   runtimeSettingsDirty: boolean;
-  runtimeSettingsNotice?: string;
   runtimeSettingsPending: boolean;
   runtimeSettingsError: unknown;
   recheckPending: boolean;
@@ -32,7 +34,6 @@ interface AgentDetailSettingsControllerProps {
   onSettingsEngine(value: string): void;
   onSettingsModel(value: string): void;
   onSettingsEffort(value: string): void;
-  onNotice(value?: string): void;
   onSaveRuntimeSettings(): void;
   onRecheckEngine(): void;
   onOpenMaster(conversationId: string): void;
@@ -54,7 +55,6 @@ export function AgentDetailSettingsController({
   settingsModels,
   settingsEfforts,
   runtimeSettingsDirty,
-  runtimeSettingsNotice,
   runtimeSettingsPending,
   runtimeSettingsError,
   recheckPending,
@@ -70,7 +70,6 @@ export function AgentDetailSettingsController({
   onSettingsEngine,
   onSettingsModel,
   onSettingsEffort,
-  onNotice,
   onSaveRuntimeSettings,
   onRecheckEngine,
   onOpenMaster,
@@ -78,7 +77,12 @@ export function AgentDetailSettingsController({
   onUpdateManagementPermissions,
   onChangeReportingLine,
 }: AgentDetailSettingsControllerProps): JSX.Element {
-  const freshSession = useMutation({ mutationKey: ["fresh-provider-session", agent.id], mutationFn: () => api.compactSession(agent.id) });
+  const notify=useMutationNotification();
+  const feedbackKey=JSON.stringify([productApiPath("/api/agents"),agent.id,"fresh-session"]);
+  const freshSession = useMutation({ mutationKey: ["fresh-provider-session", agent.id], mutationFn: () => api.compactSession(agent.id),
+    onError:error=>notify({key:feedbackKey,incident:createClientId("session-feedback-"),severity:"error",message:"Provider Session Needs Review",description:"Review the original Agent session before trying again.",details:error instanceof Error?error.message:String(error)}),
+    onSuccess:()=>notify({key:feedbackKey,message:"",dismiss:true}),
+  });
   return (
     <AgentSettingsPane
       agent={agent}
@@ -91,7 +95,6 @@ export function AgentDetailSettingsController({
       settingsModels={settingsModels}
       settingsEfforts={settingsEfforts}
       runtimeSettingsDirty={runtimeSettingsDirty}
-      runtimeSettingsNotice={runtimeSettingsNotice}
       runtimeSettingsPending={runtimeSettingsPending}
       runtimeSettingsError={runtimeSettingsError}
       recheckPending={recheckPending}
@@ -111,7 +114,6 @@ export function AgentDetailSettingsController({
         onSettingsEngine(value);
         onSettingsModel("");
         onSettingsEffort("");
-        onNotice(undefined);
       }}
       onSettingsModelChange={value => {
         onSettingsModel(value);
@@ -124,12 +126,8 @@ export function AgentDetailSettingsController({
         ) {
           onSettingsEffort("");
         }
-        onNotice(undefined);
       }}
-      onSettingsEffortChange={value => {
-        onSettingsEffort(value);
-        onNotice(undefined);
-      }}
+      onSettingsEffortChange={onSettingsEffort}
       onSaveRuntimeSettings={onSaveRuntimeSettings}
       onRecheckEngine={onRecheckEngine}
       onStartFreshSession={() => {

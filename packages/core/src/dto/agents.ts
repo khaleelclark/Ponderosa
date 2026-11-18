@@ -1,3 +1,5 @@
+import type {PortableChatTitleChangeDto} from "./conversations.js";
+import { normalizeCanonicalText, unicodeCodePointLength } from "../text-policy.js";
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
 import type {
@@ -54,6 +56,13 @@ export interface AgentWorkingCopyDto {
   state: AgentWorkingCopyState;
   /** Exact authoritative host root. This is not a security sandbox boundary. */
   rootPath: string;
+  /** Locally issued independent imported repository, always this managed root.
+   * Never transported in an Agent package or accepted as a user path setting. */
+  repositoryRoot?: string;
+  /** Locally issued contained-root custody. Never imported from source data. */
+  importedParent?: {parentAgentId:string;parentProjectId:string;parentPath:string;parentDevice:string;parentInode:string;relativePath:string;device:string;inode:string};
+  /** Durable allocation evidence for fresh contained roots; not replay authority. */
+  containedRootPreparations?:Array<{id:string;relativePath:string;rootPath:string;phase:'creating'|'created'|'binding'|'bound';parentDevice:string;parentInode:string;device?:string;inode?:string;childAgentId?:string}>;
   /** Separate Git copies have one stable branch owned by this Agent. */
   branch?: string;
   /** Commit used when the Separate Git copy was first created. */
@@ -68,6 +77,8 @@ export interface AgentWorkingCopyDto {
   cleanupReceipt?: AgentWorkingCopyCleanupReceiptDto;
   /** Safe operator-facing reason when the requested mode cannot be used. */
   failure?: string;
+  /** Host-written hash binding a fresh diagnostic to its redacted text. */
+  failureDiagnosticSha256?: string;
   updatedAt: string;
 }
 
@@ -80,6 +91,8 @@ export interface AgentDto {
   /** The single Project Chat that owns this live Agent and supplies its Chat context. */
   conversationId: string;
   title: string;
+  /** Operator-authored standing role; distinct from provenance and work requests. */
+  role?: string;
   /** The engine currently bound to this agent. */
   activeEngine: EngineId;
   /** Durable provider selection used when a turn does not override it. */
@@ -97,6 +110,10 @@ export interface AgentDto {
   managementPermissions: AgentManagementPermissionsDto;
   /** Explicit Shared folder or opt-in Separate Git copy contract. */
   workingCopy: AgentWorkingCopyDto;
+  /** Pending operator folder choice; never substitutes for the canonical workingCopy. */
+  workingCopyChange?: { rolloverId:string; mode:AgentWorkingCopyMode;
+    phase:"handoff"|"preparing"|"verifying"|"held"|"completed"|"kept_current"; retryable:boolean; canKeepCurrent:boolean; message?:string };
+
   /** Stable creation provenance for an agent spawned by another agent. */
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
@@ -108,8 +125,19 @@ export interface AgentDto {
   importedFrom?: string;
 }
 
+export const FULL_PACKAGE_EXPORT_WARNING = 'History and stored data may contain sensitive information. Known credential fields are excluded; re-enter credentials after import. Global memory, installation permissions, live work and provider sessions are excluded.';
+
 export type AgentExportMode = "template" | "context" | "full";
-export interface PortableAgentHistoryMessageDto { role: "user" | "assistant" | "system"; text: string; createdAt?: string }
+export interface PortableAgentHistoryMessageDto {
+  role: "user" | "assistant" | "system"; text: string; createdAt?: string;
+  /** Original immutable scope and provenance; never live destination routing authority. */
+  communication?: import("../communication.js").CommunicationEvent;
+  communicationRevisions?: import("../communication.js").CommunicationRevisionEvent[];
+  /** Portable managed originals, in source attachment order. */
+  attachmentRefs?: string[];
+  /** Original source artifact identity to destination managed original. */
+  artifactRefs?: Record<string,string>;
+}
 export interface PortableArtifactDto {
   ref: string;
   kind: ArtifactKind;
@@ -121,20 +149,86 @@ export interface PortableArtifactDto {
   pinned?: boolean;
   sourcePath?: string;
   dataBase64: string;
+  /** Lossless wire encoding; managed storage always receives the original bytes. */
+  dataEncoding?: "gzip";
+  decodedSize?: number;
 }
+/** Transport parts remain one logical working original; refs are ordered. */
+export interface PortableWorkingFilePartsDto {
+  schema: "ponderosa.working-file-parts.v1";
+  refs: string[];
+  byteLength: number;
+  sha256: string;
+}
+export interface PortableWorkingFileDto {
+  path: string;
+  artifactRef: string;
+  mode?: number;
+  mtime?: string;
+  parts?: PortableWorkingFilePartsDto;
+}
+export const WORKING_FILE_PART_MEDIA_TYPE = "application/vnd.ponderosa.working-file-part.v1";
+export const MAX_WORKING_FILE_PARTS = 1024;
+/** Use only after the package contract has been validated. */
+export function workingFileArtifactRefs(file: PortableWorkingFileDto): string[] {
+  return file.parts ? [...file.parts.refs] : [file.artifactRef];
+}
+
+/** Passive topology inside one selected root; never imports an external/native owner. */
+export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string;sourceTarget?:string;targetRootRef?:string}
 export interface PortableAgentNodeDto {
   ref: string;
   title: string;
   engine: string;
   model?: string;
   effort?: string;
+  speed?: string;
+  role?: string;
+  presetSnapshot?: AgentDto["presetSnapshot"];
   initialInstructions?: string;
   managerRef?: string;
   managementPermissions: AgentManagementPermissionsDto;
+  /** Source effective restrictions; destination application always requires human review. */
+  accessSettings?: { restrictedCapabilityIds: string[];
+    /** Inert review suggestions; apply only through existing human Settings APIs. */
+    readGlobalMemory?:boolean; savedBrowserAllowed?:boolean; browserMode?:"disposable"|"trusted"; sourceProfileName?:string;
+  };
+  /** Setup intent only. Native ownership receipts are never portable. */
+  workingCopyMode?: AgentWorkingCopyMode;
+  sourceChat?: {ref:string;title:string};
+  /** Opaque package-local identity; equal refs share one exported folder. */
+  workingRootRef?: string;
+  workingFiles?: PortableWorkingFileDto[];
+  workingFolder?: {cyclicLinks?:'refuse'|'passive_in_root';mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links?:PortableWorkingLinkDto[]};
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }
+export interface PortableMemorySourceStamp {
+  format:1; principal:string; id:string; scope:string; audience:string; ownerChat:string;
+  sourceType:'user_statement'|'ai_inference';
+  provenance:{actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;at:string};
+  origin?:PortableMemorySourceStamp['provenance'];
+}
+export interface PortableMemoryRowDto {id:string;text:string;metadata:Record<string,string|number|boolean>;embedding:number[];stamp:PortableMemorySourceStamp}
+export interface PortableChatMemorySnapshotDto {
+  schema:'ponderosa.chat-memory.v1';signature:string;sourceChatId:string;agentIds:string[];excludedScopes:['global'];chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
+}
+/** Separately selected operator data; never contains permissions, grants or live work. */
+export interface PortableGlobalMemorySnapshotDto {
+  schema:'ponderosa.selected-global-memory.v1';signature:string;sourcePrincipal:string;chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
+}
+export interface GlobalMemorySelectionDto {chunkIds:string[];conflictIds:string[]}
+export interface GlobalMemoryInventoryDto {snapshot:PortableGlobalMemorySnapshotDto;inventoryHash:string}
+export interface GlobalMemoryTransferReviewDto {
+  snapshot:PortableGlobalMemorySnapshotDto;destination:PortableGlobalMemorySnapshotDto;reviewHash:string;
+}
+export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDto;agentRefs:Record<string,string>}
+/** Portable intent only; the destination import review controls activation. */
+export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }
+export interface OutputRoleImportReviewDto { id: string; warning?: string; inactive: boolean; speaker: 'activate' | 'inactive' | 'unchanged'; targets: Array<{ref:string;output:boolean;speaker:boolean}> }
 export interface AgentPortablePackageDto {
+  /** Immediate explicitly selected physical child roots; all destination overlaps must match. */
+  workingRootNesting?:Array<{parentRootRef:string;childRootRef:string;path:string}>;
   schema: "ponderosa.agent-package.v1";
   mode: AgentExportMode;
   kind: "agent" | "organization";
@@ -142,8 +236,17 @@ export interface AgentPortablePackageDto {
   sourceLabel: string;
   /** Full-copy Chat instructions; applying to an existing Chat requires an explicit conflict choice. */
   sourceProjectInstructions?: string;
+  /** Explicit operator full export only; passive historical metadata. */
+  chatTitleHistory?: PortableChatTitleChangeDto[];
   rootRef: string;
+  /** Explicit independent same-Chat roots for grouped imports; never synthesizes reporting edges. */
+  rootRefs?: string[];
   agents: PortableAgentNodeDto[];
+  /** Inert selected-root association evidence; never destination authority. */
+  gitStorageBindings?: import('../portable-reviewed-user-data.js').PortableGitStorageBinding[];
+  outputRoles?: PortableOutputRoleDto[];
+  /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
+  memory?: PortablePackageMemoryDto[];
 }
 export interface AgentImportChatInstructionsResolution {
   action: "keep_destination" | "use_source";
@@ -152,6 +255,18 @@ export interface AgentImportChatInstructionsResolution {
 }
 export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
+  outputRoleReviewId?: string;
+  workingFilesDestination?: string;
+  workingRootDestinations?: Record<string,string>;
+  /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
+  workingFilesActivation?: {sharedRoot?:string};
+  reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
+  reviewedMetadataActivation?: import('../portable-reviewed-user-data.js').ReviewedMetadataActivation;
+  accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string;
+    /** Exhaustive per-node human choices for one reviewed organization import. */
+    agentActions?:Record<string,"keep_destination"|"use_source">};
+  /** Human-selected destination folder mode; omitted retains source mode. */
+  workingCopyMode?: AgentWorkingCopyMode;
   conversationId: string;
   engineMapping: Record<string, string>;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
@@ -162,6 +277,14 @@ export interface CopyAgentPackageRequest {
   sourceAgentId: string;
   conversationId: string;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
+  accessSettingsResolution?: ImportAgentPackageRequest['accessSettingsResolution'];
+  workingCopyMode?: AgentWorkingCopyMode;
+  workingFilesDestination?: string;
+  workingRootDestinations?: Record<string,string>;
+  /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
+  workingFilesActivation?: {sharedRoot?:string};
+  reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
+  reviewedMetadataActivation?: import('../portable-reviewed-user-data.js').ReviewedMetadataActivation;
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */
@@ -171,7 +294,14 @@ export interface CopyAgentPackageRequest {
   /** Required when any copied Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
-export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
+export interface ImportAgentPackageResponse {
+  reviewedMetadataApplications?:Array<{ref:string;path:string;originalSha256:string;state:'applying'|'completed'|'incomplete';error?:{message?:string;code?:string;partialStatePossible:boolean;observed:unknown}}>;
+  reviewedUserDataApplications?:Array<{ref:string;path:string;originalSha256:string;selection:import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{message?:string;code?:string;partialStatePossible:boolean;observed:unknown}}>;
+  rootAgentId: string; agentIds: string[]; agentRefs?:Record<string,string>; workingFilesDestination?:string;
+  liveWorkingRoots?:Array<{ref:string;path:string;agentIds:string[]}>;
+  workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;
+  accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;
+}
 export type AgentImportPhase =
   | "queued"
   | "creating_records"
@@ -187,13 +317,19 @@ export interface AgentImportOperationDto {
   requestId: string;
   /** SHA-256 of the exact submitted payload bound to requestId. */
   payloadHash: string;
+  /** Optional versioned bounded-stream fingerprint of the entire upload. */
+  requestFingerprint?: string;
   projectId: string;
+  /** Immutable destination admitted from the bounded upload header. */
+  conversationId:string;
+  product:'dev'|'branches';
   sourceLabel: string;
   phase: AgentImportPhase;
   status: "pending" | "completed" | "failed";
   createdAt: string;
   updatedAt: string;
   result?: ImportAgentPackageResponse;
+  outputRoleRecoveryId?: string;
   error?: string;
 }
 
@@ -204,6 +340,15 @@ export interface AgentCreationRecoveryDto {
   agentId: string;
 }
 export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
+
+/** Reuse the existing preset-guidance ceiling for bounded standing setup. */
+export function normalizeAgentRole(value: string | null | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("Agent Role must be text");
+  const normalized = normalizeCanonicalText(value).trim();
+  if (unicodeCodePointLength(normalized) > 8000) throw new Error("Agent Role must be 8000 characters or fewer");
+  return normalized || undefined;
+}
 
 export interface AgentRoleProfile {
   role: string;
@@ -216,12 +361,13 @@ export interface AgentRoleProfile {
  * description compact because this profile is also injected into team discovery.
  */
 export function agentRoleProfile(
-  agent: Pick<AgentDto, "title" | "spawnPrompt" | "presetSnapshot">,
+  agent: Pick<AgentDto, "title" | "role" | "spawnPrompt" | "presetSnapshot">,
 ): AgentRoleProfile {
-  const prompt = agent.spawnPrompt?.replace(/\s+/g, " ").trim();
+  const prompt = (agent.role ?? agent.spawnPrompt)?.replace(/\s+/g, " ").trim();
   const compactPrompt = prompt && prompt.length > 160
     ? `${prompt.slice(0, 160).replace(/\s+\S*$/, "").trimEnd()}…`
     : prompt;
+  if (agent.role && compactPrompt) return { role: agent.title, description: compactPrompt };
   if (agent.presetSnapshot) {
     return { role: agent.presetSnapshot.name, description: agent.presetSnapshot.description };
   }
@@ -290,6 +436,8 @@ export const TEAM_DIRECTORY_LIMITS = {
 /** POST /api/projects/:id/agents body. */
 export interface CreateAgentRequest {
   title: string;
+  /** Standing guidance; does not dispatch an opening task. */
+  role?: string;
   engine: EngineId;
   /** Every live Agent belongs to exactly one Chat. */
   conversationId: string;
@@ -313,8 +461,20 @@ export interface CreateAgentRequest {
 }
 
 /** PATCH /api/agents/:id body (persistent Agent settings). */
+export interface AgentRuntimeSettingsSnapshot {
+  activeEngine: EngineId;
+  model: string | null;
+  effort: string | null;
+  speed: string | null;
+}
 export interface UpdateAgentRequest {
+  /** Optional human edit baseline; stale runtime changes fail before any write. */
+  expectedRuntimeSettings?: AgentRuntimeSettingsSnapshot;
   title?: string;
+  /** Optional exact saved name; stale human edits fail before any write. */
+  expectedTitle?: string;
+  /** Applies at the next Run; null clears the explicit standing role. */
+  role?: string | null;
   /** Provider used when the next Run starts. Does not reconfigure an active Run. */
   activeEngine?: EngineId;
   /** Durable next-Run model. Null clears the Agent override. */
@@ -529,4 +689,29 @@ export interface AgentHealthProjectionDto {
   scope: { type: "project" | "conversation"; id: string };
   generatedAt: string;
   agents: AgentHealthDto[];
+}
+
+/** Exact local import ownership; no portable source facts or authority are returned. */
+export interface ImportedAgentProvenanceDto {
+ actorScope:string;sourceLabel?:string;destinationChatId:string;destinationChatTitle:string;
+ createdAt:string;creationOperationId:string;requestId:string;operationId?:string;
+  agentTitle?:string;agentCount?:number;reviewedDataState?:'applying'|'incomplete'|'completed';
+}
+/** Owning-Agent historical provenance only; source identities convey no destination authority. */
+export interface ImportedCommunicationsPageDto {
+  importProvenance?:ImportedAgentProvenanceDto;
+  chatTitleHistory?: PortableChatTitleChangeDto[];
+  source:string; importedAt:string; archiveVersion?:string;
+  /** Total in the retained archive, never the current page length; absent when unavailable. */
+  messageCount?:number;
+  messages:PortableAgentHistoryMessageDto[];
+  artifacts:import('./artifacts.js').ArtifactDto[];
+  hasMore:boolean; nextOffset?:number;
+}
+
+/** Canonical-state mutation-free staged upload preview. Digest is rechecked by import. */
+export interface AgentAccessImportReviewDto {
+  reviewSha256:string;
+  source:Array<{ref:string;settings?:PortableAgentNodeDto['accessSettings']}>;
+  destination:import('../capability-policy.js').EffectiveCapabilityPolicy;
 }

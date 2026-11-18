@@ -16,12 +16,15 @@ function browser() {
   });
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible', documentElement: {} });
   const surface = { isConnected: true, hidden: false, parentElement: null, hasAttribute: () => false, getAttribute: () => null, getClientRects: () => [{ width: 20, height: 20 }] };
-  const globals = { window, document, navigator: { language: 'en-US' }, Event, Error };
+  const globals = { window, document, navigator: { language: 'en-US' }, Event, Error,
+    setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+  const modules = new Map();
   function load(name, imports = {}) {
-    const exports = {};
+    if (modules.has(name)) return modules.get(name);
+    const exports = {}; modules.set(name, exports);
     vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/speech/' + name + '.ts', import.meta.url), 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    }).outputText, { ...globals, exports, require: key => { assert.ok(key in imports, key); return imports[key]; } });
+    }).outputText, { ...globals, exports, require: key => { if (key in imports) return imports[key]; if (key.startsWith('./')) return load(key.slice(2)); assert.fail(key); } });
     return exports;
   }
   const accessibility = load('speechSurfaceAccessibility');
@@ -34,19 +37,19 @@ function playback() {
   const api = b.load('speechCoordinator', { './speechSurfaceAccessibility': b.accessibility });
   return { ...b, ...api, spoken, cancels: () => cancels, start: id => api.startSpeech(id, 'Exact spoken text', { speed: 1.25 }, () => b.surface) };
 }
-function dictation() {
+function dictation(recordingInput) {
   const b = browser(), instances = [], transcripts = [], settling = [], state = [], cleanups = [];
   let index = 0, mounted = false;
   const useState = initial => { const i = index++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], next => { state[i] = typeof next === 'function' ? next(state[i]) : next; }]; };
   const react = { useState, useRef: value => useState(() => ({ current: value }))[0], useCallback: fn => fn, useEffect(fn) { if (!mounted) cleanups.push(fn()); } };
   b.window.SpeechRecognition = class {
     constructor() { instances.push(this); this.aborts = 0; this.stops = 0; }
-    start() {} stop() { this.stops++; } abort() { this.aborts++; }
+    start(track) { this.inputTrack=track; if(recordingInput?.rejectStart)throw Error("Recorded input not supported"); } stop() { this.stops++; } abort() { this.aborts++; }
   };
   const support = b.load('browserSpeech');
   const api = b.load('useDictation', { react, './browserSpeech': support, './speechSurfaceAccessibility': b.accessibility });
   const ref = { current: b.surface };
-  const render = () => { index = 0; const result = api.useDictation(text => transcripts.push(text), value => settling.push(value), ref); mounted = true; return result; };
+  const render = () => { index = 0; const result = api.useDictation(text => transcripts.push(text), value => settling.push(value), ref, true, false, recordingInput); mounted = true; return result; };
   return { ...b, render, instances, transcripts, settling, unmount() { for (const cleanup of cleanups) cleanup?.(); } };
 }
 const result = (text, isFinal = true) => ({ isFinal, 0: { transcript: text }, length: 1 });
@@ -121,7 +124,8 @@ for (const boundary of ['hidden', 'pagehide', 'resume-error']) test(`Q03 playbac
 for (const stopped of [false, true]) test(`Q03 new playback resumes the browser after a paused ${stopped ? 'stopped' : 'replaced'} owner`, () => {
   const b = playback(); b.start('first'); b.pauseSpeech(); assert.equal(b.window.speechSynthesis.paused, true);
   if (stopped) b.stopSpeech('first'); // Native cancel deliberately preserves the browser's paused state.
-  b.start('next'); assert.equal(b.window.speechSynthesis.paused, false); assert.equal(b.speechSnapshot().ownerId, 'next'); assert.equal(b.speechSnapshot().status, 'speaking'); b.stopSpeech();
+  b.start('next'); assert.equal(b.window.speechSynthesis.paused, false); assert.equal(b.speechSnapshot().ownerId, 'next');
+  assert.equal(b.speechSnapshot().status, 'loading'); b.spoken.at(-1).onstart(); assert.equal(b.speechSnapshot().status, 'speaking'); b.stopSpeech();
 });
 test('Q03 a refused browser reset does not queue a new utterance or retain ownership', () => {
   const b = playback(); b.start('first'); b.pauseSpeech(); b.window.speechSynthesis.resume = () => { throw Error('Reset refused'); };
@@ -148,4 +152,39 @@ test('screen-reader speech status resolves to one pixel rather than a full-size 
   assert.equal(css.margin, '-1px');
   assert.equal(css.position, 'absolute');
   assert.equal(css.clip, 'rect(0 0 0 0)', 'Keep live status announcements available without showing them');
+});
+
+
+test('ordinary Read Aloud preserves long text and supplementary Unicode without imposing the voice stream limit', () => {
+  for (const text of ['Ordinary message. '.repeat(700), '😀'.repeat(6000)]) {
+    const b = playback();
+    b.startSpeech('owner', text, { speed: 1 }, () => b.surface);
+    assert.equal(b.spoken.length, 1);
+    assert.equal(b.spoken[0].text, text);
+    assert.equal(b.speechSnapshot().status, 'loading');
+    b.spoken[0].onstart(); b.spoken[0].onend();
+    assert.equal(b.speechSnapshot().status, 'stopped');
+    assert.equal(b.intervals.size, 0);
+  }
+});
+
+test('ordinary dictation and calls share one capture lease; a stale release cannot stop its replacement',()=>{
+  const b=browser(),capture=b.load('captureCoordinator'),ended=[];
+  const first=capture.claimPageCapture(()=>ended.push('dictation'));
+  const second=capture.claimPageCapture(()=>ended.push('call'));
+  assert.deepEqual(ended,['dictation']);first();capture.abandonPageCapture();assert.deepEqual(ended,['dictation','call']);second();
+});
+
+
+test('recorded-note recognition uses the admitted live audio track without replacing the recorder capture lease', () => {
+  const track={readyState:'live'},b=dictation({track:()=>track}),capture=b.load('captureCoordinator');let interrupted=0;
+  const release=capture.claimPageCapture(()=>interrupted++);
+  b.render().start();const r=b.instances[0];assert.equal(r.inputTrack,track);assert.equal(interrupted,0);
+  r.onstart();r.onresult(recognitionEvent(result('spoken request')));r.onresult(recognitionEvent(result('spoken request')));
+  b.render().stop();r.onend();assert.deepEqual(b.transcripts,['spoken request']);assert.equal(b.settling.at(-1),false);
+  capture.abandonPageCapture();assert.equal(interrupted,1,'recognition completion must not release its recorder owner');release();b.unmount();
+});
+for(const unavailable of ['ended','unsupported'])test(`recorded-note ${unavailable} input reports actionable failure and fences late transcripts`,()=>{
+ const track={readyState:unavailable==='ended'?'ended':'live'},b=dictation({track:()=>track,rejectStart:unavailable==='unsupported'});
+ b.render().start();const r=b.instances[0];assert.equal(b.render().status,'error');assert.match(b.render().error,/could not start/);assert.equal(b.settling.at(-1),false);assert.equal(r.aborts,1);assert.equal(r.onresult,null);b.unmount();
 });

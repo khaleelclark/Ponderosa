@@ -1,5 +1,8 @@
 import { fsyncDirectory } from "./store-filesystem.js";
 import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import Database from "better-sqlite3";
+import { storageDatabaseFilename } from "@ponderosa/native-host/sqlite-storage";
 import {
   closeSync,
   constants,
@@ -13,6 +16,7 @@ import {
   readFileSync,
   readSync,
   readdirSync,
+  realpathSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -21,8 +25,11 @@ import {
 } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import { inspectCurrentState, STATE_SCHEMA_CONTRACT } from "./state-admission.js";
+import { managedWorkspacePath } from "./managed-workspaces.js";
+import { creationId } from "./store-workspace-catalog-authority.js";
 
 const MANIFEST = "ponderosa-backup-manifest.json";
+const WEB_DEPLOYMENT_MANIFEST = "ponderosa-web-deployment-backup.json";
 const OMITTED_ROOT_ENTRIES = new Set([
   ".ponderosa-daemon.lock",
 ]);
@@ -86,6 +93,22 @@ function directoryIdentity(directory: string): string {
   return `${stat.dev}:${stat.ino}`;
 }
 
+function backupDestination(dataDir: string, output: string): string {
+  let parent = path.resolve(output);
+  const missing: string[] = [];
+  while (!lstatSync(parent, { throwIfNoEntry: false })) {
+    const next = path.dirname(parent);
+    if (next === parent) throw new Error("backup destination has no accessible parent");
+    missing.unshift(path.basename(parent)); parent = next;
+  }
+  const physicalParent = realpathSync(parent);
+  if (!lstatSync(physicalParent).isDirectory()) throw new Error("backup parent is not a directory");
+  const destination = path.join(physicalParent, ...missing), root = realpathSync(dataDir);
+  if (destination === root || destination.startsWith(`${root}${path.sep}`)) throw new Error("backup output must be outside the Ponderosa data directory");
+  if (lstatSync(destination, { throwIfNoEntry: false })) throw new Error("backup output already exists");
+  return destination;
+}
+
 function removePublishedRoot(root: string, identity: string): void {
   if (!existsSync(root)) return;
   if (directoryIdentity(root) !== identity) {
@@ -127,7 +150,7 @@ function readRegularJson(pathname: string): unknown {
   } finally { closeSync(descriptor); }
 }
 
-function copyTree(source: string, destination: string): DataDirectoryBackupEntry[] {
+function copyTree(source: string, destination: string, omitted = OMITTED_ROOT_ENTRIES): DataDirectoryBackupEntry[] {
   const entries: DataDirectoryBackupEntry[] = [];
   const visit = (relative: string): void => {
     const sourcePath = path.join(source, relative);
@@ -163,7 +186,7 @@ function copyTree(source: string, destination: string): DataDirectoryBackupEntry
     entries.push({ path: relative, type: "file", size: stat.size, sha256: checksum(destinationPath) });
   };
   for (const child of readdirSync(source).sort()) {
-    if (OMITTED_ROOT_ENTRIES.has(child)) continue;
+    if (omitted.has(child)) continue;
     visit(child);
   }
   return entries;
@@ -263,8 +286,8 @@ function restoreTree(
   fsyncDirectory(destinationRoot);
 }
 
-function writeManifest(directory: string, manifest: DataDirectoryBackupManifest): void {
-  const target = path.join(directory, MANIFEST);
+function writeManifest(directory: string, manifest: DataDirectoryBackupManifest, filename = MANIFEST): void {
+  const target = path.join(directory, filename);
   writeFileSync(target, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   const descriptor = openSync(target, process.platform === "win32" ? "r+" : "r");
   try { fsyncSync(descriptor); }
@@ -361,17 +384,200 @@ function recoverRestoreJournal(
   } finally { for (const proof of proofs) proof.close(); }
 }
 
+export interface WebDeploymentCompatibility {
+  currentCommit: string;
+  candidateCommit: string;
+  currentManifestSha256: string;
+  candidateManifestSha256: string;
+  installedPayloadSha256: string;
+}
+
+/** ponytail: only an unchanged installed engine qualifies. Backend/storage changes
+ * keep the full backup path until a separately qualified format contract exists. */
+export function assertWebOnlyDeploymentCompatibility(currentRoot: string, candidateRoot: string): WebDeploymentCompatibility {
+  const identity = (directory: string) => {
+    if (!lstatSync(directory).isDirectory()) throw new Error("installed artifact root must be a physical directory");
+    const root = realpathSync(directory);
+    const manifestFile = path.join(root, "build-manifest.json");
+    if (!existsSync(manifestFile)) throw new Error("web-only deployment requires a qualified standard build manifest; private or unknown artifacts require the full backup path");
+    const parsed = readRegularJson(manifestFile);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("installed build manifest must be an object");
+    const value = parsed as Record<string, any>;
+    const string = (input: unknown): input is string => typeof input === "string" && input.length > 0;
+    const hash = (input: unknown): input is string => string(input) && /^[a-f0-9]{64}$/u.test(input);
+    if (value.schemaVersion !== 1 || value.product !== "Ponderosa" || !string(value.commit) ||
+        !/^[a-f0-9]{40}$/u.test(value.commit) || !string(value.version) || !string(value.channel) ||
+        !string(value.communicationProtocolVersion) || !string(value.databaseSchemaVersion) ||
+        path.basename(value.databaseSchemaVersion) !== value.databaseSchemaVersion ||
+        !hash(value.databaseSchemaSha256) || !hash(value.nodeExecutableSha256) ||
+        !string(value.nodeVersion) || !string(value.target?.platform) || !string(value.target?.arch) ||
+        !string(value.nativeAbi?.modules) || !string(value.nativeAbi?.napi) || !hash(value.nativeHost?.sha256) ||
+        !Number.isSafeInteger(value.nodeExecutableBytes) || value.nodeExecutableBytes < 1 ||
+        !Number.isSafeInteger(value.nativeHost.bytes) || value.nativeHost.bytes < 1) {
+      throw new Error("web-only deployment requires a complete installed build manifest");
+    }
+    const app = path.join(root, "app");
+    if (!lstatSync(app).isDirectory() || !lstatSync(path.join(app, "web")).isDirectory()) {
+      throw new Error("installed application owners must be physical directories");
+    }
+    const owners = readdirSync(app).sort();
+    if (!["server", "launcher", "web"].every(name => owners.includes(name)) ||
+        owners.some(name => !["server", "launcher", "engine-desktop", "web"].includes(name))) {
+      throw new Error("unknown installed application owner; use the full backup path");
+    }
+    const payloads = [...owners.filter(name => name !== "web").map(name => `app/${name}`), "runtime", "schema",
+      "package.json", "ponderosa", "ponderosa.cmd"];
+    const contained = (pathname: string) => payloads.some(owner => {
+      const boundary = path.join(root, owner);
+      return pathname === boundary || pathname.startsWith(`${boundary}${path.sep}`);
+    });
+    const records: unknown[] = [];
+    const visit = (relative: string): void => {
+      const pathname = path.join(root, relative), stat = lstatSync(pathname);
+      if (stat.isSymbolicLink()) {
+        const target = readlinkSync(pathname);
+        if (path.isAbsolute(target) || !contained(realpathSync(pathname))) {
+          throw new Error("installed payload link escapes verified engine bytes");
+        }
+        records.push([relative, "symlink", target]);
+      } else if (stat.isDirectory()) {
+        records.push([relative, "directory", stat.mode & 0o777]);
+        for (const child of readdirSync(pathname).sort()) visit(path.join(relative, child));
+      } else if (stat.isFile()) {
+        records.push([relative, "file", stat.mode & 0o777, stat.size, checksum(pathname)]);
+      } else throw new Error("installed payload contains a special filesystem entry");
+    };
+    for (const owner of payloads) visit(owner);
+    const verify = (pathname: string, expected: string, bytes?: number): void => {
+      if (!contained(realpathSync(pathname)) || !lstatSync(pathname).isFile() ||
+          (bytes !== undefined && lstatSync(pathname).size !== bytes) || checksum(pathname) !== expected) {
+        throw new Error("installed payload differs from its build manifest");
+      }
+    };
+    verify(path.join(root, "runtime", value.target.platform === "win32" ? "node.exe" : "node"),
+      value.nodeExecutableSha256, value.nodeExecutableBytes);
+    verify(path.join(root, "schema", value.databaseSchemaVersion), value.databaseSchemaSha256);
+    for (const application of ["server", "launcher"]) {
+      const entry = createRequire(path.join(app, application, "package.json")).resolve("@ponderosa/native-host");
+      verify(path.resolve(path.dirname(entry), "../build/Release/ponderosa_native.node"), value.nativeHost.sha256, value.nativeHost.bytes);
+    }
+    return {
+      commit: value.commit as string,
+      manifest: checksum(manifestFile),
+      payload: createHash("sha256").update(JSON.stringify(records)).digest("hex"),
+      contract: JSON.stringify([value.communicationProtocolVersion, value.databaseSchemaVersion, value.databaseSchemaSha256,
+        value.target.platform, value.target.arch, value.nodeVersion, value.nodeExecutableSha256,
+        value.nativeAbi.modules, value.nativeAbi.napi, value.nativeHost.bytes, value.nativeHost.sha256]),
+    };
+  };
+  const current = identity(currentRoot), candidate = identity(candidateRoot);
+  if (current.contract !== candidate.contract || current.payload !== candidate.payload) {
+    throw new Error("engine, runtime or storage identity changed; use the full backup and restore-rehearsal path");
+  }
+  return { currentCommit: current.commit, candidateCommit: candidate.commit,
+    currentManifestSha256: current.manifest, candidateManifestSha256: candidate.manifest,
+    installedPayloadSha256: current.payload };
+}
+
+export interface WebDeploymentBackupManifest extends DataDirectoryBackupManifest {
+  scope: "web-deployment-only-not-disaster-recovery";
+  source: { path: string; physicalIdentity: string };
+  compatibility: WebDeploymentCompatibility;
+  preservedWorkingFolders: Array<{ projectId: string; path: string; physicalIdentity: string }>;
+}
+
+/** This snapshot cannot undo canonical writes. Compatible rollback changes code
+ * and configuration while retaining the current data and working folders. */
+export function createOfflineWebDeploymentBackup(
+  dataDir: string, output: string, artifacts: { currentRoot: string; candidateRoot: string },
+): WebDeploymentBackupManifest {
+  const compatibility = assertWebOnlyDeploymentCompatibility(artifacts.currentRoot, artifacts.candidateRoot);
+  const absoluteDataDir = path.resolve(dataDir), absoluteOutput = backupDestination(dataDir, output);
+  const stage = `${absoluteOutput}.partial-${randomUUID()}`;
+  const ownership = inspectCurrentState(absoluteDataDir);
+  try {
+    // Inspection already holds the offline lease and verified this disposable
+    // SQLite cohort. Never open the retained original for backup metadata.
+    const catalog = new Database(storageDatabaseFilename(path.join(ownership.snapshotRoot, "ponderosa.db")), { readonly: true, fileMustExist: true });
+    try {
+      const bindings = (): WebDeploymentBackupManifest["preservedWorkingFolders"] => {
+        const projects = externalProjectRoots(ownership.dataDir);
+        const workspaces = path.join(ownership.dataDir, "workspaces");
+        if (existsSync(workspaces) && (!lstatSync(workspaces).isDirectory() || lstatSync(workspaces).isSymbolicLink())) {
+          throw new Error("managed working-folder root is not physical retained storage");
+        }
+        const names = existsSync(workspaces) ? readdirSync(workspaces).sort() : [];
+        const bound = new Set<string>();
+        const retained = projects.map(project => {
+          const canonical = catalog.prepare("SELECT host_path FROM projects WHERE id = ?").get(project.projectId) as { host_path: string } | undefined;
+          if (canonical?.host_path !== project.hostPath) throw new Error("working-folder Project ownership is not canonical");
+          const record = readRegularJson(path.join(ownership.dataDir, "projects", project.projectId, "project.json")) as {
+            managedWorkspaceName?: string; ownerConversationId?: string; creationIdempotencyKey?: string;
+          };
+          if (record.managedWorkspaceName) {
+            const expected = managedWorkspacePath(ownership.dataDir, record.managedWorkspaceName);
+            if (!record.creationIdempotencyKey || project.projectId !== creationId("project", "workspace", record.creationIdempotencyKey) ||
+                project.hostPath !== expected || !record.ownerConversationId || path.basename(record.ownerConversationId) !== record.ownerConversationId ||
+                bound.has(record.managedWorkspaceName) || !names.includes(record.managedWorkspaceName)) {
+              throw new Error("managed working-folder ownership is unknown or inconsistent");
+            }
+            const owner = catalog.prepare("SELECT project_id FROM conversations WHERE id = ?").get(record.ownerConversationId) as { project_id: string } | undefined;
+            if (owner?.project_id !== project.projectId) throw new Error("managed working-folder Chat ownership is not canonical");
+            const chat = readRegularJson(path.join(ownership.dataDir, "projects", project.projectId, "conversations", record.ownerConversationId, "conversation.json")) as {
+              id: string; projectId: string; workingDirectory: string; managedWorkspaceName: string;
+            };
+            if (chat.id !== record.ownerConversationId || chat.projectId !== project.projectId ||
+                chat.workingDirectory !== expected || chat.managedWorkspaceName !== record.managedWorkspaceName) {
+              throw new Error("managed working-folder Chat ownership is inconsistent");
+            }
+            bound.add(record.managedWorkspaceName);
+          } else if (project.hostPath === workspaces || project.hostPath.startsWith(`${workspaces}${path.sep}`)) {
+            throw new Error("managed working-folder ownership is unknown");
+          }
+          const physicalFolder = realpathSync(project.hostPath);
+          if (absoluteOutput === physicalFolder || absoluteOutput.startsWith(`${physicalFolder}${path.sep}`)) {
+            throw new Error("backup output overlaps a preserved working folder");
+          }
+          return { projectId: project.projectId, path: project.hostPath, physicalIdentity: directoryIdentity(project.hostPath) };
+        });
+        if (names.some(name => !bound.has(name))) throw new Error("unowned managed working folder; use the full backup path");
+        return retained;
+      };
+      const source = { path: absoluteDataDir, physicalIdentity: directoryIdentity(absoluteDataDir) };
+      const preservedWorkingFolders = bindings();
+      mkdirSync(path.dirname(absoluteOutput), { recursive: true, mode: 0o700 });
+      mkdirSync(stage, { mode: 0o700 });
+      if (realpathSync(stage) !== stage) throw new Error("backup output parent changed physical location");
+      const omitted = new Set([...OMITTED_ROOT_ENTRIES, "workspaces"]);
+      const manifest: WebDeploymentBackupManifest = {
+        schemaVersion: 3, stateEpoch: 2, generationId: ownership.generationId, schemaContract: STATE_SCHEMA_CONTRACT,
+        createdAt: new Date().toISOString(), scope: "web-deployment-only-not-disaster-recovery", source, compatibility,
+        preservedWorkingFolders, externalProjects: { policy: "excluded", projects: [] },
+        entries: copyTree(ownership.dataDir, stage, omitted),
+      };
+      verifyCompleteTree(ownership.dataDir, manifest.entries, omitted);
+      verifyCompleteTree(stage, manifest.entries);
+      if (source.physicalIdentity !== directoryIdentity(absoluteDataDir) ||
+          JSON.stringify(preservedWorkingFolders) !== JSON.stringify(bindings()) ||
+          JSON.stringify(compatibility) !== JSON.stringify(assertWebOnlyDeploymentCompatibility(artifacts.currentRoot, artifacts.candidateRoot))) {
+        throw new Error("web-deployment ownership or installed artifact changed during backup");
+      }
+      writeManifest(stage, manifest, WEB_DEPLOYMENT_MANIFEST);
+      renameSync(stage, absoluteOutput); fsyncDirectory(path.dirname(absoluteOutput));
+      return manifest;
+    } finally { catalog.close(); }
+  } catch (error) {
+    throw new Error(`web-deployment backup refused; any partial stage is preserved at ${stage}`, { cause: error });
+  } finally { ownership.close(); }
+}
+
 export function createOfflineDataDirectoryBackup(
   dataDir: string,
   output: string,
   options: DataDirectoryBackupOptions = {},
 ): DataDirectoryBackupManifest {
   const absoluteDataDir = path.resolve(dataDir);
-  const absoluteOutput = path.resolve(output);
-  if (absoluteOutput === absoluteDataDir || absoluteOutput.startsWith(`${absoluteDataDir}${path.sep}`)) {
-    throw new Error("backup output must be outside the Ponderosa data directory");
-  }
-  if (existsSync(absoluteOutput)) throw new Error("backup output already exists");
+  const absoluteOutput = backupDestination(dataDir, output);
   const stage = `${absoluteOutput}.partial-${randomUUID()}`;
   let ownership: ReturnType<typeof inspectCurrentState> | undefined;
   try {
@@ -382,13 +588,15 @@ export function createOfflineDataDirectoryBackup(
         if (!existsSync(project.hostPath) || !lstatSync(project.hostPath).isDirectory()) {
           throw new Error(`external Project root is unavailable: ${project.hostPath}`);
         }
-        if (absoluteOutput === project.hostPath || absoluteOutput.startsWith(`${project.hostPath}${path.sep}`)) {
+        const physicalFolder = realpathSync(project.hostPath);
+        if (absoluteOutput === physicalFolder || absoluteOutput.startsWith(`${physicalFolder}${path.sep}`)) {
           throw new Error(`backup output must be outside external Project ${project.projectId}`);
         }
       }
     }
     mkdirSync(path.dirname(absoluteOutput), { recursive: true, mode: 0o700 });
     mkdirSync(stage, { mode: 0o700 });
+    if (realpathSync(stage) !== stage) throw new Error("backup output parent changed physical location");
     const externalProjects: DataDirectoryBackupManifest["externalProjects"] = {
       policy: options.externalProjects === "copy" ? "included" : "excluded",
       projects: [],
@@ -437,6 +645,9 @@ export function restoreOfflineDataDirectoryBackup(
 ): DataDirectoryBackupManifest {
   const absoluteBackup = path.resolve(backup);
   const absoluteDataDir = path.resolve(dataDir);
+  if (existsSync(path.join(absoluteBackup, WEB_DEPLOYMENT_MANIFEST))) {
+    throw new Error("web-deployment snapshots preserve working folders in place and cannot restore state; roll back code against current compatible data");
+  }
   if (absoluteDataDir === absoluteBackup || absoluteDataDir.startsWith(`${absoluteBackup}${path.sep}`)) {
     throw new Error("restore destination must be outside the backup directory");
   }

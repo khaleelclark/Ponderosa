@@ -1,0 +1,9 @@
+# Additive upgrades and safe cleanup
+
+Current-format installations at the exact published schema prefixes 0027 through 0033 may upgrade to the current schema under the existing physical-directory lease. Admission reconstructs each complete prefix from its ordered DDL and compares the full schema signature before writing. Later extensions are excluded from predecessor reconstruction. Missing tables, forged version receipts, unknown schema objects or invalid generation markers still refuse; no partial schema is guessed into validity. Runtime initialization always applies the current schema. The predecessor builder accepts only an empty private in-memory database and never initializes an existing data root.
+
+The existing upgrade transaction applies extensions and validates the final schema before commit. Agent IDs, history, management data and the generation marker stay in place. This supports additive current-format upgrades, not arbitrary legacy restore or downgrade. Historical backup normalization remains in the offline restore tool.
+
+Managed Project creation cleanup validates ownership before removing its tombstone. Ownership does not authorize deleting user content: only its marker and an otherwise empty directory may be removed. Unexpected files cause an explicit error naming the preserved directory and leave cleanup pending. A concurrent addition after the emptiness read makes nonrecursive directory removal fail and retains those bytes. User-selected working folders are never recursively cleaned by this path.
+
+Regression cases have been written for populated prefix upgrades, retained role/tier/preset data and API warnings, and empty-versus-populated tombstones. They have not been executed; builds, types, suites and browser work are deferred to the consolidated implementation pass.
