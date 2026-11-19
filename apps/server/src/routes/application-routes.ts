@@ -626,6 +626,12 @@ registerAgentMaintenanceRoutes(app, {
   store, workspace, engineAuthStatuses, coordinationV3, engines, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
   activeRuns, workingCopies, clearAgentResumeSession,
+  drainRuntime: async (agentId, projectId) => {
+    const runtime = persistentRuntimeForTermination(agentId);
+    if (runtime) await teardownPersistentRuntime(agentId, runtime, "working-folder recovery", projectId);
+    await providerProcessAuthority.terminateAgents(new Set([agentId]), "working-folder recovery");
+    if (providerProcessAuthority.count({agentId})) throw Error("The previous provider process is still active");
+  },
   persistentRuntimeForTermination, teardownPersistentRuntime,
   notifyScheduler: notifyScheduler,
   appendWorkspace,

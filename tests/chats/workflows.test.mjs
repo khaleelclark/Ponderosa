@@ -698,3 +698,22 @@ test('UI018 maintenance excludes new upload references and retirement survives d
   await assets.reconcile(projectId,agentOwner,new Set(),Date.now()+600000);assert.equal(await assets.read(projectId,agentOwner,agentFile.id),undefined,'Existing Agent TTL path remains supported');assert.ok(workspace.getDraft(chat,ownerId).retiredPendingSubmissionIds.some(item=>item.idempotencyKey===target.idempotencyKey),'Cleanup never resurrects retired input');
  }finally{await app.close();assets.close();workspace.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test('missing draft attachments do not block startup or enter new stale-revision conflicts',options,async t=>withFixture(t,async f=>{
+ const chat=await f.createChat('Missing draft attachment recovery');
+ const ownerId='browser-owner',clientId='first-tab',missing=randomUUID();
+ const url=`/api/conversations/${chat.id}/draft`;
+ await f.shutdownProduct();
+ const workspace=new WorkspaceStore(f.dataDir);
+ try{
+   workspace.putDraft(chat.id,{ownerId,clientId,text:'Preserved draft text',attachmentIds:[missing],expectedRevision:0});
+ }finally{workspace.close();}
+ await f.restartAfterProductShutdown();
+ const recovered=f.ok(await f.api('GET',`${url}?ownerId=${ownerId}`));
+ assert.equal(recovered.text,'Preserved draft text');
+ assert.deepEqual(recovered.attachments,[]);
+ const stale=await f.api('PUT',url,{ownerId,clientId:'stale-tab',text:'Stale editor text',attachmentIds:[missing],expectedRevision:0});
+ assert.equal(stale.status,400);
+ assert.deepEqual(stale.body.unavailableAttachmentIds,[missing]);
+ assert.deepEqual(f.ok(await f.api('GET',`${url}-conflicts?ownerId=${ownerId}`)).conflicts,[]);
+}));

@@ -59,9 +59,9 @@ export function useConversationHistory(
     () =>
       mergeConversationMessages(
         olderMain?.messages ?? [],
-        compactDefined(detailQuery.data?.messages ?? []),
+        olderMain?.historical ? [] : compactDefined(detailQuery.data?.messages ?? []),
       ),
-    [detailQuery.data?.messages, olderMain?.messages],
+    [detailQuery.data?.messages, olderMain?.messages, olderMain?.historical],
   );
   const messages = useMessageDeliveryReceipts(retainedMessages, conversationId, activeView === "main");
   const agents = useMemo(
@@ -72,9 +72,9 @@ export function useConversationHistory(
     () =>
       mergeDecisionEvents(
         olderMain?.decisionEvents ?? [],
-        detailQuery.data?.decisionEvents ?? [],
+        olderMain?.historical ? [] : detailQuery.data?.decisionEvents ?? [],
       ),
-    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents],
+    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents, olderMain?.historical],
   );
   const mainTimeline = useMemo<MainTimelineEntry[]>(() => {
     const entries: MainTimelineEntry[] = [

@@ -37,6 +37,7 @@ import { healthObservation, utf8Prefix } from "./store-activity.js";
 
 const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
 const ACTIVITY_EVENT_TYPES = new Set([
+  "session_reset",
   "native_plan", "native_diff", "native_review",
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",

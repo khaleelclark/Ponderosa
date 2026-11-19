@@ -33,6 +33,25 @@ function scheduleFailureReason(error: unknown): string {
   }
 }
 
+/** Croner chooses one offset for a repeated local hour. For all-hours
+ * schedules, inspect the real minutes in that overlap too. Keep fixed-hour
+ * schedules on Croner's one-per-wall-time policy. */
+function nextCronRun(cron: Cron, config: { expression: string; timezone: string }, after: Date): Date | null {
+  const next = cron.nextRun(after);
+  if (!next || !/^\*(?:\/\d+)?$/u.test(config.expression.split(/\s+/)[1] ?? "")) return next;
+  const offset = new Intl.DateTimeFormat("en", { timeZone: config.timezone, timeZoneName: "longOffset" });
+  const zone = (date: Date) => offset.formatToParts(date).find(part => part.type === "timeZoneName")?.value;
+  const before = new Date(after.getTime() - 3 * 60 * 60_000);
+  const forward = next > after ? next : undefined;
+  const limit = Math.min(forward?.getTime() ?? Infinity, after.getTime() + 3 * 60 * 60_000);
+  if (forward && zone(before) === zone(new Date(limit))) return forward;
+  for (let minute = (Math.floor(after.getTime() / 60_000) + 1) * 60_000; minute < limit; minute += 60_000) {
+    const candidate = new Date(minute);
+    if (cron.match(candidate)) return candidate;
+  }
+  return forward ?? cron.nextRun(new Date(limit - 1));
+}
+
 export function normalizeTriggerSourceConfig(
   sourceKind: TriggerSourceKind,
   config: TriggerSourceConfig,
@@ -61,8 +80,9 @@ export function normalizeTriggerSourceConfig(
     if (schedule.scheduleKind === "cron") {
       if (!schedule.expression?.trim() || !schedule.timezone?.trim()) throw new Error("cron expression and timezone are required");
       if (schedule.expression.trim().split(/\s+/).length !== 5) throw new Error("cron schedules must use five fields and cannot run more than once per minute");
-      const cron = new Cron(schedule.expression.trim(), { timezone: schedule.timezone.trim(), paused: true });
-      const next = cron.nextRun(now);
+      const timing = { expression: schedule.expression.trim(), timezone: schedule.timezone.trim() };
+      const cron = new Cron(timing.expression, { timezone: timing.timezone, paused: true });
+      const next = nextCronRun(cron, timing, now);
       if (!next) throw new Error("cron schedule has no future occurrence");
       return {
         config: { scheduleKind: "cron", expression: schedule.expression.trim(), timezone: schedule.timezone.trim(), ...policy },
@@ -120,7 +140,8 @@ export class BranchTriggerSourceService {
   private readonly watchers = new Map<string, ProjectFilesystemWatcher>();
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
-  private scheduleCycleCutoff?: string;
+  private scheduleCycleCutoff?: { wall: string; interval: string };
+  private intervalClock?: { monotonic: number; logical: number };
   private lastDiagnosticFailureLoggedAt = 0;
   private scheduleCursor?: { nextFireAt: string; id: string };
   private refreshChain: Promise<void> = Promise.resolve();
@@ -398,15 +419,23 @@ export class BranchTriggerSourceService {
   async processDueSchedules(): Promise<void> {
     if (!this.sourceAvailable()) return;
     const now = new Date();
-    this.scheduleCycleCutoff ??= now.toISOString();
+    const monotonic = performance.now(), previous = this.intervalClock;
+    const wall = now.getTime();
+    const expected = previous ? previous.logical + Math.max(0, monotonic - previous.monotonic) : wall;
+    // Continue intervals on elapsed time across a wall-clock step back. The
+    // durable tick cursor still deduplicates when the wall clock catches up.
+    const logical = expected - wall > 5_000 ? expected : wall;
+    this.intervalClock = { monotonic, logical };
+    const current = { wall: now.toISOString(), interval: new Date(logical).toISOString() };
+    this.scheduleCycleCutoff ??= current;
     this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule"));
     let due: TriggerDefinitionDto[];
     try {
-      due = this.options.triggers.listDueScheduleTriggers(this.scheduleCycleCutoff, 100, this.scheduleCursor);
+      due = this.options.triggers.listDueScheduleTriggers(this.scheduleCycleCutoff.wall, 100, this.scheduleCursor, this.scheduleCycleCutoff.interval);
       if (!due.length && this.scheduleCursor) {
         this.scheduleCursor = undefined;
-        this.scheduleCycleCutoff = now.toISOString();
-        due = this.options.triggers.listDueScheduleTriggers(now.toISOString());
+        this.scheduleCycleCutoff = current;
+        due = this.options.triggers.listDueScheduleTriggers(current.wall, 100, undefined, current.interval);
       }
       if (!due.length) this.scheduleCycleCutoff = undefined;
       this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule_polling"));
@@ -420,7 +449,7 @@ export class BranchTriggerSourceService {
       this.scheduleCursor = { nextFireAt: episode!, id: trigger.id };
       try {
         if (!this.destinationAvailable(trigger)) continue;
-        this.fireSchedule(trigger, now);
+        this.fireSchedule(trigger, now, logical);
       } catch (error) {
         const cause=scheduleFailureReason(error);
         this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ trigger, kind: "schedule", episode, cause: error,
@@ -433,19 +462,20 @@ export class BranchTriggerSourceService {
     }
   }
 
-  private fireSchedule(trigger: TriggerDefinitionDto, now: Date): void {
+  private fireSchedule(trigger: TriggerDefinitionDto, now: Date, intervalNow: number): void {
     const expected = trigger.nextFireAt;
     if (!expected) return;
     const config = trigger.sourceConfig as TriggerScheduleConfig;
     let cursor: Date | null = new Date(expected);
     const cron = config.scheduleKind === "cron"
       ? new Cron(config.expression, { timezone: config.timezone, paused: true }) : undefined;
+    const cutoff = config.scheduleKind === "interval" ? intervalNow : now.getTime();
     // Bound each poll without advancing past unaccepted due times.
-    for (let count = 0; cursor && cursor.getTime() <= now.getTime() && count < MAX_SCHEDULE_OCCURRENCES_PER_POLL; count += 1) {
+    for (let count = 0; cursor && cursor.getTime() <= cutoff && count < MAX_SCHEDULE_OCCURRENCES_PER_POLL; count += 1) {
       const scheduledAt = cursor.toISOString();
       const next: Date | null = config.scheduleKind === "once" ? null
         : config.scheduleKind === "interval" ? new Date(nextIntervalTime(config.everyMs, cursor.getTime(), cursor.getTime()))
-        : cron!.nextRun(cursor);
+        : nextCronRun(cron!, config, cursor);
       this.options.triggers.recordScheduledTriggerOccurrence({
         triggerId: trigger.id,
         occurrenceKey: `schedule:${scheduledAt}:${scheduledAt}`,

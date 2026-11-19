@@ -982,6 +982,9 @@ export function ConversationView({
             beforeMessages={
               <>
                 <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>
+                {mainHistory.historical && <Alert severity="info" sx={{ m: 1.5 }} action={
+                  <Button color="inherit" size="small" onClick={() => setOlderMain(undefined)}>Return to Latest</Button>
+                }>Viewing an older part of this Chat</Alert>}
                 {olderError ? (
                   <Alert
                     severity="error"

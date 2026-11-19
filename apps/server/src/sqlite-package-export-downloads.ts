@@ -2,7 +2,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {Readable} from 'node:stream';
 import type Database from 'better-sqlite3';
 import type {FastifyInstance,FastifyReply} from 'fastify';
-import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES,type WorkingFolderOmissions} from '@ponderosa/core';
 import {stableJson} from '@ponderosa/agents';
 import {portablePackageJsonChunks} from './agent-package-codec.js';
 import type {PackageExportDownloads,PackageExportDownload} from './package-export-downloads.js';
@@ -124,16 +124,24 @@ export class SqlitePackageExportDownloads {
    if(old.ticket&&Date.parse(old.ticket.expiresAt)>Date.now())return reply.header('cache-control','private, no-store').send(old.ticket);
    throw error('Original export preparation is unconfirmed or expired. Its bytes are held; retry cannot capture a replacement.',409);
   }
-  const retained=await this.legacy.retainedUsage();
-  this.pool.assert();
-  let previous:Claim|undefined;
-  this.transaction(()=>{
-   this.reclaim();previous=this.claim(key);
-   if(previous){if(previous.selection_hash!==selectionHash)throw error('Original export request choices differ; prepare a new explicit export.',409);return;}
-   if(this.closed)throw error('Package export service is closed',503);
-   this.capacity(retained,1,0,true);
-   this.db.prepare("INSERT INTO package_export_claims(request_key,selection_hash,created_at,status) VALUES(?,?,?,'preparing')").run(key,selectionHash,Date.now());
-  });
+  let previous=this.claim(key);
+  if(previous&&previous.selection_hash!==selectionHash)throw error('Original export request choices differ; prepare a new explicit export.',409);
+  if(!previous)try {
+   const retained=await this.legacy.retainedUsage();
+   this.pool.assert();
+   this.transaction(()=>{
+    this.reclaim();previous=this.claim(key);
+    if(previous){if(previous.selection_hash!==selectionHash)throw error('Original export request choices differ; prepare a new explicit export.',409);return;}
+    if(this.closed)throw error('Package export service is closed',503);
+    this.capacity(retained,1,0,true);
+    this.db.prepare("INSERT INTO package_export_claims(request_key,selection_hash,created_at,status) VALUES(?,?,?,'preparing')").run(key,selectionHash,Date.now());
+   });
+  } catch(failure) {
+   if (this.closed || this.claim(key)) throw failure;
+   // Staging was refused before this request owned a claim or entered its builder.
+   reply.header("x-ponderosa-export-staging", "unavailable-before-capture");
+   throw error('Package staging is unavailable. Retained export records and bytes were preserved.',503);
+  }
   if(previous){
    const ticket=previous.ticket_token&&this.ticket(previous.ticket_token);
    if(previous.status==='completed'&&ticket&&ticket.expires_at>Date.now()){
@@ -152,7 +160,7 @@ export class SqlitePackageExportDownloads {
    throw failure;
   }finally{this.active.delete(reply);}
  }
- async send(value:unknown,name:string,reply:FastifyReply,download=false,attachment=false):Promise<unknown>{
+ async send(value:unknown,name:string,reply:FastifyReply,download=false,attachment=false,omissions?:WorkingFolderOmissions):Promise<unknown>{
   const request=this.active.get(reply);
   if(!download&&!request){
    if(this.closed)throw error('Package export service is closed',503);
@@ -227,7 +235,7 @@ export class SqlitePackageExportDownloads {
     }
    });
    const ticket=this.ticket(token);if(!ticket)throw error('Completed export receipt is unavailable.',503);
-   if(download)return reply.header('cache-control','private, no-store').send(this.descriptor(ticket));
+   if(download)return reply.header('cache-control','private, no-store').send({...this.descriptor(ticket),...(omissions?{workingFolderOmissions:omissions}:{})});
    return this.stream(ticket,reply,attachment);
   }catch(failure){
    if(failure instanceof Error)failure.message+='; the unconfirmed export is held without replay';

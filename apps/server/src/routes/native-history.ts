@@ -14,7 +14,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
   store:AgentStore;coordinationV3:CoordinationV3Store;activeRuns:Map<string,ActiveRun>;
   deletingAgentIds:ReadonlySet<string>;deletingProjectIds:ReadonlySet<string>;
   persistentRuntimeForTermination(id:string):PersistentRuntime|undefined;
-  isClosed():boolean;workingCopies:AgentWorkingCopyService;busy:Set<string>;
+  isClosed():boolean;drainNativeHistory(agents:ReadonlySet<string>):Promise<void>;workingCopies:AgentWorkingCopyService;busy:Set<string>;
 }):void {
   const {store}=context,authority=new NativeHistoryAuthority(store);
   const boundary=(id:string):{boundary:HistoryBoundary;runtime:PersistentRuntime}|undefined=>{
@@ -119,23 +119,52 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
       }
       same(id,b);
       let {receipt}=authority.reserve(b.boundary,body.idempotencyKey,body.operation==='preview'?'preview':'rewind',body,{requestHash:historyHash(body)});
-      let native:import('@ponderosa/core').NativeFileRewindResult;
+      let native:import('@ponderosa/core').NativeFileRewindResult|undefined;
       try {
         native=await b.runtime.session.rewindFiles(body.checkpointId,body.operation==='preview');same(id,b);
         if(native.sessionId!==b.boundary.sessionId||native.messageId!==body.checkpointId||native.dryRun!==(body.operation==='preview'))throw new Error("Native receipt boundary changed");
         if(body.operation==='preview'&&native.outcome==='completed'&&native.canRewind&&!native.filesChanged)throw new Error("Native changed-file inventory unavailable");
         const facts=body.operation==='preview'&&native.outcome==='completed'?nativeRewindFileFacts(b.boundary.rootPath,native.filesChanged??[]):undefined;
-        receipt=authority.save(receipt,native.outcome==='completed'?'completed':'started',{native,...(facts?{facts}:{}),boundaryHash:body.boundaryHash});
-      }catch(error){request.log.error({err:error},"Native file operation outcome unknown");return reply.code(409).send({receipt,outcome:"outcome_unknown",replayAuthorized:false,error:"Read the original key; never repeat a file mutation from an HTTP failure"});}
+        if(body.operation==='preview'&&native.outcome!=='completed')await context.drainNativeHistory(new Set([id]));
+        receipt=authority.save(receipt,native.outcome==='completed'?'completed':body.operation==='preview'?'failed':'started',{native,...(facts?{facts}:{}),boundaryHash:body.boundaryHash});
+      }catch(error){
+        if (body.operation === 'preview'&&native?.outcome!=='outcome_unknown') {
+          // A failed inventory projection after a completed dry run has no
+          // native effect. Otherwise drain an uncertain command before release.
+          if(!native)await context.drainNativeHistory(new Set([id]));
+          receipt = authority.save(receipt, 'failed');
+          request.log.error({err:error}, "Native history preview failed");
+          return {receipt, replayAuthorized:false};
+        }
+        request.log.error({err:error},"Native file operation outcome unknown");return reply.code(409).send({receipt,outcome:"outcome_unknown",replayAuthorized:false,error:"Read the original key; never repeat a file mutation from an HTTP failure"});}
       return {receipt,replayed:false,sourceWork:"unchanged",replayAuthorized:false};
     }catch(error){request.log.error({err:error},"Native history request refused or uncertain");return reply.code(409).send({error:"Native history boundary, preview or persistence refused/unconfirmed. Inspect the original key before another action.",replayAuthorized:false});}
     finally{release?.();if(ownsBusy)context.busy.delete(id);}
   });
-  app.post<{Params:{id:string};Body:{key?:string}}>("/api/agents/:id/native-history/cancel-preparation",async(request,reply)=>{
-    if(!store.getAgent(request.params.id))return reply.code(404).send({error:"Agent not found"});
-    if(!validKey(request.body?.key))return reply.code(400).send({error:"Exact prepared fork command key required"});
-    try{return {receipt:authority.cancel(request.params.id,request.body.key),nativeInvoked:false};}
-    catch{return reply.code(409).send({error:"Only an unstarted preparation may be cancelled; started native outcomes remain unknown"});}
+  app.post<{Params:{id:string};Body:{key?:string;acknowledgeUnknown?:true}}>("/api/agents/:id/native-history/cancel-preparation",async(request,reply)=>{
+    const id = request.params.id, body = request.body;
+    const agent = store.getAgent(id);
+    if(!agent)return reply.code(404).send({error:"Agent not found"});
+    if(!validKey(body?.key) || (body.acknowledgeUnknown !== undefined && body.acknowledgeUnknown !== true))
+      return reply.code(400).send({error:"Exact original command key required"});
+    if(context.busy.has(id) || context.isClosed() || context.deletingAgentIds.has(id) ||
+       context.deletingProjectIds.has(agent.projectId)) return reply.code(409).send({error:"Native history is busy"});
+    context.busy.add(id);
+    try {
+      const receipt = authority.read(id, body.key);
+      if (receipt?.state === 'started' && body.acknowledgeUnknown) {
+        const agents = new Set([id, ...(receipt.targetAgentId ? [receipt.targetAgentId] : [])]);
+        if ([...agents].some(owner => context.activeRuns.has(owner) || context.coordinationV3.activeAgentRun(owner)))
+          throw Error("Native history still has active Run authority");
+        await context.drainNativeHistory(agents);
+        if (authority.read(id, body.key)?.id !== receipt.id || context.isClosed())
+          throw Error("The exact native history receipt changed");
+      }
+      return {receipt:authority.cancel(id,body.key,body.acknowledgeUnknown),nativeInvoked:false};
+    }catch(error){
+      request.log.error({err:error},"Unable to release native history reservation");
+      return reply.code(409).send({error:"Native history reservation remains held. Inspect the original receipt and active work."});
+    }finally{context.busy.delete(id);}
   });
 }
 function validKey(v:unknown):v is string{return typeof v==='string'&&Boolean(v.trim())&&v.length<=200&&!/[\u0000-\u001f\u007f]/u.test(v);}

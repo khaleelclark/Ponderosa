@@ -62,12 +62,14 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
         !body.value || body.value.length > 200 || !Number.isSafeInteger(body.fencingToken)) return reply.code(400).send({error:"Invalid native control"});
     if (busy.has(id)) return reply.code(409).send({error:"Native control already active"});
     const current = boundary(id);
-    if (!current || current.runId !== body.runId || current.fencingToken !== body.fencingToken ||
-        current.sessionId !== body.sessionId) return reply.code(409).send({error:"Native control boundary changed"});
+    if (!current) return reply.code(409).send({error:"Exact retained runtime boundary unavailable"});
+    if (current.sessionId !== body.sessionId) return reply.code(409).send({error:"Saved provider session changed"});
+    if (current.runId !== body.runId || current.fencingToken !== body.fencingToken)
+      return reply.code(409).send({error:"Saved provider Run or fence changed"});
     const session = current.session;
     const catalog = await session.capabilities?.();
     if (!session.invokeCommand || !catalog?.commands.some(command => command.name === `native-${body.operation}` && command.invocation === "runtime" && command.status === "available")) return reply.code(409).send({error:"Native control unsupported"});
-    if (!unchanged(id, current)) return reply.code(409).send({error:"Native control boundary changed"});
+    if (!unchanged(id, current)) return reply.code(409).send({error:"Native control eligibility changed while loading available controls"});
     // Human model selection already persists through the normal Agent settings UI.
     // A live command must agree with that saved selection, never silently replace it.
     const agent = context.store.getAgent(id)!;
@@ -76,16 +78,20 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
     busy.add(id);
     const callId = randomUUID();
     try {
-      context.store.appendEvent(id, { type: "work_start", kind: "native_tool", callId, executionId: current.runId });
-      context.store.appendEvent(id, { type: "tool_call", id: callId, name: `native_${body.operation}`, input: { sessionId:body.sessionId, runId:body.runId, fencingToken:body.fencingToken, value:body.value } });
+      context.store.appendEvent(id, { type: "work_start", kind: "native_tool", callId, executionId: current.runId, nativeRuntimeSetting: true });
+      context.store.appendEvent(id, { type: "tool_call", id: callId, nativeRuntimeSetting: true, name: `native_${body.operation}`, input: { sessionId:body.sessionId, runId:body.runId, fencingToken:body.fencingToken, value:body.value } });
       const result = await session.invokeCommand(`native-${body.operation}`, body.value);
-      if (!unchanged(id, current)) return reply.code(409).send({outcome:"outcome_unknown",error:"Native response arrived after authority changed; do not replay"});
-      context.store.appendEvent(id, { type:"tool_result", id:callId, output:"Native control acknowledged; source work remains independently governed" });
+      if (!unchanged(id, current)) {
+        const error = "Native response arrived after authority changed; do not replay";
+        context.store.appendEvent(id, { type:"tool_result", id:callId, nativeRuntimeSetting: true, output:error, isError:true });
+        return reply.code(409).send({outcome:"outcome_unknown",error});
+      }
+      context.store.appendEvent(id, { type:"tool_result", id:callId, nativeRuntimeSetting: true, output:"Native control acknowledged; source work remains independently governed" });
       return result;
     } catch (error) {
       const detail = redactProviderDiagnostic(restrictedProviderExceptionLogDetail(error));
       const message = `Native control refused or unconfirmed: ${detail}. Do not automatically retry.`;
-      context.store.appendEvent(id, { type:"tool_result", id:callId, output:message, isError:true });
+      context.store.appendEvent(id, { type:"tool_result", id:callId, nativeRuntimeSetting: true, output:message, isError:true });
       return reply.code(409).send({error:message});
     } finally { busy.delete(id); }
   });

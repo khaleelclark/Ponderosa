@@ -147,7 +147,7 @@ export function useConversationMessageFocusEffect({
           void api
             .getConversation(conversationId, 100, undefined, focusMessageId)
             .then(page => {
-              setOlderMain(current => mergeMainHistoryPage(page, current, detailQuery.data));
+              setOlderMain(current => page.messages.length ? mergeMainHistoryPage(page, current, detailQuery.data, true) : current);
               focusedMessage.current = page.messages.length
                 ? undefined
                 : `missing:${focusMessageId}`;

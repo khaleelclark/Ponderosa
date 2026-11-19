@@ -1,4 +1,5 @@
 export interface PortableAgentPreview {
+  hasMemory?: boolean;
   nativeData?: import('./nativeDataPreview').NativeDataPreview;
   sourceLabel: string;
   hasOutputRoles: boolean;

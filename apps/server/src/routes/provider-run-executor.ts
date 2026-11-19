@@ -1,4 +1,4 @@
-import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
+import { newlyRestrictedRuntimeAccess } from "../provider-access-restrictions.js";
 import { restrictedInternalExceptionDiagnostic } from "../provider-exception-properties.js";
 import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
@@ -320,11 +320,12 @@ export function startProviderRunExecution(
     // A bounded watchdog covers store mutations, grant/policy changes and expiry;
     // Candidate/final boundaries await the same validation; canonical commit also
     // rechecks synchronous host authority after the asynchronous storage read.
+    let retainedMemoryInputProof: (() => boolean) | undefined;
     let checkingVoice:Promise<boolean>|undefined;
     const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
       if (voiceContextInvalid) return false;
       if (!activeRun.voiceReply) return true;
-      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();assertRetainedContextPolicy?.();if(retainedMemoryInputProof&&!retainedMemoryInputProof())throw Error('Voice memory changed');const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
       catch {
         voiceContextInvalid = true;
         if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
@@ -336,7 +337,7 @@ export function startProviderRunExecution(
       }
     })().finally(()=>{checkingVoice=undefined;});
     activeRun.validateVoiceReplyContext = validateVoiceReplyContext;
-    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();return !voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
+    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();assertRetainedContextPolicy?.();return !voiceContextInvalid&&(retainedMemoryInputProof?.()??true)&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
     const voiceContextTimer = activeRun.voiceReplyStreamSupported
       ? setInterval(() => {
           if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
@@ -388,13 +389,12 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
-      let retainedMemoryInputProof: (() => boolean) | undefined;
       // The scheduler preflight may have yielded before the Run was claimed.
       // Revalidate the exact previously disclosed sources immediately before
-      // reusing an ordinary retained Codex session.
-      if (runtimeEngineId === "codex" && resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
+      // reusing an ordinary retained session.
+      if (resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
         const accepted = store.resumeSessionState(agent.id);
-        const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
+        const origin = store.providerSessionOriginRunId(agent.id, resumeSessionId);
         const scope = coordinationV3.runScopeKey(runId, agent.id);
         const source = scope ? store.sqlite.prepare(`
           SELECT id FROM scheduler_runs
@@ -431,14 +431,14 @@ export function startProviderRunExecution(
           retainedMemoryInputProof = proof.isCurrent;
         }
       }
-      const assertCurrentCodexAccess = (): void => {
-        if (runtimeEngineId !== "codex") return;
+      const assertCurrentRuntimeAccess = (): void => {
+        assertRetainedContextPolicy?.();
         if (retainedMemoryInputProof && !retainedMemoryInputProof())
           throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
         const current = runtimeRestrictions(
           new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
         );
-        if (newlyRestrictedCodexAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds))
+        if (newlyRestrictedRuntimeAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds, runtimeEngineId))
           throw new Error("Access was restricted before provider input. The original work remains available for review.");
       };
       const openPersistentRuntime = async (
@@ -448,7 +448,7 @@ export function startProviderRunExecution(
       ): Promise<PersistentRuntime> => {
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
-        assertCurrentCodexAccess();
+        assertCurrentRuntimeAccess();
         assertSettingsTransitionPolicy?.();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
@@ -457,7 +457,7 @@ export function startProviderRunExecution(
             if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
                 deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
               throw new Error("Native session lost current Run authority");
-            assertCurrentCodexAccess();
+            assertCurrentRuntimeAccess();
             assertSettingsTransitionPolicy?.();
           },
           cwd: workingCopy.rootPath,
@@ -744,11 +744,11 @@ export function startProviderRunExecution(
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
-      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || (assertSettingsTransitionPolicy && persistentRuntime?.nativeClaudeVerifiedInput)) ||
+      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || persistentRuntime?.nativeClaudeVerifiedInput) ||
           !persistentRuntime.session.isAlive() ||
           readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId)) {
         if (persistentRuntime) await teardownPersistentRuntime(agent.id,persistentRuntime,"unqualified saved-thread continuation",project.id);
-        throw new Error("The saved Codex thread could not be verified. The original context remains retained.");
+        throw new Error("The saved provider session could not be verified. The original context remains retained.");
       }
       if (persistentRuntime) {
         providerProcessAuthority.register(persistentRuntime.session, {
@@ -872,14 +872,14 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
-                        assertCurrentCodexAccess();
+                        assertCurrentRuntimeAccess();
                         if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
-                          throw new Error("Saved Codex thread changed before saved-thread continuation; original context remains retained.");
+                          throw new Error("Saved provider session changed before saved-thread continuation; original context remains retained.");
                         if(retainedVerifiedContext){
-                          if(!assertRetainedContextPolicy)throw new Error("Saved Codex policy proof is unavailable.");
+                          if(!assertRetainedContextPolicy)throw new Error("Saved provider policy proof is unavailable.");
                           assertRetainedContextPolicy();
                         }
                         if (reviewedSteeringRun) {
@@ -950,7 +950,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
-                        assertCurrentCodexAccess();
+                        assertCurrentRuntimeAccess();
                         if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||

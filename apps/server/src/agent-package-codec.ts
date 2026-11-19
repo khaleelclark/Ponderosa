@@ -1,6 +1,7 @@
 import {portableArtifactByteLength} from '@ponderosa/agents';
 export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from '@ponderosa/agents';
 import { gzip, gunzip } from "node:zlib";
+import { promises as fs } from "@ponderosa/native-host/fs";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -62,8 +63,8 @@ export interface PackageCodecOptions {
 }
 /** The serialized parser and all retained decoded originals must fit together.
  * Keep ordinary package imports serialized and refuse before allocating/writing. */
-export function assertAgentPackageMemoryAvailable(decodedBytes = 0): void {
-  const required = CODEC_ADMISSION_BYTES + 2 * decodedBytes;
+export function assertAgentPackageMemoryAvailable(decodedBytes = 0, serializedBytes = 0): void {
+  const required = Math.min(CODEC_ADMISSION_BYTES, 256 * 1024 ** 2 + 4 * serializedBytes) + 2 * decodedBytes;
   // Also respect a constrained/cgroup process memory allowance where Node
   // exposes it. Never remove the worker cap to make a large upload succeed.
   const constrained = process.constrainedMemory();
@@ -83,7 +84,10 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
 }> {
   return admission("codec", async () => {
     options.signal?.throwIfAborted();
-    assertAgentPackageMemoryAvailable();
+    const { size } = await fs.stat(pathname);
+    assertAgentPackageMemoryAvailable(0, size);
+    options.signal?.throwIfAborted();
+    const timeoutMs = CODEC_TIMEOUT_MS + Math.ceil(Math.min(size, AGENT_PACKAGE_MAX_BYTES) / (16 * 1024 ** 2)) * 1_000;
     return new Promise((resolve, reject) => {
       const worker = new Worker(import.meta.url.endsWith(".ts")
         ? new URL("../dist/agent-package-codec-worker.js", import.meta.url)
@@ -105,7 +109,7 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
         else resolve(result as Awaited<ReturnType<typeof parsePortablePackageFile>>);
       };
       const abort = () => void finish(new Error("Agent package processing cancelled"));
-      const timeout = setTimeout(() => void finish(new Error("Agent package codec exceeded its 60 second processing budget")), CODEC_TIMEOUT_MS);
+      const timeout = setTimeout(() => void finish(new Error("Agent package codec exceeded its processing budget")), timeoutMs);
       timeout.unref();
       worker.on("message", (message: { entries?: PackageWireEntry[]; done?: boolean; error?: string; statusCode?: number; memory?: NodeJS.MemoryUsage }) => {
         if (settled) return;

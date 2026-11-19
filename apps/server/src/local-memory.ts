@@ -430,14 +430,14 @@ export class LocalMemoryService{
   await this.provisionInventory();
  }
  /** Called inside the canonical transaction that inserted exactly this Chat. */
- reserveNewChat(chatId:string){
+ reserveNewChat(chatId:string,defaultReadGlobal=false){
   this.live();const db=this.ports.store.sqlite;if(!db.inTransaction)throw Error('Memory scope intent requires the Chat creation transaction');
   const chat=db.prepare('SELECT project_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_execution_id:string|null}|undefined;
   if(!chat)throw Error('New memory scope Chat is unavailable');if(chat.branch_execution_id&&!this.expertConsent(this.expertChat(chatId,true),'copySourceMemory'))return;
   const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
   const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
   if(policy.principal_id!==this.principalId||policy.data_generation!==generation)throw Error('Memory scope installation binding differs');
-  db.prepare("INSERT INTO local_memory_scope_provisioning(chat_id,project_id,data_generation,principal_id,storage_binding,intent_id,memory_state,log_state,created_at) VALUES(?,?,?,?,?,?,'planned','planned',?)").run(chatId,chat.project_id,generation,policy.principal_id,policy.storage_binding,randomUUID(),new Date().toISOString());
+  db.prepare("INSERT INTO local_memory_scope_provisioning(chat_id,project_id,data_generation,principal_id,storage_binding,intent_id,memory_state,log_state,created_at,default_read_global) VALUES(?,?,?,?,?,?,'planned','planned',?,?)").run(chatId,chat.project_id,generation,policy.principal_id,policy.storage_binding,randomUUID(),new Date().toISOString(),defaultReadGlobal&&!chat.branch_execution_id?1:0);
  }
  async provisionInventory(){
   return this.core.database.raw.exclusive(async()=>{
@@ -737,7 +737,9 @@ export class LocalMemoryService{
    const rows=db.prepare(`SELECT r.id,r.scope_key,r.status,r.provider_session_id,r.prompt_injection_state,r.fencing_token,
     e.agent_id AS receipt_agent,e.chat_id,e.fencing_token AS receipt_fence,e.authorization_hash,e.pending,e.uncertain,e.unverified
     FROM scheduler_runs r LEFT JOIN memory_exposure_runs e ON e.run_id=r.id
-    WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=? ORDER BY r.fencing_token,r.id`)
+    WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?
+      AND (r.prompt_injection_state<>'not_injected' OR e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0)
+    ORDER BY r.fencing_token,r.id`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<any>;
    if(!rows.length||rows[0].id!==originRunId||rows.at(-1)?.id!==sourceRunId)return incomplete();
    for(const row of rows){
@@ -797,13 +799,13 @@ export class LocalMemoryService{
     // A fresh context does not inherit uncertain effects from retired history.
     // Verified handoff ancestry keeps inherited generations inside this floor.
     const uncertain=db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.scope_key=? AND r.id<>? AND r.fencing_token>=? AND
-      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
+      (r.status IN ('leased','running') OR (r.status='outcome_unknown' AND r.prompt_injection_state<>'not_injected') OR r.prompt_injection_state='injecting'
        OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
       .get(agentId,source.scope_key,currentRunId,floor);
     return !uncertain&&this.memoryLineageStart(agentId,chatId,originRunId)===floor&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
       currentOwner.projectId===owner.projectId&&currentOwner.branchId===owner.branchId&&!currentOwner.executionId&&
       this.ports.store.resumeSessionState(agentId)?.sessionId===sessionId&&
-      this.ports.store.acceptedProviderSessionInput(agentId)?.executionId===originRunId&&
+      this.ports.store.providerSessionOriginRunId(agentId,sessionId)===originRunId&&
       latest?.id===sourceRunId&&latest.fencing_token===source.fencing_token;
    };
    if(status==='unknown'){
@@ -905,7 +907,13 @@ export class LocalMemoryService{
   }catch{return false;}
  }
  private grant(chatId:string){return this.policy.prepare('SELECT * FROM local_memory_chat_grants WHERE chat_id=?').get(chatId) as {principal_id:string;read_global:number;revision:number;updated_at:string}|undefined;}
- getGrant(chatId:string,product:ProductScope){this.chat(chatId,product);const g=this.grant(chatId);if(g&&g.principal_id!==this.principalId)throw new MemoryDenied('Foreign memory grant principal');return {chatId,readGlobal:g?.read_global===1,revision:g?.revision??0};}
+ getGrant(chatId:string,product:ProductScope){
+  this.chat(chatId,product);
+  const grant=this.grant(chatId);
+  if(grant&&grant.principal_id!==this.principalId)throw new MemoryDenied('Foreign memory grant principal');
+  const defaultGrant=grant?undefined:this.ports.store.sqlite.prepare('SELECT default_read_global FROM local_memory_scope_provisioning WHERE chat_id=? AND principal_id=?').get(chatId,this.principalId) as {default_read_global:number}|undefined;
+  return {chatId,readGlobal:(grant?.read_global??defaultGrant?.default_read_global)===1,revision:grant?.revision??0};
+ }
  setGrant(chatId:string,readGlobal:boolean,expectedRevision:number,product:ProductScope){
   this.live();if(typeof readGlobal!=='boolean'||!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new MemoryDenied('Boolean readGlobal and nonnegative expectedRevision required',400);
   // The grant lives in a separate policy database. Fence first: if that
@@ -1020,7 +1028,7 @@ export class LocalMemoryService{
     }catch{this.denySpeech(authority);this.ports.store.sqlite.prepare('UPDATE memory_exposure_runs SET unverified=1 WHERE run_id=?').run(authority.runId);} // Preserve the committed write even if its preview cannot be verified.
    }
    await authority.guard();return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:{result},isError:false};
-  });
+  },operation==='get'?args.chunk_id:undefined);
  }
 
  operator(request:FastifyRequest){
@@ -1143,7 +1151,13 @@ export const localMemoryFor=(app:FastifyInstance)=>services.get(app);
 export function registerLocalMemory(app:FastifyInstance,ports:Ports){
  if(!ports.opts.localMemory)return;
  const memory=new LocalMemoryService(ports);services.set(app,memory);
- app.addHook('onReady',()=>memory.ready());app.addHook('preClose',async()=>memory.fence());app.addHook('onClose',()=>memory.close());
+ app.addHook('onReady',async()=>{
+  try{await memory.ready();}
+  catch(cause){
+   throw new Error('Configured Local Memory could not start. Check the model files and Chroma connection, then restart Ponderosa.',{cause});
+  }
+ });
+ app.addHook('preClose',async()=>memory.fence());app.addHook('onClose',()=>memory.close());
  app.addHook('onSend',async(request,reply)=>{if(!['GET','HEAD'].includes(request.method)&&reply.statusCode<300)memory.checkSpeechAuthorities();});
  const error=(reply:any,e:unknown)=>reply.code(e instanceof MemoryDenied?e.statusCode:e instanceof MemoryArgumentError?400:500).send({error:e instanceof Error?e.message:String(e)});
  app.get('/api/local-memory/provisioning-holds',async(request,reply)=>{try{memory.operator(request);await memory.ready();return memory.provisioningHolds();}catch(e){return error(reply,e);}});

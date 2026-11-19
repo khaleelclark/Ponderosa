@@ -49,7 +49,7 @@ export interface WorkingCopyTransition {
   mode:"shared"|"separate_git";
   oldCopy:{id:string;mode:"shared"|"separate_git";rootPath:string};
   appliedCopy?:{id:string;mode:"shared"|"separate_git";rootPath:string};
-  mutationStarted?:boolean; keptCurrent?:boolean; failureMessage?:string;
+  mutationStarted?:boolean; keptCurrent?:boolean; freshContext?:boolean; failureMessage?:string;
   sourceRunId:string; oldSessionId:string; sourceFence:number; oldContractHash:string; settingsHash:string;
   authorizationSignatureHash?:string; authorizationOriginRunId?:string;
 }
@@ -145,28 +145,46 @@ export class CoordinationV3ContextRolloverAuthority {
     })();
   }
 
-  canKeepWorkingCopyTransition(id:string):boolean {
+  canKeepWorkingCopyTransition(id:string,freshContext=false):boolean {
     const r=this.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(id) as RolloverRow|undefined,marker=this.workingCopyTransition(id);
-    if(!r||!marker||marker.mutationStarted||marker.appliedCopy||r.state!=='failed'||!r.handoff_event_id||r.replacement_input_committed_at||r.replacement_session_id)return false;
-    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
+    if(!r||!marker||!['failed','outcome_unknown'].includes(r.state))return false;
+    const copy=freshContext?marker.appliedCopy:marker.oldCopy;
+    if(!copy || (freshContext ? copy.mode!==marker.mode :
+      marker.mutationStarted||marker.appliedCopy||r.replacement_input_committed_at||r.replacement_session_id))return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=?
+      AND ((a.active_session_id=? AND a.active_session_contract_hash=?) OR (?=1 AND a.active_session_id IS NULL))
       AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.mode')=? AND json_extract(a.working_copy_json,'$.rootPath')=?
       AND json_extract(a.working_copy_json,'$.state')='ready'
-      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND (run.status IN ('leased','running')
-        OR run.fencing_token>=? AND (run.status='outcome_unknown' OR run.prompt_injection_state='injecting')))
-      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
-        WHERE attached.activation_id=? AND (run.prompt_injection_state<>'not_injected' OR run.provider_session_id IS NOT NULL))
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND run.status IN ('leased','running'))
+      AND (?=1 OR NOT EXISTS (SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND run.fencing_token>=?
+        AND (run.status='outcome_unknown' OR run.prompt_injection_state='injecting')
+        AND NOT (?='outcome_unknown' AND EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          JOIN agent_activations activation ON activation.id=attached.activation_id AND activation.kind='context_rollover_handoff'
+          JOIN activation_sources owner ON owner.activation_id=activation.id AND owner.source_kind='context_rollover'
+          WHERE attached.run_id=run.id AND owner.source_id=?))))
+      AND NOT EXISTS(SELECT 1 FROM provider_operation_outbox outbox JOIN scheduler_runs run ON run.id=outbox.run_id
+        WHERE run.agent_id=a.id AND outbox.state<>'completed')
+      AND (?=1 OR NOT EXISTS(SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE attached.activation_id=? AND (run.prompt_injection_state<>'not_injected' OR run.provider_session_id IS NOT NULL)))
       AND NOT EXISTS(SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=a.id AND p.state IN ('paused','resume_requested'))
       AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests p WHERE p.agent_id=a.id AND p.state='unsupported_fenced')`)
-      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,marker.oldCopy.id,marker.oldCopy.mode,marker.oldCopy.rootPath,marker.sourceFence,r.continuation_activation_id));
+      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,Number(freshContext),
+        copy.id,copy.mode,copy.rootPath,Number(freshContext),marker.sourceFence,r.state,r.id,Number(freshContext),r.continuation_activation_id));
   }
 
-  keepWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
+  keepWorkingCopyTransition(id:string,freshContext=false,now=new Date().toISOString()):void {
     this.sqlite.transaction(()=>{
-      if(!this.canKeepWorkingCopyTransition(id))throw Error('This folder change may have applied or submitted provider input. Its context must remain held.');
-      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.keptCurrent',json('true'))
-        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(id);
+      if(!this.canKeepWorkingCopyTransition(id,freshContext))throw Error('The exact working folder or transition changed.');
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.keptCurrent',json('true'),
+        '$.workingCopyTransition.freshContext',json(?))
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`)
+        .run(JSON.stringify(freshContext),id);
+      this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled',terminal_at=?,updated_at=?
+        WHERE state IN ('pending','retry_pending') AND kind IN ('context_rollover_handoff','context_rollover_continuation')
+        AND id IN (SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(now,now,id);
       this.sqlite.prepare(`UPDATE context_rollovers SET state='completed',completion_reason=NULL,last_error=NULL,
-        terminal_at=?,updated_at=? WHERE id=? AND state='failed'`).run(now,now,id);
+        terminal_at=?,updated_at=? WHERE id=? AND state IN ('failed','outcome_unknown')`).run(now,now,id);
     })();
   }
 

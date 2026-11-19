@@ -16,7 +16,7 @@ import { useWorkspacePreferences } from "../../hooks/queries";
 import { queryKeys } from "../../queryKeys";
 import { publishConversationMessageReceipt } from "../../conversationMessageReceipt";
 import { dictationUnavailableReason, speechSynthesisUnavailableReason } from "./browserSpeech";
-import { speechSnapshot, startSpeech, startSpeechQueue, stopSpeech, subscribeSpeech, type SpeechQueue } from "./speechCoordinator";
+import { speechSnapshot, startSpeech, primeSpeechFromUserGesture, startSpeechQueue, stopSpeech, subscribeSpeech, type SpeechQueue } from "./speechCoordinator";
 import { monitorSpeechSurfaceAccessibility, speechSurfaceIsAccessible } from "./speechSurfaceAccessibility";
 import { isSpokenEcho, speakableMessageText } from "./speechText";
 import { claimPageCapture, ownsPageCapture } from "./captureCoordinator";
@@ -501,7 +501,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           if (!valid()) return false;
           if (!permitted) fail("Memory context could not be validated. Check Chat before continuing.");
           return permitted && valid();
-        }, () => { queuedPurposes.shift(); },ownsPageCapture(captureOwner.current)?captureOwner.current:undefined);
+        }, () => { queuedPurposes.shift(); },ownsPageCapture(captureOwner.current)?captureOwner.current:undefined, () => queuedPurposes[0] === "receipt");
       }
       for (const phrase of phrases) {
         const queuedAt = performance.now();
@@ -781,7 +781,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Stack spacing={1} alignItems="center"><Button aria-label={muted?"Unmute Microphone":"Mute Microphone"} aria-pressed={muted} disabled={Boolean(sttUnavailable)||(!handsFree&&!recording&&!muted)} onClick={toggleMute} sx={{...roundControl,bgcolor:muted?"text.primary":"action.hover",color:muted?"background.paper":"text.primary","&:hover":{bgcolor:muted?"text.secondary":"action.selected"}}}>{muted?<MicOffIcon/>:<MicNoneIcon/>}</Button><Typography variant="caption" color="text.secondary">{muted?"Unmute":"Mute"}</Typography></Stack>
           {showCallControl && <Stack spacing={1} alignItems="center">
             {phase==="paused"?<Button aria-label="Reconnect Call" disabled={recovering||blocked} onClick={()=>{void resume();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>
-              :<Button aria-label={handsFree?"Listen":"Start Call"} disabled={cannotStart} onClick={startCall} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>}
+              :<Button aria-label={handsFree?"Listen":"Start Call"} disabled={cannotStart} onClick={() => { primeSpeechFromUserGesture(); startCall(); }} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>}
             <Typography variant="caption" color="text.secondary">{phase==="paused"?"Reconnect":handsFree?"Listen":"Call"}</Typography>
           </Stack>}
           <Stack spacing={1} alignItems="center"><Button aria-label="End Call" onClick={end} sx={{...roundControl,bgcolor:"error.main",color:"error.contrastText","&:hover":{bgcolor:"error.dark"}}}><CallEndIcon/></Button><Typography variant="caption" color="text.secondary">End</Typography></Stack>

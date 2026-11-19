@@ -122,29 +122,63 @@ test('stalled Claude input write reaches unknown timeout without replay',{timeou
  assert.equal((await userFrames(native)).length,0,'the stalled provider did not consume or replay a full input');
 });
 
-test('Claude model change retains objective through a managed handoff before queued work',{timeout:90000},async t=>{
+test('Claude model change retains tool context in the same native session',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude model transition',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
   const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
   await f.send(agent.id,'Keep the original objective and completed research.');
   await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
+  await native.workResult('native-only research evidence');
+  await until(async()=>(await native.frames()).some(x=>x.kind==='native-only-result'),'tool result');
   await native.answer('Initial research complete.');await f.settled(agent.id);
+  const first=(await userFrames(native))[0];
+  assert.equal((await native.frames()).find(x=>x.kind==='open').autoMemoryDisabled,true);
   f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
   await f.send(agent.id,'Continue the original objective with the new model.');
-  const old=await until(async()=>{const x=await userFrames(native);return x.length>=2?x:undefined;},'old handoff',20000);
-  assert.equal(old[1].session,old[0].session);assert.ok(!prompt(old[1]).includes('Continue the original objective with the new model.'));
-  await native.answer('Original objective remains open. Initial research complete.');
-  const next=await until(async()=>{const x=await userFrames(native);return x.length>=3?x:undefined;},'replacement confirmation',20000);
-  assert.notEqual(next[2].session,old[0].session);assert.ok(prompt(next[2]).includes('Original objective remains open.'));
-  assert.ok(!prompt(next[2]).includes('Continue the original objective with the new model.'));
-  await native.answer('Continuity context received.');
-  const final=await until(async()=>{const x=await userFrames(native);return x.length>=4?x:undefined;},'queued task',20000);
-  assert.equal(final[3].session,next[2].session);assert.ok(prompt(final[3]).includes('Continue the original objective with the new model.'));
+  const next=await until(async()=>(await userFrames(native))[1],'same-session task',20000);
+  assert.equal(next.session,first.session);
+  assert.ok(prompt(next).includes('Continue the original objective with the new model.'));
+  assert.equal((await native.frames()).find(x=>x.kind==='restored-native-context')?.finding,'native-only research evidence');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,0);
   await native.answer('The original objective is complete.');await f.settled(agent.id);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root)).adapter});
 });
 
+
+test('applying an idle Claude model setting leaves the native context eligible',{timeout:30000},async t=>{
+ const idlePool=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
+ process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='1';
+ t.after(()=>{if(idlePool===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=idlePool;});
+ let store,native;
+ const reserve=net.createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));
+ const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
+ const origin=`http://127.0.0.1:${port}`;
+ await withFixture(t,async f=>{
+  await f.listen({host:'127.0.0.1',port});
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Idle Claude runtime control',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
+  const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'sonnet'}));
+  await f.send(agent.id,'Establish retained context.');
+  await until(async()=>(await userFrames(native))[0],'first native turn');
+  await native.publishAnswer('Initial task complete.');await f.settled(agent.id);
+  await until(()=>store.providerCommandContextBoundary(agent.id),'accepted idle boundary');
+  const route=`/api/agents/${agent.id}/native-controls`;
+  const {sessionId,runId,fencingToken}=f.ok(await f.api('GET',route));
+  const exact = store.providerCommandContextBoundary(agent.id);
+  assert.equal(sessionId,exact?.providerSessionId);
+  assert.equal(runId,exact?.executionId);
+  assert.equal(fencingToken,exact?.fencingToken);
+  const usage=store.acceptedProviderSessionContextUsage(agent.id)??store.acceptedProviderSessionInputEstimate(agent.id);
+  assert.ok(usage,'the idle session has valid usage evidence');
+  f.ok(await f.api('POST',route,{sessionId,runId,fencingToken,operation:'model',value:'sonnet'}));
+  assert.deepEqual(store.acceptedProviderSessionContextUsage(agent.id)??store.acceptedProviderSessionInputEstimate(agent.id),usage);
+  await f.send(agent.id,'Continue after applying the model.');
+  const next=await until(async()=>(await userFrames(native))[1],'retained turn after idle controls');
+  assert.equal(next.session,sessionId);
+  await native.publishAnswer('Follow-up complete.');await f.settled(agent.id);
+ },{agentBaseUrl:origin,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{expectedOrigin:origin})).adapter});
+});
 
 test('Claude voice request preserves context and completes its authorized voice reply',{timeout:90000},async t=>{
  let store,native;
@@ -158,14 +192,10 @@ test('Claude voice request preserves context and completes its authorized voice 
   await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
   await native.answer('Earlier research is complete.');await f.settled(agent.id);
   const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
-  const old=await until(async()=>{const x=await userFrames(native);return x.length>=2?x:undefined;},'old handoff',20000);
-  assert.equal(old[1].session,old[0].session);assert.ok(!prompt(old[1]).includes('Continue the objective aloud.'));
-  await native.answer('The earlier objective and completed research remain available.');
-  const next=await until(async()=>{const x=await userFrames(native);return x.length>=3?x:undefined;},'replacement confirmation',20000);
-  assert.notEqual(next[2].session,old[0].session);assert.ok(prompt(next[2]).includes('The earlier objective and completed research remain available.'));
-  await native.answer('Continuity context received.');
-  const final=await until(async()=>{const x=await userFrames(native);return x.length>=4?x:undefined;},'queued voice task',20000);
-  assert.equal(final[3].session,next[2].session);assert.ok(prompt(final[3]).includes('Continue the objective aloud.'));
+  const final=await until(async()=>{const x=await userFrames(native);return x.length>=2?x:undefined;},'queued voice task',20000);
+  assert.equal(final[1].session,final[0].session);
+  assert.ok(prompt(final[1]).includes('Continue the objective aloud.'));
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,0);
   await native.voice('The objective continues safely.');
   const receipt=await until(async()=>(await native.frames()).find(x=>x.kind==='voice'),'voice authorization',20000);
   assert.equal(receipt.status,200);
@@ -185,7 +215,7 @@ test('interrupted Claude managed handoff preserves queued work without replay',{
   await f.send(agent.id,'Keep the original objective.');
   await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
   await native.answer('Earlier research complete.');await f.settled(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Continue the original task.');
   await until(async()=>(await userFrames(native)).length>=2,'submitted old-session handoff',20000);
   const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);
@@ -211,7 +241,7 @@ test('silent Claude handoff is held as unknown by the scheduler without replay',
   await f.send(agent.id,'Keep the original objective.');
   await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
   await native.answer('Earlier research complete.');await f.settled(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Continue the original task.');
   await until(async()=>(await userFrames(native)).length>=2,'submitted old-session handoff',20000);
   const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);
@@ -244,7 +274,7 @@ test('Claude direct MCP calls wait for verified transition input and resume afte
   const ordinary=await until(async()=>(await native.frames()).find(x=>x.kind==='probe'&&x.phase==='ordinary'),'ordinary directory probe',20000);
   assert.equal(ordinary.results[0].status,200,'ordinary Claude runs keep their existing tool access');
   await native.answer('Earlier research complete.');await f.settled(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Continue the original objective.');
   await until(async()=>(await userFrames(native)).length>=2,'unconfirmed handoff input',20000);
   const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);assert.ok(rollover);

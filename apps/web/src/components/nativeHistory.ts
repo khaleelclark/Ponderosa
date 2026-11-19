@@ -34,7 +34,7 @@ export function nativeSavedCommandValid(value:unknown,agentId:string):value is S
  if(!fields.length||Object.keys(b).length!==fields.length||Object.keys(b).some(key=>!fields.includes(key)))return false;
  if(b.operation!=='rewind'&&value.preview!==undefined)return false;
  if(b.operation==='rewind'&&(!object(value.preview)||!nativeSavedCommandValid({boundary:value.boundary,body:value.preview.body},agentId)))return false;
- return (b.operation==='preview'&&text(b.checkpointId)||b.operation==='rewind'&&text(b.checkpointId)&&text(b.previewKey)&&b.acknowledgeFileChanges===true&&object(value.preview)&&object(value.preview.body)&&value.preview.body.operation==='preview'&&object(value.preview.receipt)||b.operation==='fork'&&text(b.throughId)&&text(b.targetAgentId)&&b.targetAgentId!==agentId&&b.acknowledgeHistoryCopy===true)&&(value.cancelRequested===undefined||b.operation==='fork');
+ return (b.operation==='preview'&&text(b.checkpointId)||b.operation==='rewind'&&text(b.checkpointId)&&text(b.previewKey)&&b.acknowledgeFileChanges===true&&object(value.preview)&&object(value.preview.body)&&value.preview.body.operation==='preview'&&object(value.preview.receipt)||b.operation==='fork'&&text(b.throughId)&&text(b.targetAgentId)&&b.targetAgentId!==agentId&&b.acknowledgeHistoryCopy===true);
 }
 export function nativeFactValid(value:unknown):value is NativeRewindFileFact {
  if(!object(value)||!text(value.path,4096)||!Array.isArray(value.ancestors)||!value.ancestors.length||value.ancestors.length>4096||!value.ancestors.every(v=>Array.isArray(v)&&v.length===6&&text(v[0],4096)&&v.slice(1).every(count)))return false;
@@ -48,15 +48,15 @@ export async function nativeReceiptMatches(command:SavedNativeHistoryCommand,val
   if(!preview||preview.body.idempotencyKey!==command.body.previewKey||preview.body.boundaryHash!==command.body.boundaryHash||preview.body.checkpointId!==command.body.checkpointId||!await nativeReceiptMatches({boundary:command.boundary,body:preview.body},preview.receipt)||preview.receipt.kind!=='preview'||preview.receipt.state!=='completed'||preview.receipt.result?.native?.canRewind!==true)return false;
  }
  if(command.body.operation==='fork') {
-  if(!['prepared','started','opened','cancelled'].includes(String(value.state))||value.targetAgentId!==command.body.targetAgentId||value.throughId!==command.body.throughId||!text(value.newSessionId)||value.newSessionId===command.boundary.sessionId)return false;
+  if(!['prepared','started','opened','cancelled','abandoned'].includes(String(value.state))||value.targetAgentId!==command.body.targetAgentId||value.throughId!==command.body.throughId||!text(value.newSessionId)||value.newSessionId===command.boundary.sessionId)return false;
   if(value.targetRunId!==undefined&&!text(value.targetRunId)||value.targetFence!==undefined&&(!count(value.targetFence)||value.targetFence===0))return false;
   if((value.targetRunId===undefined)!==(value.targetFence===undefined))return false;
   if(value.state==='opened'&&(!object(value.result)||!value.targetRunId))return false;
   if(value.result!==undefined&&(!object(value.result)||value.result.nativeSessionId!==value.newSessionId||value.result.contextAccepted!==false||value.result.replayAuthorized!==false))return false;
   return true;
  }
- if(!['started','completed'].includes(String(value.state)))return false;
- if(value.result===undefined)return value.state==='started';
+ if(!['started','completed','failed','abandoned'].includes(String(value.state)) || value.state==='failed'&&command.body.operation!=='preview')return false;
+ if(value.result===undefined)return ['started','failed','abandoned'].includes(String(value.state));
  if(!object(value.result)||value.result.boundaryHash!==command.body.boundaryHash||!object(value.result.native))return false;
  const n=value.result.native;
  if(n.sessionId!==command.boundary.sessionId||n.messageId!==command.body.checkpointId||n.dryRun!==(command.body.operation==='preview')||!['completed','outcome_unknown'].includes(String(n.outcome))||(n.canRewind!==undefined&&typeof n.canRewind!=='boolean')||(n.error!==undefined&&!text(n.error,8192)))return false;

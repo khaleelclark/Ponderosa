@@ -149,8 +149,8 @@ export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -242,9 +242,16 @@ function requireCleanShutdownReceipt(paths: LauncherPaths, state: LauncherState)
   }
 }
 
-function readOperationLock(pathname: string): { pid?: number; token?: string } {
+function recordedProcessMayBeAlive(pid: number, birthMarker?: string): boolean {
+  if (!processAlive(pid)) return false;
+  const current = launcherProcessBirthMarker(pid);
+  return !birthMarker || !current || birthMarker === current;
+}
+
+function readOperationLock(pathname: string): { pid?: number; token?: string; birthMarker?: string } {
   try {
-    return JSON.parse(readFileSync(pathname, "utf8")) as { pid?: number; token?: string };
+    const value = JSON.parse(readFileSync(pathname, "utf8"));
+    return value && typeof value === "object" ? value : {};
   } catch {
     return {};
   }
@@ -261,6 +268,7 @@ export function acquireOperationLock(pathname: string): () => void {
       try {
         writeFileSync(descriptor, JSON.stringify({
           pid: process.pid,
+          birthMarker: launcherProcessBirthMarker(process.pid),
           token,
           createdAt: new Date().toISOString(),
         }), "utf8");
@@ -278,17 +286,16 @@ export function acquireOperationLock(pathname: string): () => void {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw error;
       const owner = readOperationLock(pathname);
-      let initializing = false;
-      try {
-        initializing = !owner.pid &&
-          Date.now() - statSync(pathname).mtimeMs < OPERATION_LOCK_INITIALIZATION_GRACE_MS;
-      } catch {
-        // A concurrent release is handled by the retry.
-      }
-      if ((owner.pid && processAlive(owner.pid)) || initializing) {
+      const lock = lstatSync(pathname, { throwIfNoEntry: false });
+      if (!lock) continue;
+      if (!lock.isFile() || lock.nlink !== 1) throw new Error("unprovable operation lock is preserved");
+      const initializing = !owner.pid && Date.now() - lock.mtimeMs < OPERATION_LOCK_INITIALIZATION_GRACE_MS;
+      if ((owner.pid && recordedProcessMayBeAlive(owner.pid, owner.birthMarker)) || initializing) {
         throw new Error("Another Ponderosa launcher operation is already in progress.");
       }
-      if (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0 || typeof owner.token !== "string") throw new Error("unprovable operation lock is preserved");
+      // Held launcher custody excludes another writer. An old empty file is
+      // a crash before initialization; nonempty malformed evidence stays held.
+      if (lock.size !== 0 && (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0 || typeof owner.token !== "string")) throw new Error("unprovable operation lock is preserved");
       rmSync(pathname, { force: true });
     }
   }
@@ -628,7 +635,7 @@ async function removeDeadState(
       "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
     );
   }
-  if (!reboot?.rebooted && processAlive(state.pid)) {
+  if (!reboot?.rebooted && recordedProcessMayBeAlive(state.pid, state.processBirthMarker)) {
     const exactRetry = Boolean(
       state.shutdownRequestedAt && state.processBirthMarker &&
       launcherProcessBirthMarker(state.pid) === state.processBirthMarker,
@@ -640,8 +647,8 @@ async function removeDeadState(
     }
     process.kill(state.pid, "SIGTERM");
     const deadline = Date.now() + STOP_TIMEOUT_MS;
-    while (Date.now() < deadline && processAlive(state.pid)) await delay(200);
-    if (processAlive(state.pid)) {
+    while (Date.now() < deadline && recordedProcessMayBeAlive(state.pid, state.processBirthMarker)) await delay(200);
+    if (recordedProcessMayBeAlive(state.pid, state.processBirthMarker)) {
       throw blocked("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
     }
   }
@@ -940,7 +947,7 @@ export async function currentPonderosaStatus(
     acceptingDurableIntake: false,
     leasingRuns: false,
     activeRunCount: 0,
-    detail: processAlive(state.pid)
+    detail: recordedProcessMayBeAlive(state.pid, state.processBirthMarker)
       ? "A recorded Ponderosa process exists but did not prove control ownership."
       : "Ponderosa is not running; stale launcher state can be recovered on the next start.",
   };

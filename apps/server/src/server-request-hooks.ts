@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { isIP } from "node:net";
 import { createHmac, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ASSET_LIMITS } from "./assets.js";
@@ -16,8 +17,9 @@ import { localBrowserTransportPath } from "./routes/local-browsers.js";
 
 /** Purpose, not method, determines whether a user-authored action gets its
  * reserved admission budget. Read-like POSTs remain standard traffic. */
-export function classifyOperatorRequest(method: string, url: string): "critical" | "stream" | "monitor" | "standard" {
+export function classifyOperatorRequest(method: string, url: string): "stop" | "critical" | "stream" | "monitor" | "standard" {
   const path = url.split("?", 1)[0] ?? "";
+  if (method === "POST" && /^\/api\/agents\/[^/]+\/cancel$/u.test(path)) return "stop";
   if (method === "GET" && (path === "/api/health" || path === "/api/ready")) return "monitor";
   if (method === "GET" && (
     path === "/api/workspace/stream"
@@ -78,10 +80,11 @@ export function registerRequestSecurityHooks(
   const allowedHostnames = new Set(["localhost", "127.0.0.1", "::1"]);
   if (opts.networkSecurity?.bindHost) allowedHostnames.add(normalizedHostname(opts.networkSecurity.bindHost));
   const allowedOrigins = new Set<string>();
+  const allowedProxyHosts = new Set<string>();
   for (const rawOrigin of opts.operatorOrigins ?? []) {
     const origin = new URL(rawOrigin);
     allowedOrigins.add(origin.origin.toLowerCase());
-    allowedHostnames.add(normalizedHostname(origin.hostname));
+    allowedProxyHosts.add(origin.host.toLowerCase());
   }
   const requestBuckets = new Map<string, { startedAt: number; count: number; rejected: number }>();
   const operatorLogKey = randomBytes(32);
@@ -92,8 +95,23 @@ export function registerRequestSecurityHooks(
   const handlerDeadlines = new WeakMap<IncomingMessage, ReturnType<typeof setTimeout>>();
 
   app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/api/")) return;
+    // The reverse proxy must preserve the public Host; forwarded headers are
+    // client claims here. An interface IP also supports direct LAN listeners.
+    const host = request.headers.host?.toLowerCase();
+    if (!host || !/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])(?::[0-9]{1,5})?$/u.test(host)) {
+      return reply.code(403).send({ error: "API host forbidden" });
+    }
+    const hostNameOnly = normalizedHostname(host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":", 1)[0]!);
+    const localAddress = request.raw.socket.localAddress?.replace(/^::ffff:/u, "");
+    if (!allowedHostnames.has(hostNameOnly) && !allowedProxyHosts.has(host) &&
+        !(isIP(hostNameOnly) && hostNameOnly === localAddress)) {
+      return reply.code(403).send({ error: "API host forbidden" });
+    }
     const fetchSite = request.headers["sec-fetch-site"];
-    if (fetchSite === "cross-site" && request.url.startsWith("/api/")) {
+    const previewAsset = (request.method === "GET" || request.method === "HEAD") &&
+      /^\/api\/link-previews\/[0-9a-f-]{36}\//u.test(request.url);
+    if (fetchSite === "cross-site" && !previewAsset) {
       return reply.code(403).send({ error: "cross-site API request forbidden" });
     }
   });
@@ -183,7 +201,7 @@ export function registerRequestSecurityHooks(
         if (now - value.startedAt >= 60_000) requestBuckets.delete(key);
       }
     }
-    const limit = requestClass === "critical"
+    const limit = requestClass === "stop" ? 120 : requestClass === "critical"
       ? opts.requestLimits.maxCriticalRequestsPerMinute ?? opts.requestLimits.maxRequestsPerMinute
       : requestClass === "stream"
         ? opts.requestLimits.maxStreamRequestsPerMinute ?? 120
@@ -206,11 +224,11 @@ export function registerRequestSecurityHooks(
     const reservedStreamSlots = opts.requestLimits.maxStreamRequestsPerMinute && opts.requestLimits.maxInflight > 2
       ? Math.min(8, Math.max(1, Math.floor(opts.requestLimits.maxInflight / 16)))
       : 0;
-    const classInflightLimit = requestClass === "critical"
-      ? opts.requestLimits.maxInflight
-      : requestClass === "stream"
-        ? opts.requestLimits.maxInflight - reservedCriticalSlots
-        : opts.requestLimits.maxInflight - reservedCriticalSlots - reservedStreamSlots;
+    const ordinaryLimit = Math.max(1, opts.requestLimits.maxInflight - 1);
+    const classInflightLimit = requestClass === "stop" ? opts.requestLimits.maxInflight
+      : requestClass === "critical" ? ordinaryLimit
+        : requestClass === "stream" ? Math.max(1, ordinaryLimit - reservedCriticalSlots)
+          : Math.max(1, ordinaryLimit - reservedCriticalSlots - reservedStreamSlots);
     if (inflight >= classInflightLimit) {
       reply.header("Retry-After", "1");
       return reply.code(503).send({ error: "server request concurrency limit reached" });

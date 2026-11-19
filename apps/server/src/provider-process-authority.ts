@@ -13,6 +13,13 @@ export interface ProviderProcessScope {
   runFence?: number;
 }
 
+function archiveProviderEvidence(purpose: string, agentId?: string | null, runId?: string | null): boolean {
+  // Diagnostics still have live teardown authority. Only scoped work and
+  // other operational lifetimes require a permanent evidence receipt.
+  return Boolean(agentId || runId) ||
+    !/ (?:authentication diagnostic|availability diagnostic|provider usage|capability discovery|model catalog discovery|model validation)$/u.test(purpose);
+}
+
 interface ProviderProcessRow {
   id: string;
   worker_id: string;
@@ -38,7 +45,7 @@ export class ProviderProcessAuthority {
 
   register(handle: RuntimeProcessHandle, scope: ProviderProcessScope, ownerIdentity?: object): string | undefined {
     if (process.platform === "win32") {
-      for (const [key, owned] of this.nativeHandles) if (!owned.handle.isAlive()) { this.observeExit(owned.id,"os-not-alive"); this.nativeHandles.delete(key); }
+      for (const [key, owned] of this.nativeHandles) if (!owned.handle.isAlive()) { this.observeExit(owned.id,"os-not-alive", archiveProviderEvidence(owned.scope.purpose, owned.scope.agentId, owned.scope.runId)); this.nativeHandles.delete(key); }
       // Readiness and returned Session facades can wrap the same native Job.
       // Only the existing code-owned runtime lifetime may rebind that handle;
       // Agent identity alone never proves that two processes are the same.
@@ -47,7 +54,7 @@ export class ProviderProcessAuthority {
       const retained = prior?.handle ?? handle;
       const id=prior?.id??randomUUID();
       this.nativeHandles.set(key, { id, handle: retained, scope: { ...scope } });
-      try { this.registerEvidence(id,{kind:"native-job",lifetimeId:id},scope); }
+      try { if (archiveProviderEvidence(scope.purpose, scope.agentId, scope.runId)) this.registerEvidence(id,{kind:"native-job",lifetimeId:id},scope); }
       catch(error) { void retained.close().catch(()=>undefined); throw error; }
       return id;
     }
@@ -78,7 +85,7 @@ export class ProviderProcessAuthority {
         identity.pid, identity.pgid, identity.birthMarker, identity.scope ? JSON.stringify(identity.scope) : null, new Date().toISOString(),
       );
       const row=this.sqlite.prepare("SELECT id FROM provider_process_authority WHERE worker_id=? AND pid=? AND birth_marker=?").get(this.workerId,identity.pid,identity.birthMarker) as {id:string};
-      this.registerEvidence(row.id,{kind:"posix",identity},scope);
+      if (archiveProviderEvidence(scope.purpose, scope.agentId, scope.runId)) this.registerEvidence(row.id,{kind:"posix",identity},scope);
       return row.id;
     } catch (error) {
       // Admission cannot continue without durable restart authority. Begin
@@ -122,11 +129,11 @@ export class ProviderProcessAuthority {
 
   pruneExited(): number {
     let removed = 0;
-    for (const [key, { id,handle }] of this.nativeHandles) if (!handle.isAlive()) { this.observeExit(id,"os-not-alive"); this.nativeHandles.delete(key); removed += 1; }
+    for (const [key, { id,handle,scope }] of this.nativeHandles) if (!handle.isAlive()) { this.observeExit(id,"os-not-alive", archiveProviderEvidence(scope.purpose, scope.agentId, scope.runId)); this.nativeHandles.delete(key); removed += 1; }
     for (const row of this.rows()) {
       const handle = this.recover(row);
       if (handle.isAlive()) continue;
-      removed += this.observeExit(row.id,"os-not-alive");
+      removed += this.observeExit(row.id,"os-not-alive", row.worker_id !== this.workerId || archiveProviderEvidence(row.purpose, row.agent_id, row.run_id));
     }
     return removed;
   }
@@ -157,10 +164,10 @@ export class ProviderProcessAuthority {
   private async terminateScope(rows: readonly ProviderProcessRow[], matches: (scope: ProviderProcessScope) => boolean, reason: string): Promise<number> {
     const results = await Promise.allSettled([
       this.terminateRows(rows, reason),
-      ...[...this.nativeHandles].filter(([, {scope}]) => matches(scope)).map(async ([key, {id,handle}]) => {
+      ...[...this.nativeHandles].filter(([, {scope}]) => matches(scope)).map(async ([key, {id,handle,scope}]) => {
         await handle.close();
         if (handle.isAlive()) throw new Error(`${reason} did not observe native workload exit`);
-        this.observeExit(id,"close-confirmed");
+        this.observeExit(id,"close-confirmed", archiveProviderEvidence(scope.purpose, scope.agentId, scope.runId));
         this.nativeHandles.delete(key);
         return 1;
       }),
@@ -202,7 +209,7 @@ export class ProviderProcessAuthority {
         const handle = this.recover(row);
         await handle.close();
         if(handle.isAlive())throw new Error("Provider process still alive after close");
-        this.observeExit(row.id,"close-confirmed");
+        this.observeExit(row.id,"close-confirmed", row.worker_id !== this.workerId || archiveProviderEvidence(row.purpose, row.agent_id, row.run_id));
         terminated += 1;
       } catch (error) {
         failures.push(new Error(
@@ -234,7 +241,7 @@ export class ProviderProcessAuthority {
     if(agent&&agent.project_id!==scope.projectId)throw Error("Provider registration Agent scope mismatch");
     if(scope.runFence!==undefined&&(!run||!Number.isSafeInteger(scope.runFence)||scope.runFence<1||scope.runFence>run.fencing_token))throw Error('Provider registration fence mismatch');
     const value:ProviderProcessRegistration={schema:'provider-process-registration.v1',authorityId:id,workerId:this.workerId,process,purpose:scope.purpose,projectId:scope.projectId??null,agentId:scope.agentId??null,conversationId:agent?.conversation_id??null,runId:scope.runId??null,runFence:scope.runFence??null};
-    const prior=this.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id) as Array<{receipt_json:string}>;
+    const prior=this.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND identity>=? AND identity<? AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id + ':', id + ';', id) as Array<{receipt_json:string}>;
     if(prior.length>=4096&&!prior.some(row=>row.receipt_json===stableJson(value)))throw Error('Provider lifetime registration bound exceeded');
     for(const row of prior){const old=JSON.parse(row.receipt_json) as ProviderProcessRegistration;
       if(stableJson(old.process)!==stableJson(process)||old.workerId!==this.workerId||old.projectId!==value.projectId||old.agentId!==value.agentId||old.conversationId!==value.conversationId)throw Error('Provider lifetime ownership cannot change');
@@ -244,14 +251,15 @@ export class ProviderProcessAuthority {
 
   // Only callers holding the actual OS/native handle may reach this observation boundary.
   // Archive and authority removal share one savepoint: failed persistence retains the hold.
-  private observeExit(id:string,observation:ProviderProcessExitReceipt['observation']):number {
+  private observeExit(id:string,observation:ProviderProcessExitReceipt['observation'], archive: boolean):number {
+    if (!archive) return this.sqlite.prepare("DELETE FROM provider_process_authority WHERE id=?").run(id).changes;
     return this.sqlite.transaction(()=>{
       const prior=this.sqlite.prepare("SELECT receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-exit' AND identity=?").get(id) as {receipt_json:string;receipt_sha256:string}|undefined;
       if(prior){const value=JSON.parse(prior.receipt_json) as ProviderProcessExitReceipt;
         if(this.hash(value)!==prior.receipt_sha256||stableJson(value)!==prior.receipt_json||value.authorityId!==id||value.result!=='observed_exited')throw Error('Retained provider exit integrity failure');
       }
       if(!prior){
-        const rows=this.sqlite.prepare("SELECT identity,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id) as Array<{identity:string;receipt_json:string;receipt_sha256:string}>;
+        const rows=this.sqlite.prepare("SELECT identity,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND identity>=? AND identity<? AND json_extract(receipt_json,'$.authorityId')=? ORDER BY identity LIMIT 4097").all(id + ':', id + ';', id) as Array<{identity:string;receipt_json:string;receipt_sha256:string}>;
         if(rows.length>4096)throw Error('Provider lifetime registration bound exceeded');
         const registrations=rows.map(row=>{const registration=JSON.parse(row.receipt_json) as ProviderProcessRegistration;if(this.hash(registration)!==row.receipt_sha256||stableJson(registration)!==row.receipt_json)throw Error('Provider registration integrity failure');return {identity:row.identity,sha256:row.receipt_sha256,registration};});
         // Legacy recovered rows may be drained, but empty coverage cannot qualify capture.

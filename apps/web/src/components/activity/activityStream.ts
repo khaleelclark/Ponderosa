@@ -181,6 +181,9 @@ function activityCandidate(item: AgentActivityDto): Candidate | undefined {
   const base = { id: item.id, seq: item.seq, createdAt: item.createdAt };
   const event = item.event;
   switch (event.type) {
+    case "session_reset":
+      return { executionId: item.executionId, entry: { ...base, kind: "notice", title: "Provider session changed",
+        detail: "The next Run starts with saved Chat history." } };
     case "native_plan":
       return { executionId: item.executionId, entry: { ...base, kind: "notice", title: "Native Plan",
         detail: [event.explanation, ...event.steps.map(step => `${step.status}: ${step.step}`)].filter(Boolean).join("\n") } };

@@ -270,7 +270,7 @@ test('Assistant bootstrap is single-flight, persistent, editable and disabled un
   await f.reopen();assert.equal(f.ok(await enable()).app.agentId,app.agentId);
   const schedule=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:false,everyMs:1200000}));
   assert.equal(schedule.automatic,false);assert.equal(schedule.everyMs,1200000);
-  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'run_latest','everyday schedule settings preserve the existing busy policy');
+  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'update_current','new Assistant schedules steer and cadence edits preserve the policy');
   assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:60000})).status,409);
   f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,{enabled:false}));
   assert.equal(f.ok(await enable()).enabled,false,'ordinary initialization never restores a removed speaker');
@@ -477,6 +477,7 @@ for(const [kind,sourceConfig] of [
   if(kind==='manual'){
    assert.equal((await save(true)).status,409,'A manual workflow needs an explicitly selected interval');
    f.ok(await save(true,{everyMs:180000}));assert.equal((await read()).everyMs,180000);assert.equal((await read()).triggerKind,'schedule');
+   assert.equal(branches.trigger(app.branchId).sourceConfig.whenRunning,'update_current');
   }else{
    f.ok(await save(true));const enabled=await read();assert.equal(enabled.versionId,versionId);assert.equal(enabled.bindingRevisionId,bindingRevisionId);
    assert.deepEqual(branches.trigger(app.branchId).sourceConfig,original.sourceConfig);assert.equal(branches.trigger(app.branchId).id,original.id);

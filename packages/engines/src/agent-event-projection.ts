@@ -5,6 +5,7 @@ import type {
   ToolFailureCategory,
 } from "@ponderosa/core";
 import { PONDEROSA_REPLY_STREAM_TOOL, providerResetAt, PROVIDER_FAILURE_CATEGORIES, PROVIDER_QUOTA_LIMITS } from "@ponderosa/core";
+import { sanitizeTerminalOutput } from "./tool-result.js";
 import { isProxy } from "node:util/types";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -116,11 +117,12 @@ function array<T>(
   }
 }
 
-function string(record: DataRecord, key: string, budget: Budget, depth: number, max = MAX_BYTES): string {
+function string(record: DataRecord, key: string, budget: Budget, depth: number, max = MAX_BYTES, sanitize = true): string {
   const value = record.get(key);
-  if (typeof value !== "string" || value.length > max || UNSAFE_CONTROL.test(value)) reject();
+  if (typeof value !== "string" || value.length > max || !sanitize && UNSAFE_CONTROL.test(value)) reject();
+  const projected = sanitize && UNSAFE_CONTROL.test(value) ? sanitizeTerminalOutput(value) : value;
   budget.string(value, depth);
-  return value;
+  return projected;
 }
 
 function optionalString(record: DataRecord, key: string, budget: Budget, depth: number, max = MAX_BYTES): string | undefined {
@@ -128,7 +130,7 @@ function optionalString(record: DataRecord, key: string, budget: Budget, depth: 
 }
 
 function identifier(record: DataRecord, key: string, budget: Budget, depth: number): string {
-  const value = string(record, key, budget, depth, MAX_IDENTIFIER);
+  const value = string(record, key, budget, depth, MAX_IDENTIFIER, false);
   if (!SAFE_IDENTIFIER.test(value)) reject();
   return value;
 }
@@ -166,7 +168,7 @@ function enumeration<T extends string>(
   budget: Budget,
   depth: number,
 ): T {
-  const value = string(record, key, budget, depth, MAX_IDENTIFIER);
+  const value = string(record, key, budget, depth, MAX_IDENTIFIER, false);
   if (!values.includes(value as T)) reject();
   return value as T;
 }
@@ -194,9 +196,10 @@ function jsonValue(value: unknown, budget: Budget, depth: number): unknown {
     return value;
   }
   if (typeof value === "string") {
-    if (value.length > MAX_BYTES || UNSAFE_CONTROL.test(value)) reject();
+    if (value.length > MAX_BYTES) reject();
+    const projected = UNSAFE_CONTROL.test(value) ? sanitizeTerminalOutput(value) : value;
     budget.string(value, depth);
-    return value;
+    return projected;
   }
   if (Array.isArray(value)) return array(value, budget, depth, (entry, next) => jsonValue(entry, budget, next));
   if (value === null || typeof value !== "object") reject();
@@ -415,13 +418,13 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     case "command": {
       const row = exact(value, ["command", "cwd", "callId"], budget);
       const callId = optionalIdentifier(row, "callId", budget, 2);
-      return { type, command: string(row, "command", budget, 2), cwd: string(row, "cwd", budget, 2), ...(callId === undefined ? {} : { callId }) };
+      return { type, command: string(row, "command", budget, 2), cwd: string(row, "cwd", budget, 2, MAX_BYTES, false), ...(callId === undefined ? {} : { callId }) };
     }
     case "file_change": {
       const row = exact(value, ["path", "kind", "diff", "callId"], budget);
       const diff = optionalString(row, "diff", budget, 2);
       const callId = optionalIdentifier(row, "callId", budget, 2);
-      return { type, path: string(row, "path", budget, 2), kind: enumeration(row, "kind", ["create", "edit", "delete"] as const, budget, 2), ...(diff === undefined ? {} : { diff }), ...(callId === undefined ? {} : { callId }) };
+      return { type, path: string(row, "path", budget, 2, MAX_BYTES, false), kind: enumeration(row, "kind", ["create", "edit", "delete"] as const, budget, 2), ...(diff === undefined ? {} : { diff }), ...(callId === undefined ? {} : { callId }) };
     }
     case "test_result": {
       const row = exact(value, ["passed", "summary"], budget);
@@ -447,7 +450,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       const row = exact(value, ["sessionId", "executionId", "artifactId", "path", "width", "height", "size", "sha256"], budget);
       const sha256 = identifier(row, "sha256", budget, 2);
       if (!/^[a-f0-9]{64}$/u.test(sha256)) reject();
-      return { type, sessionId: identifier(row, "sessionId", budget, 2), executionId: identifier(row, "executionId", budget, 2), artifactId: identifier(row, "artifactId", budget, 2), path: string(row, "path", budget, 2), width: integer(row, "width", budget, 2, 1), height: integer(row, "height", budget, 2, 1), size: integer(row, "size", budget, 2, 0), sha256 };
+      return { type, sessionId: identifier(row, "sessionId", budget, 2), executionId: identifier(row, "executionId", budget, 2), artifactId: identifier(row, "artifactId", budget, 2), path: string(row, "path", budget, 2, MAX_BYTES, false), width: integer(row, "width", budget, 2, 1), height: integer(row, "height", budget, 2, 1), size: integer(row, "size", budget, 2, 0), sha256 };
     }
     case "work_item_update": {
       const row = exact(value, ["workItemId", "status", "title", "executionId"], budget);

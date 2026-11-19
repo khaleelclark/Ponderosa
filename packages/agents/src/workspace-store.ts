@@ -25,7 +25,7 @@ import type {
   WorkspaceResourceRecencyListDto,
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
-import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 import {portableChatTitleHistoryError} from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
@@ -242,7 +242,7 @@ export class WorkspaceStore {
   private readonly retainedFile: string;
   private get file(): string { this.admission.assertRoot(this.admission.dataDir); return this.retainedFile; }
   private readonly instance: string;
-  private readonly events: CanonicalWorkspaceEvent[];
+  private readonly events: CanonicalWorkspaceEvent[] = [];
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly conversationMutationHistory = new Map<string, ConversationMutationDto[]>();
   private readonly importedTitleHistoryReceipts = new Map<string,string>();
@@ -307,8 +307,34 @@ export class WorkspaceStore {
     this.instance = readFileSync(instanceFile, "utf8").trim();
     if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
     chmodSync(this.file, 0o600);
-    this.events = readRepairableJsonl<CanonicalWorkspaceEvent>(this.file, "workspace event log", true);
-    for (const event of this.events) this.project(event);
+    let notifications = 0;
+    const latestAgentPulse = new Map<string, { id: number; ts: string }>();
+    const isPulse = (record: CanonicalWorkspaceEvent) => !record.mutation &&
+      (record.event.type === "agent_event" || record.event.type === "usage_changed" || record.event.type === "provider_status_changed");
+    readRepairableJsonl<CanonicalWorkspaceEvent>(this.file, "workspace event log", true, record => {
+      if (isPulse(record)) {
+        notifications++;
+        if (record.event.type === "agent_event") {
+          const previous = latestAgentPulse.get(record.event.agentId);
+          if (!previous || previous.ts < record.ts) {
+            latestAgentPulse.set(record.event.agentId, { id: record.id, ts: record.ts });
+          }
+        }
+      }
+      this.rememberEvent(record);
+      this.project(record);
+    });
+    // Keep the entire stream replay window contiguous. Earlier entries with
+    // no projected state can be retired without altering authority or IDs.
+    // Keep each Agent's latest recency evidence even outside that window.
+    if (notifications > 10_000) {
+      const cutoff = this.cursor() - 5_000;
+      writeAtomicFsyncedJsonl(this.file, write =>
+        readRepairableJsonl<CanonicalWorkspaceEvent>(this.file, "workspace event log", false, record => {
+          if (record.id > cutoff || !isPulse(record) ||
+              (record.event.type === "agent_event" && latestAgentPulse.get(record.event.agentId)?.id === record.id)) write(record);
+        }));
+    }
     } catch (error) { this.admission.close(); throw error; }
   }
 
@@ -947,6 +973,11 @@ export class WorkspaceStore {
     }
   }
 
+  private rememberEvent(record: CanonicalWorkspaceEvent): void {
+    this.events.push(record);
+    if (this.events.length > 5_500) this.events.splice(0, 500);
+  }
+
   append(event: WorkspaceEvent, mutation?: CanonicalWorkspaceEvent["mutation"]): WorkspaceEventEnvelope {
     const record: CanonicalWorkspaceEvent = {
       id: (this.events.at(-1)?.id ?? 0) + 1,
@@ -955,7 +986,7 @@ export class WorkspaceStore {
       ...(mutation ? { mutation } : {}),
     };
     appendFsyncedJsonl(this.file, [record]);
-    this.events.push(record);
+    this.rememberEvent(record);
     this.project(record);
     return record;
   }
@@ -1010,11 +1041,11 @@ export class WorkspaceStore {
       if(bytes>input.maximumBytes)throw Object.assign(Error("Selected Chat title history exceeds the existing package budget; no records were omitted"),{statusCode:413});
       result.set(key,structuredClone(row));
     };
-    for(const record of this.events){const event=record.event;
-      if(event.type!=="conversation_changed"||event.action!=="updated"||event.projectId!==input.projectId||event.conversationId!==input.conversationId)continue;
+    readRepairableJsonl<CanonicalWorkspaceEvent>(this.file,"workspace event log",false,record=>{const event=record.event;
+      if(event.type!=="conversation_changed"||event.action!=="updated"||event.projectId!==input.projectId||event.conversationId!==input.conversationId)return;
       if(event.titleChange)add({sourceInstanceId:this.instance,eventId:record.id,projectId:event.projectId,conversationId:event.conversationId,createdAt:record.ts,change:event.titleChange});
       for(const row of event.importedTitleHistory?.items??[])add(row);
-    }return [...result.values()];
+    });return [...result.values()];
   }
 
   /** Retained source metadata only, never a destination Rename or Communication. */

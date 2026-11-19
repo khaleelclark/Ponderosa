@@ -1,3 +1,4 @@
+import { freshFailureDiagnostic } from "./working-copy-diagnostic.js";
 import { pauseOwnedNativeGoal } from "./native-goal-stop.js";
 import { reconcileSettingsTransitionReservations, requestSettingsTransition } from "./context-transition-admission.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
@@ -435,6 +436,16 @@ return new CoordinationV3Scheduler(
   },
   {
     workerId: coordinationV3WorkerId,
+    onPassError: error => app.log.error(freshFailureDiagnostic(error, "Coordination scheduler pass failed")),
+    onPassHealthChanged: healthy => {
+      const dedupeKey = "coordination:scheduler-unavailable";
+      if (healthy) context.resolveOperationalNotification(dedupeKey, true);
+      else context.createOperationalNotification({
+        dedupeKey, renewAfterRecovery: true, category: "coordination", severity: "attention",
+        title: "Agent Scheduling Delayed",
+        body: "The scheduler could not finish several passes. Check local storage and the server log. It will retry automatically.",
+      });
+    },
     workflowOperations: context.workflowOperations,
     maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns ?? workspace.getPreferences().maxConcurrentAgentRuns,
     pollMs: opts.communicationV3?.pollMs,
@@ -710,6 +721,7 @@ return new CoordinationV3Scheduler(
       });
     },
     blockedAgentIds: async () => {
+      if (!coordinationV3.peekNextRunnable()) return store.listAgentEngineAssignments().map(agent => agent.id);
       await context.resourceAdmission?.observe();
       const intake = new Map(await Promise.all([...engines.entries()].map(async ([id, registration]) => {
         let timer: NodeJS.Timeout | undefined;

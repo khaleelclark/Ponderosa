@@ -82,7 +82,7 @@ export interface ProviderInputSourceManifestV3 {
   /** Frozen estimate for this exact packet; UTF-8 accounting is not tokenization.
    * Policy headroom is conservative reserve, not observed model capacity. */
   contextBudget?: {
-    estimator: "conservative_utf8_bytes";
+    estimator: "conservative_utf8_bytes" | "fresh_utf8_token_estimate";
     basis: "context_policy" | "provider_window" | "unknown_provider_window";
     /** Absent for a compatible continuation with no verified provider window. */
     inputCeilingTokens?: number;

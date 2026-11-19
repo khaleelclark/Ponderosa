@@ -123,7 +123,7 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
     },
     onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});},
   });
-  const keepFolder=useMutation({mutationFn:(id:string)=>feedback(`keep-folder:${id}`,"Working Folder Recovery Needs Review",()=>api.keepCurrentWorkingCopy(agent.id,id)),
+  const keepFolder=useMutation({mutationFn:({id,freshContext}:{id:string;freshContext?:boolean})=>feedback(`keep-folder:${id}`,"Working Folder Recovery Needs Review",()=>api.keepCurrentWorkingCopy(agent.id,id,freshContext)),
     onSuccess:updated=>{queryClient.setQueryData(statusKey,updated);void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agent.id)});},
     onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});}});
   const observed=status.data?.id===agent.id?status.data:changeMode.data?.id===agent.id?changeMode.data:agent;
@@ -154,9 +154,10 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
       </Box>
       <WorkspaceQueryError read={workspaceRead(`agent:${agent.id}`,"Working Folder Status",status)}/>
       <MutationErrorDetails title="Working Folder Recovery Needs Review" error={keepFolder.error}/>
-      {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>Kept the current working folder and existing context.</Alert>:null}
+      {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>{change.freshContext?"The next Run starts a fresh session in the new working folder.":"Kept the current working folder and existing context."}</Alert>:null}
       {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5,...workingCopyActionAlertSx}}
-        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check Status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep Current Folder</Button>:null}</Stack>}>
+        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check Status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate({id:change.rolloverId})}>Keep Current Folder</Button>:null}{change.canUseFreshContext?<Button color="inherit" size="small" disabled={keepFolder.isPending||changeMode.isPending}
+          onClick={()=>{if(window.confirm("Start a fresh provider session in the new folder? Saved Chat history remains available."))keepFolder.mutate({id:change.rolloverId,freshContext:true});}}>Use New Folder With Fresh Context</Button>:null}</Stack>}>
         {change.phase==='held'?(change.message??'Inspect Activity before another change.'):change.phase==='handoff'?'Saving: preserving this Agent’s context before changing folders.':change.phase==='verifying'?'Folder changed; verifying preserved context before queued work.':'Saving: preparing the selected working folder.'}
       </Alert>:null}
       <FormControl fullWidth size="small" disabled={changeMode.isPending||changing||change?.phase==='held'}>
@@ -168,9 +169,9 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
           onChange={event => {
             const nextMode = event.target.value as AgentWorkingCopyMode;
             if (workingCopy.mode === "separate_git" && nextMode === "shared" &&
-                !window.confirm("Switch to the Shared folder? This permanently removes this Agent's managed Git copy and its branch.")) {
-              return;
-            }
+                !window.confirm("Switch to the Shared folder? This removes the managed Git copy and starts a fresh provider session after preserving context.")) return;
+            if (workingCopy.mode !== "separate_git" && nextMode === "separate_git" &&
+                !window.confirm("Switch to a separate Git copy? This starts a fresh provider session after preserving context.")) return;
             changeMode.mutate(nextMode);
           }}
         >
@@ -455,6 +456,7 @@ export function AgentSettingsPane({
           )}
         </Typography>
       </Paper>
+      <Alert severity="info">Changing standing instructions or the provider tool configuration can require a fresh provider session. Saved Chat history remains available.</Alert>
       <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
       <NativeRuntimeControls key={agent.id} agentId={agent.id} savedModel={agent.model ?? agent.presetSnapshot?.model} />
       <AgentWorkingCopySettings agent={agent} />

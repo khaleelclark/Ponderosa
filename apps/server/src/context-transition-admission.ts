@@ -1,4 +1,3 @@
-import {proveRetainedCodexVoiceContext,proveRetainedManagedVoiceContext} from './retained-codex-voice-context.js';
 import { freshFailureDiagnostic } from './working-copy-diagnostic.js';
 import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
@@ -42,8 +41,8 @@ type TransitionContext={app:PonderosaServer;store:AgentStore;coordinationV3:Coor
  contextRecoveryRunning?:(agentId:string)=>boolean;
  createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification']};
 
-/** An interrupted generation is not transferable. Only a separately authored,
- * unsubmitted instruction targeting the newly selected provider may cross it. */
+/** Recognize a fenced generation for independently authored new work.
+ * Native continuation requires a same-Chat, acknowledged session without unresolved memory exposure. */
 export function interruptedProviderSwitch(
  ctx:Pick<TransitionContext,"store"|"coordinationV3"|"workspace">,
  agent:AgentDto,scopeKey:string,
@@ -51,22 +50,42 @@ export function interruptedProviderSwitch(
  const {store,coordinationV3,workspace}=ctx;
  const packet=store.acceptedProviderSessionInput(agent.id,true);
  const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
- if(!contract || contract.engineId===agent.activeEngine ||
+ if(!contract ||
     contract.workingCopyId!==agent.workingCopy.id || contract.cwd!==agent.workingCopy.rootPath) return;
  const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
  if(!boundary || boundary.projectId!==agent.projectId || boundary.scopeKey!==scopeKey ||
     scopeKey!==`conversation:${agent.conversationId}` || agent.workingCopy.state!=='ready' ||
+    store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id) ||
     coordinationV3.contextRecovery.active(agent.id) || coordinationV3.activeContextRollover(agent.id) ||
     workspace.listDecisions({projectId:agent.projectId,agentId:agent.id,status:'pending'}).length) return;
  if(store.sqlite.prepare(`SELECT 1 FROM provider_operation_outbox operation JOIN scheduler_runs run ON run.id=operation.run_id
    WHERE run.agent_id=? AND operation.state<>'completed' LIMIT 1`).get(agent.id)) return;
  if(contract.contractHash!==boundary.toolContractHash)return;
- return boundary;
+ const resumesNative = contract.engineId===agent.activeEngine;
+ if (resumesNative) {
+  // A held transcript can carry previously exposed or unconfirmed memory.
+  // Keep this path restricted to generations with no such recorded exposure.
+  const origin = store.providerSessionOriginRunId(agent.id, boundary.providerSessionId);
+  if (!origin || hasKnownRetainedMemory(store,agent.id,origin,boundary.sourceRunId,boundary.providerSessionId)) return;
+  const acknowledged = store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r
+    JOIN scheduler_prompt_injections turn ON turn.run_id=r.id AND turn.kind='turn' AND turn.state='acknowledged'
+    WHERE r.id=?`).get(boundary.sourceRunId);
+  if (!acknowledged) return;
+ }
+ return {...boundary,resumesNative};
 }
 
 /** Verify the new input against its authored source rather than text or UI
  * origin. In preparation the scheduler has already leased the exact input. */
-export function independentProviderSwitchInput(store:AgentStore,agent:AgentDto,activationId?:string):boolean {
+export function independentProviderSwitchInput(store:AgentStore,agent:AgentDto,activationId?:string,allowRequest=false):boolean {
+ if (allowRequest && activationId && store.sqlite.prepare(`SELECT 1 FROM agent_activations a
+   JOIN activation_sources source ON source.activation_id=a.id AND source.source_kind='request'
+   JOIN coordination_requests r ON r.id=source.source_id AND r.project_id=a.project_id
+   WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND a.scope_key=? AND a.kind='coordination_request'
+   AND a.state IN ('pending','retry_pending','attached') AND r.recipient_agent_id=a.agent_id AND r.conversation_id=?
+   AND NOT EXISTS (SELECT 1 FROM activation_sources other WHERE other.activation_id=a.id
+     AND other.source_kind IN ('task_decision','reviewed_steering','context_rollover','context_rollover_recovery'))`)
+  .get(activationId,agent.id,agent.projectId,`conversation:${agent.conversationId}`,agent.conversationId)) return true;
  return Boolean(store.sqlite.prepare(`SELECT 1 FROM agent_activations a
    JOIN activation_sources source ON source.activation_id=a.id AND source.source_kind='communication'
    JOIN runtime_communications c ON c.id=source.source_id AND c.project_id=a.project_id
@@ -94,12 +113,17 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  }catch{contractEvidence='saved_contract_unavailable';}
  const currentTools=providerToolContractHash([...providerDynamicTools(Boolean(memory)),PONDEROSA_HISTORY_TOOL],communicationV3SessionPrompt());
  const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
- const fingerprint=['settings-transition.v2',currentTools,contractEvidence,row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)];
- // Recheck existing reservations from older builds only for exact switch input.
- // A new admission pass still checks that it was never submitted.
- if(ctx.coordinationV3 && agent && row && independentProviderSwitchInput(store,agent,activationId)) {
+ const prefs=workspace.getPreferences();
+ const fingerprint=['settings-transition.v3',currentTools,contractEvidence,row,session,
+  agent&&[agent.id,agent.projectId,agent.conversationId,agent.title,agent.handle,agent.role,agent.activeEngine,agent.model,agent.effort,agent.speed,agent.workingCopy,agent.presetSnapshot],
+  project&&[project.id,project.hostPath,project.instructions,project.defaultEngine,project.defaultModel,project.defaultEffort],
+  [prefs.globalInstructions,prefs.profile,prefs.engineDefaults,prefs.contextRolloverTokens,prefs.contextRolloverWindowFraction,prefs.claudeModelOptions],
+  grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)];
+ // A newly drained interrupted session changes admission only for independent input.
+ if(ctx.coordinationV3 && agent && row) {
   const boundary=interruptedProviderSwitch({...ctx,coordinationV3:ctx.coordinationV3},agent,(row as {scope_key:string}).scope_key);
-  if(boundary)fingerprint.push('interrupted-provider-switch',boundary.sourceRunId,boundary.sourceFence);
+  if(boundary && independentProviderSwitchInput(store,agent,activationId,boundary.resumesNative))
+   fingerprint.push('interrupted-provider-boundary',boundary.sourceRunId,boundary.sourceFence);
  }
  return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
 }
@@ -121,14 +145,14 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
   internal ||= running;
   // Every producer describes this same boundary, not its current admission pass.
   reason=running?'Restoring the session. Your messages are retained; earlier work is not repeated.'
-    : 'Automatic recovery could not restore this session yet. Your messages are retained. Automatic checks continue without repeating earlier work.';
+    : 'Earlier work may have been interrupted. Your messages are retained. Open the Agent to review context recovery.';
  }
  const previous=ctx.workspace.findNotification(n=>n.agentId===agentId&&n.projectId===projectId&&n.status!=='resolved'&&!n.recoveredAt&&Boolean(n.workContext?.activationIds?.includes(activationId)),true);
  const boundaryKey=previous?.workContext?.traceId??transitionIncidentKey(ctx,projectId,agentId,activationId);
  const existing=ctx.workspace.notificationForWork({category:'coordination',projectId,workContext:{kind:'activation',recordId:activationId,traceId:boundaryKey,state:'blocked',occurredAt:''}})
   ??ctx.workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`)
   ??ctx.workspace.getNotificationByDedupeKey(boundaryKey);
- if(internal&&!existing)return;
+
  const continuing=existing&&existing.status!=='resolved'&&!existing.recoveredAt;
  const agent=ctx.store.getAgent(agentId),chat=agent&&ctx.store.getConversation(agent.conversationId);
  const work=ctx.coordinationV3.activation(activationId,projectId)?.payload as {text?:unknown}|undefined;
@@ -136,11 +160,11 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
   FROM activation_sources s JOIN runtime_communications m ON m.id=s.source_id WHERE s.activation_id=? AND s.source_kind='communication' LIMIT 1`).get(activationId) as {event_id:string}|undefined;
  const assignment=(continuing&&existing.workContext?.assignment?existing.workContext.assignment:source?ctx.store.getCommunicationEvent(projectId,source.event_id)?.text:typeof work?.text==='string'?work.text:undefined)?.replace(/\s+/gu,' ').trim().slice(0,220);
  const activationIds=[...new Set([...(existing&&(existing.status??'open')==='open'?existing.workContext?.activationIds??[existing.workContext?.recordId??activationId]:[]),activationId])];
- const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,internal,category:'coordination',severity:'attention',
+ const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,informational:internal,category:'coordination',severity:internal?'info':'attention',
   title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · ${uncertain?'Cannot Respond Yet':'Context Needs Review'}`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
   ...(assignment?{contextPreview:assignment.slice(0,120)}:{}),
-  workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?(evidencePending?'contract_evidence_pending':'recovering'):'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
-  action:uncertain?undefined:{kind:'open_agent',targetId:agentId}});
+  workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:evidencePending?'contract_evidence_pending':internal?'recovering':'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
+  action:{kind:'open_agent',targetId:agentId}});
  // Adopt old per-message notices into the same boundary incident without
  // declaring their work recovered or emitting another push.
  for(const id of activationIds){const old=ctx.workspace.getNotificationByDedupeKey(`settings-transition:${id}`);
@@ -251,8 +275,13 @@ export async function requestSettingsTransition(input: {
  if(!pending||pending.agentId!==candidate.agentId||!['pending','retry_pending'].includes(pending.state))return true;
  const ordinaryAdmission=pending.kind==='human_message'||pending.kind==='coordination_request';
  const candidateAgent=store.getAgent(pending.agentId);
- const providerSwitch=candidateAgent && interruptedProviderSwitch(input,candidateAgent,candidate.scopeKey);
+ const interrupted=candidateAgent && interruptedProviderSwitch(input,candidateAgent,candidate.scopeKey);
+ const selectedAdapter=candidateAgent && engines.get(candidateAgent.activeEngine)?.adapter;
+ const nativeAdapter=selectedAdapter && [CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(selectedAdapter)) &&
+  !Object.hasOwn(selectedAdapter,'openSession');
+ const providerSwitch=interrupted?.resumesNative && !nativeAdapter ? undefined : interrupted;
  const historicalSources=new Set(coordinationV3.interruptedProviderSwitchSourceIds(pending.agentId,pending.projectId,candidate.scopeKey));
+ if (providerSwitch?.resumesNative) historicalSources.add(providerSwitch.sourceRunId);
  const historicalWork=coordinationV3.wakesInterruptedProviderWork(pending.id,historicalSources);
  if(!ordinaryAdmission&&!providerSwitch&&!historicalWork)return true;
  let shouldHold=false,toolsChanged=false;
@@ -273,7 +302,7 @@ export async function requestSettingsTransition(input: {
  };
   try{
    const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state IN ('pending','retry_pending') AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
-   const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
+   const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown}}:undefined;
    const dispatch=payload?.dispatch,agent=candidateAgent,project=agent&&store.getChatContext(agent.conversationId);
    if(historicalWork)
     return hold('An earlier provider Run has an uncertain outcome. Its task remains in history without automatic replay.',true);
@@ -283,7 +312,9 @@ export async function requestSettingsTransition(input: {
       store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").get(pending.id) &&
       [...historicalSources].some(id=>store.getLatestRun(agent.id,id)?.engine===dispatch.engine))
     return hold('The saved instruction is pinned to the previous provider and remains held for review.');
-   if(providerSwitch && (!agent||row?.scope_key!==providerSwitch.scopeKey||!independentProviderSwitchInput(store,agent,pending.id)))
+   if(providerSwitch?.resumesNative && !ordinaryAdmission &&
+      store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'").get(pending.id)) return true;
+   if(providerSwitch && (!agent||row?.scope_key!==providerSwitch.scopeKey||!independentProviderSwitchInput(store,agent,pending.id,providerSwitch.resumesNative)))
     return hold('The selected provider is waiting for an independent instruction. Earlier work remains in history.',true);
    store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='interrupted_provider_switch' AND source_id IS NOT ?")
     .run(pending.id,providerSwitch?.sourceRunId??null);
@@ -311,7 +342,7 @@ export async function requestSettingsTransition(input: {
    // expose a formerly interrupted packet here; this is not ordinary resume permission.
    let packet:ReturnType<AgentStore['acceptedProviderSessionInput']>;
    try{packet=agent?(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined)):undefined;void packet?.exactSystemPrompt;}
-   catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; automatic reconciliation retains the original work.'),true);}
+   catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; Ponderosa retains the original work.'),true);}
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
    // An engine switch cannot hand off a native session; run preparation
    // retires it and seeds a fresh session from bounded canonical context.
@@ -320,7 +351,7 @@ export async function requestSettingsTransition(input: {
    // the accepted boundary cannot support a verified native handoff.
    shouldHold=Boolean(row&&agent&&project&&accepted);
    if(shouldHold&&typeof packet?.exactSystemPrompt!=='string')
-    return hold('The saved provider instructions are unavailable. Automatic reconciliation retains this message without repeating earlier work.',true);
+    return hold('The saved provider instructions are unavailable. Ponderosa retains this message without repeating earlier work.',true);
    const acceptedPromptChanged=Boolean(row&&agent&&project&&accepted&&typeof packet?.exactSystemPrompt==='string'&&
     await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts)!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'));
    if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
@@ -355,15 +386,15 @@ export async function requestSettingsTransition(input: {
     const currentHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
     if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
     if(currentHash!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'))
-     return hold('The earlier provider instructions lack complete saved context evidence. Automatic reconciliation retains the queued work.',true);
+     return hold('The earlier provider instructions lack complete saved context evidence. Ponderosa retains the queued work.',true);
    }
-   // Do not silently reseed an explicitly changed/voice task when the old
+   // Do not silently reseed an explicitly changed task when the old
    // accepted generation cannot be attributed to a completed boundary.
    const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
-     (dispatch?.voiceReply===true&&opts.localMemory || typeof dispatch?.model==='string' ||
+     (typeof dispatch?.model==='string' ||
       typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string'));
    if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
-    return hold('The earlier provider session lacks a complete, verified context boundary. Automatic reconciliation retains the queued work.',true);
+    return hold('The earlier provider session lacks a complete, verified context boundary. Ponderosa retains the queued work.',true);
    const policy=agent?new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id):undefined;
    const restrictions=agent&&policy?runtimeRestrictions(policy,agent.activeEngine):undefined;
    const prior=contract?.capabilityRestrictions;
@@ -374,7 +405,7 @@ export async function requestSettingsTransition(input: {
    toolsChanged=Boolean(contract&&(!savedTools||JSON.stringify(savedTools)!==JSON.stringify(currentTools)));
    shouldHold ||= grantExpansion||toolsChanged;
    if(agent&&coordinationV3.activeContextRollover(agent.id))return true;
-   if(accepted&&(!packet||!contract||contract.version!==1))return hold('The saved provider contract is incomplete. Automatic reconciliation retains the queued work.',true);
+   if(accepted&&(!packet||!contract||contract.version!==1))return hold('The saved provider contract is incomplete. Ponderosa retains the queued work.',true);
    if(!row||!agent||!project||!boundary||!accepted||!packet||!contract||!policy||!restrictions||contract.version!==1||
       agent.projectId!==pending.projectId||project.id!==pending.projectId||row.scope_key!==`conversation:${agent.conversationId}`||
       boundary.providerSessionId!==accepted.sessionId||boundary.toolContractHash!==contract.contractHash||
@@ -382,17 +413,18 @@ export async function requestSettingsTransition(input: {
       agent.workingCopy.state!=='ready'||contract.cwd!==agent.workingCopy.rootPath||
       typeof packet.exactSystemPrompt!=='string'||typeof packet.executionId!=='string'||
       (typeof dispatch?.engine==='string'&&dispatch.engine!==agent.activeEngine))return unchangedOrHold('The saved provider boundary does not match the current Agent, Chat, runtime or queued work.');
+   const memoryOrigin = store.providerSessionOriginRunId(agent.id, accepted.sessionId) ?? packet.executionId;
    const memory=localMemoryFor(app);
    if(!memory){
-    const known=hasKnownRetainedMemory(store,agent.id,packet.executionId,boundary.executionId,accepted.sessionId);
+    const known=hasKnownRetainedMemory(store,agent.id,memoryOrigin,boundary.executionId,accepted.sessionId);
     if(known)return hold('A previously used memory source cannot be checked because Local Memory is unavailable. The original work remains queued for context review.');
    }
-   const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+   const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin,boundary.executionId);
    if(exposure==='changed')
     return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
    if(exposure==='unavailable')
     return hold('A previously used memory source could not be checked. The original work remains queued for context review.');
-   if(exposure==='unknown'&&memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
+   if(exposure==='unknown'&&memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,memoryOrigin))
     return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    if(exposure==='unknown'&&contract.capabilityRestrictions&&
       !contract.capabilityRestrictions.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead)&&
@@ -423,42 +455,14 @@ export async function requestSettingsTransition(input: {
    const targetSystemPromptHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
    if(initialFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
    const promptChanged=targetSystemPromptHash!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex');
-   const verifiedVoice=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&store.sqlite.prepare(`SELECT 1
-    FROM context_rollovers r JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
-    JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
-    WHERE r.agent_id=? AND r.project_id=? AND r.state='completed' AND r.completion_reason='replacement_verified'
-      AND r.replacement_run_id=? AND r.replacement_session_id=?
-      AND json_extract(h.payload_json,'$.settingsTransition.activationId')=?
-      AND json_extract(h.payload_json,'$.settingsTransition.targetModel')=?
-      AND json_extract(h.payload_json,'$.settingsTransition.targetEffort') IS ?
-      AND json_extract(h.payload_json,'$.settingsTransition.targetSpeed') IS ? LIMIT 1`)
-    .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
-   const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
-   if(voiceBoundary&&!stopped&&!changed&&!promptChanged&&!grantExpansion&&memory&&
-      prior&&restrictions.filesystemWriteRestricted===prior.filesystemWriteRestricted&&
-      JSON.stringify(restrictions.restrictedCapabilityIds)===JSON.stringify(prior.restrictedCapabilityIds)&&
-      JSON.stringify(restrictions.restrictedConnectorNames)===JSON.stringify(prior.restrictedConnectorNames)){
-    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
-    const tools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],policy);
-    const ordinary=providerToolContractHash(tools,communicationV3SessionPrompt());
-    const toolHash=policy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinary,restrictions})).digest('hex'):ordinary;
-    const runtimeHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,targetModel,targetEffort,toolHash),
-      speed:targetSpeed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash:targetSystemPromptHash,scopeKey:row.scope_key},contract.contractHash);
-    if(runtimeHash===contract.contractHash){
-     const proofInput={store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:accepted.sessionId,
-       sourceRunId:boundary.executionId,contractHash:runtimeHash,systemPromptHash:targetSystemPromptHash};
-     const retained=await proveRetainedManagedVoiceContext(proofInput)??proveRetainedCodexVoiceContext(proofInput);
-     if(initialFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
-     if(retained?.isCurrent()){
-      store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
-      return true;
-     }
-    }
-   }
-   if(stopped&&(changed||voiceBoundary||promptChanged||toolsChanged||grantExpansion))
-    return hold('Recovered context from the stopped task is retained, but the requested settings or voice transition lacks a verified handoff. The new instruction remains queued for review.');
-   if(grantExpansion&&(changed||voiceBoundary||promptChanged||toolsChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
-   if(!changed&&!voiceBoundary&&!promptChanged&&!toolsChanged&&!grantExpansion){
+   if(stopped&&(changed||promptChanged||toolsChanged||grantExpansion))
+    return hold('Recovered context from the stopped task is retained, but the requested settings change lacks a verified handoff. The new instruction remains queued for review.');
+   if(grantExpansion&&(changed||promptChanged||toolsChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
+   const sameNativePolicy=!promptChanged&&!toolsChanged&&!grantExpansion&&prior&&
+     prior.filesystemWriteRestricted===restrictions.filesystemWriteRestricted&&
+     JSON.stringify(prior.restrictedCapabilityIds)===JSON.stringify(restrictions.restrictedCapabilityIds)&&
+     JSON.stringify(prior.restrictedConnectorNames)===JSON.stringify(restrictions.restrictedConnectorNames);
+   if((!changed&&!promptChanged&&!toolsChanged&&!grantExpansion) || (changed&&sameNativePolicy)){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
    }
@@ -467,9 +471,9 @@ export async function requestSettingsTransition(input: {
    shouldHold=true;
    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
    if(Boolean(opts.localMemory)!==Boolean(memory))return hold('Memory access could not be verified. The original work remains queued; review the Agent’s context before retrying.');
-   const authorization=memory?.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+   const authorization=memory?.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin,boundary.executionId);
    if(memory&&!authorization)return hold('Earlier memory access could not be verified or a source changed. The original work remains queued; review the Agent’s context before retrying.');
-   if(memory&&authorization&&!await memory.validateTransitionReads(agent.id,agent.conversationId,packet.executionId,boundary.executionId,boundary.executionId,authorization.signature))
+   if(memory&&authorization&&!await memory.validateTransitionReads(agent.id,agent.conversationId,memoryOrigin,boundary.executionId,boundary.executionId,authorization.signature))
     return hold('A memory source used by this Agent changed or is unavailable. The original work remains queued; review its context before retrying.');
    if(!grantExpansion&&(!prior||restrictions.filesystemWriteRestricted!==prior.filesystemWriteRestricted||
       JSON.stringify(restrictions.restrictedCapabilityIds)!==JSON.stringify(prior.restrictedCapabilityIds)||
@@ -480,7 +484,7 @@ export async function requestSettingsTransition(input: {
     JSON.stringify(handoffRestrictions.restrictedCapabilityIds)!==JSON.stringify(prior!.restrictedCapabilityIds)||
     JSON.stringify(handoffRestrictions.restrictedConnectorNames)!==JSON.stringify(prior!.restrictedConnectorNames)))return hold('The saved restrictions cannot be verified. The original work remains queued for context review.');
    const tools=savedTools;
-   if(!tools)return hold('The saved tool contract is incomplete. Automatic reconciliation retains this message without repeating earlier work.',true);
+   if(!tools)return hold('The saved tool contract is incomplete. Ponderosa retains this message without repeating earlier work.',true);
    const communicationPrompt=communicationV3SessionPrompt(),preferences=workspace.getPreferences();
    // The old provider already has its accepted system prompt. Use its exact
    // recorded bytes for the old-session handoff; the replacement receives
@@ -488,7 +492,7 @@ export async function requestSettingsTransition(input: {
    const systemPrompt=packet.exactSystemPrompt,systemPromptHash=createHash('sha256').update(systemPrompt).digest('hex');
    const ordinaryToolHash=providerToolContractHash(tools,communicationPrompt),toolHash=handoffPolicy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinaryToolHash,restrictions:handoffRestrictions})).digest('hex'):ordinaryToolHash;
    const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,contract.model,contract.effort,toolHash),speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash,scopeKey:row.scope_key},contract.contractHash);
-   if(oldHash!==contract.contractHash)return hold('The saved provider contract cannot yet be verified. Automatic reconciliation retains this message without repeating earlier work.',true);
+   if(oldHash!==contract.contractHash)return hold('The saved provider contract cannot yet be verified. Ponderosa retains this message without repeating earlier work.',true);
    const acceptedTail=store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!acceptedTail)return hold('The prior context boundary is unavailable. The original work remains queued; review the Agent’s context before retrying.');
    const measured=store.acceptedProviderSessionContextUsage(agent.id)?.usage;
    const pressure=evaluateContextRolloverPressure(measured?{usedTokens:measured.usedTokens,...(measured.windowTokens===undefined?{}:{windowTokens:measured.windowTokens})}:{usedTokens:0},preferences);
@@ -501,7 +505,7 @@ export async function requestSettingsTransition(input: {
     ...(measured?{detectedOccupancy:measured.usedTokens,...(measured.aggregateTokens===undefined?{}:{aggregateTokens:measured.aggregateTokens}),...(measured.windowTokens===undefined?{}:{contextWindow:measured.windowTokens})}:{}),
     threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,sourceRunId:boundary.executionId,sourceActivationIds:coordinationV3.activationIdsAttachedToRun(boundary.executionId,agent.id),scopeKey:row.scope_key,conversationId:agent.conversationId,
     compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
-    settingsTransition:{reason:changed||grantExpansion?'settings':voiceBoundary?'voice':'prompt',targetSystemPromptHash,targetRestrictionsHash:createHash('sha256').update(JSON.stringify(restrictions)).digest('hex'),activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})},
+    settingsTransition:{reason:changed||grantExpansion?'settings':'prompt',targetSystemPromptHash,targetRestrictionsHash:createHash('sha256').update(JSON.stringify(restrictions)).digest('hex'),activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:memoryOrigin}:{})},
    });
    store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
    return true;

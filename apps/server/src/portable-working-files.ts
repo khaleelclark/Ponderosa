@@ -11,7 +11,7 @@ import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof,ReviewedGitUserData} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
-import {assertPortableSecretsAbsent} from './portable-secrets.js';
+import {assertPortableSecretsAbsent,redactPortableDiagnostic} from './portable-secrets.js';
 import {sourcePathWithin,relativeSourcePath} from './portable-source-paths.js';
 import {assertRetainedReviewNamespace,assertSafeCurrentGitEvidence,parseReviewedGitConfiguration,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,createGitExportCapture,verifyGitExportAssociations,exportReviewedGit,validateRetainedNativeGitBinary,validateReviewedGit,type GitExportCapture} from './portable-reviewed-user-data.js';
 
@@ -216,7 +216,21 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
     if(!text.includes('\uFFFD'))assertPortableSecretsAbsent(text,`Selected working file ${relative}`);
   }
   if(/\.json$/i.test(relative)){
-    let parsed:unknown;try{parsed=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data));}catch{throw new Error(`Selected JSON must be valid before secret-field inspection: ${relative}`);}
+    const decode=()=>new TextDecoder('utf-8',{fatal:true}).decode(data);
+    let parsed:unknown;
+    try{parsed=JSON.parse(decode());}catch{
+      if(data.length>1024*1024||!/^(?:ts|js)config(?:\.[^/]+)?\.json$/i.test(path.basename(relative)))throw new Error(`Selected JSON must be valid before secret-field inspection: ${relative}`);
+      const source=decode();
+      const label=`Selected working file ${relative}`;
+      // TypeScript config accepts comments and trailing commas. Inspect both
+      // the original comments and the normalized JSON, preserving source bytes.
+      if(redactPortableDiagnostic(source)!==source)throw new Error(`${label} cannot contain known credential fields`);
+      const normalized=source
+        .replace(/"(?:\\[\s\S]|[^"\\])*"|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,token=>token.startsWith('"')?token:' ')
+        .replace(/"(?:\\[\s\S]|[^"\\])*"|,\s*(?=[}\]])/gu,token=>token.startsWith('"')?token:'');
+      assertPortableSecretsAbsent(normalized,label);
+      try{parsed=JSON.parse(normalized);}catch{throw new Error(`Selected JSON must be valid before secret-field inspection: ${relative}`);}
+    }
     assertPortableSecretsAbsent(parsed,`Selected working file ${relative}`);
   }
 }
@@ -953,7 +967,7 @@ export function workingNativeAliasEvidence(pkg:AgentPortablePackageDto,destinati
 
 /** Explicit whole-folder selection. Omit native ownership/credential paths and report every omission. */
 export interface WorkingFolderInventory {mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links:PortableWorkingLinkDto[];persistentPaths:string[];linkCounts:Map<string,bigint>;validationPaths:Map<string,string[]>}
-export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection,gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,sharedHardlinks?:WorkingHardlinkCapture,selectedChildRoots:readonly string[]=[]):Promise<WorkingFolderInventory> {
+export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection,gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,sharedHardlinks?:WorkingHardlinkCapture,selectedChildRoots:readonly string[]=[], omitNodeModules=false):Promise<WorkingFolderInventory> {
   const root=await fs.realpath(rootPath),paths:string[]=[],directories:Array<{path:string;mode:number;mtime:string}>=[],excludedPaths:string[]=[];
   const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   const persistentPaths:string[]=[],links:PortableWorkingLinkDto[]=[],linkCounts=new Map<string,bigint>(),validationPaths=new Map<string,string[]>(),originals=new Map<string,{path:string;nlink:bigint;count:number}>();
@@ -965,7 +979,7 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
     for(const entry of (await fs.readdir(directory,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>10000)throw new Error('Whole working folder exceeds 10000 entries');
       const name=relative?`${relative}/${entry.name}`:entry.name;
-      if(selectedChildRoots.includes(name)){excludedPaths.push(name);continue;}
+      if(selectedChildRoots.includes(name)||omitNodeModules&&entry.isDirectory()&&entry.name==='node_modules'){excludedPaths.push(name);continue;}
       if(gitStorage.includes('.')||gitStorage.includes(name)){excludedPaths.push(name);continue;}
       if(name==='.ponderosa-portable-review'){
         if(reviewedSelection?.source!=='retained_originals')throw new Error('Existing imported review data requires explicit retained-original selection');

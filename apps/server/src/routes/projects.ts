@@ -983,7 +983,7 @@ export function registerProjectRoutes(
         ...(resolvedCreation.model ? { defaultModel: resolvedCreation.model } : {}),
         ...(resolvedCreation.effort ? { defaultEffort: resolvedCreation.effort } : {}),
         defaultSpeed: resolvedCreation.speed,
-      }, creationIdentity, chatId => { onCreated?.(chatId); localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
+      }, creationIdentity, chatId => { onCreated?.(chatId); localMemoryFor(app)?.reserveNewChat(chatId,!owner?.executionId); freshlyCommittedChatId = chatId; });
     } catch (error) {
       const committed = store.getProjectCreation(creationIdentity);
       if (committed) project = committed;

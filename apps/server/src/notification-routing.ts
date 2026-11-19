@@ -31,7 +31,9 @@ export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceE
     case "context_rollover_completed": return "task";
     case "browser_screenshot": return "artifact";
     case "session":
-    case "session_reset": return "state";
+    case "session_reset":
+    case "memory_changed": return "state";
+    case "voice_reply": return event.reply.presentation === "text" ? "state" : undefined;
     case "communication_projection": return "message";
     default: return undefined;
   }

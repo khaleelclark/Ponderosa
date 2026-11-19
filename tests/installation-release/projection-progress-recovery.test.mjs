@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -359,4 +359,32 @@ for(const surviving of [false,true])test(`missing owner Chat is quarantined with
  assert.ok(!after||after.conversationId===owner.id,'Recovery must never substitute a surviving Chat');
  assert.equal(readFileSync(canonical).equals(before),true,'Quarantine must not rewrite canonical ownership');
  assert.ok(reopened.startupProfile().recoveryIssues.some(issue=>issue.projectId===f.project.id&&issue.detail.includes(owner.id)));
+});
+
+test('startup surfaces a quarantined Project and resolves the notice after verified repair', async t => {
+  const f = fixture(t);
+  const filename = path.join(f.dataDir,'projects',f.project.id,'agents',f.agent.id,'events.jsonl');
+  f.store.appendEvent(f.agent.id, {type:'text',delta:'Original authoritatively stored event'});
+  f.close();
+  const original = readFileSync(filename);
+  appendFileSync(filename,'invalid event record\n');
+  let app;
+  try {
+    const damaged = f.open();
+    assert.equal(damaged.getProject(f.project.id), undefined);
+    const open = store => createServer({dataDir:f.dataDir,store,engines:[],logger:false,allowedBrowseRoots:[f.root]});
+    app = open(damaged);
+    const inbox = async () => (await app.inject({method:'GET',url:'/api/notifications'})).json().items;
+    await app.ready();
+    const notice = (await inbox()).find(item => item.dedupeKey === `project:${f.project.id}:projection-recovery`);
+    assert.equal(notice?.status, 'open');
+    assert.match(notice.body,/retained data is preserved/);
+    await app.close(); app = undefined;
+    writeFileSync(filename,original);
+    const repaired = f.open();
+    assert.equal(repaired.getProject(f.project.id)?.id, f.project.id);
+    app = open(repaired);
+    await app.ready();
+    assert.equal((await inbox()).some(item => item.id === notice.id && item.status === 'open'),false);
+  } finally { await app?.close(); }
 });

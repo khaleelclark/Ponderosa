@@ -212,6 +212,11 @@ test('persisted saver failure stays visible after lifecycle reopen and only bloc
  f.branches.unitTransaction(()=>f.branches.chargeTraversal(f.execution.id))();await assert.rejects(f.branches.unitSaver.drain());
  const reopened=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));assert.equal(reopened.unitSaver.errors().length,1);assert.equal(reopened.functionalReady(f.execution.id),false);assert.equal(reopened.execution(f.execution.id).checkpointInvocation.durability,'failed');
  const x=reopened.accept(f.branch.id,'X','input');reopened.advance();assert.equal(reopened.claimScript('inert').executionId,x.id);await assert.rejects(reopened.unitSaver.drain());
+ f.store.sqlite.exec('DROP TRIGGER fail_active');
+ reopened.unitSaver.retryFailedSaves();
+ await reopened.unitSaver.drain();
+ assert.equal(reopened.execution(f.execution.id).checkpointInvocation.durability,'saved');
+ assert.equal(reopened.functionalReady(f.execution.id),true);
 });
 
 for(const mode of ['async','sync','exit'])test(`parent gate and accepted child must resume after approval (${mode})`,async t=>{

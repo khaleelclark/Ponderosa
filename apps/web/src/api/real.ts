@@ -1,4 +1,5 @@
 import {AgentPackageDownloadRequired,readAgentPackageClipboard} from "../agent-package-clipboard.js";
+import {downloadBlob} from "../downloads.js";
 import {productApiPath} from './productScope.js';
 import type { WorkspaceResourceKind } from "../resourcePreferences.js";
 import type { CollectionPageDto } from "@ponderosa/core";
@@ -306,6 +307,25 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
   return items;
 }
 
+function exportStagingUnavailable(error: unknown): boolean {
+ return error instanceof ApiRequestError && error.status === 503 &&
+   (error.body as { code?: string } | undefined)?.code === "EXPORT_STAGING_UNAVAILABLE";
+}
+
+async function readUnstagedPackage(path: string, input: Record<string, unknown>): Promise<string> {
+ const response=await fetch(API_BASE+productApiPath(path), {
+  method: 'POST',
+  headers: {'content-type':'application/json'},
+  body: JSON.stringify({...input,download:false}),
+ });
+ if (!response.ok) throw await decodeHttpError(response,false);
+ try { return await readAgentPackageClipboard(response); }
+ catch (error) {
+  if (!(error instanceof AgentPackageDownloadRequired)) throw error;
+  throw new Error('Package staging is held and this package exceeds the 8 MiB direct transfer limit. Use a smaller selection or resolve the held staging.');
+ }
+}
+
 const uncertainPackageExports=new Map<string,{key:string;createdAt:number}>();
 /** Internal request identity survives a lost preparation response. An ordinary
  * action retry recovers its original outcome before another source is captured. */
@@ -322,6 +342,10 @@ export async function preparePackageExport(path:string,input:Record<string,unkno
   const prepared=await requestJson<PreparedPackageExport>(path,{method:'POST',headers:{'x-ponderosa-export-request':key},body});
   uncertainPackageExports.delete(operation);return prepared;
  }catch(error){
+  if (exportStagingUnavailable(error)) {
+   uncertainPackageExports.delete(operation);
+   throw error;
+  }
   try{
    const status=await requestJson<{state:'completed'|'unconfirmed'}&Partial<PreparedPackageExport>>('/api/package-export-requests/'+encodeURIComponent(key));
    if(status.state==='completed'&&status.downloadUrl&&status.expiresAt&&typeof status.byteLength==='number'){
@@ -332,8 +356,14 @@ export async function preparePackageExport(path:string,input:Record<string,unkno
  }
 }
 
-async function requestAgentPackageText(path:string,input:Record<string,unknown>):Promise<string>{
- const prepared=await preparePackageExport(path,input);
+async function requestAgentPackageText(path:string,input:Record<string,unknown>,onPrepared?:(result:PreparedPackageExport)=>void):Promise<string>{
+ let prepared;
+ try { prepared=await preparePackageExport(path,input); }
+ catch(error) {
+  if (!exportStagingUnavailable(error)) throw error;
+  return readUnstagedPackage(path,input);
+ }
+ onPrepared?.(prepared);
  const url=preparedPackageExportUrl(prepared);
  try{
   const response=await fetch(url);if(!response.ok)throw await decodeHttpError(response,false);
@@ -345,7 +375,7 @@ async function requestAgentPackageText(path:string,input:Record<string,unknown>)
  }
 }
 
-export interface PreparedPackageExport {downloadUrl:string;expiresAt:string;byteLength:number}
+export interface PreparedPackageExport {downloadUrl:string;expiresAt:string;byteLength:number;workingFolderOmissions?:import("@ponderosa/core").WorkingFolderOmissions}
 /** Only the same-origin server-owned staged download path can become a link. */
 export function preparedPackageExportUrl(prepared:PreparedPackageExport):string{
  if(!/^\/api\/(?:branches\/engine\/)?package-exports\/[a-f0-9]{48}$/u.test(prepared.downloadUrl)||!Number.isSafeInteger(prepared.byteLength)||prepared.byteLength<0||!Number.isFinite(Date.parse(prepared.expiresAt))||Date.parse(prepared.expiresAt)<=Date.now())throw Error('The server returned an invalid or expired package download.');
@@ -356,12 +386,19 @@ export function preparedPackageExportUrl(prepared:PreparedPackageExport):string{
 export function startPreparedPackageDownload(prepared:PreparedPackageExport,filename:string):void{
  const anchor=document.createElement('a');anchor.href=preparedPackageExportUrl(prepared);anchor.download=filename;anchor.dataset.ponderosaDownloadFeedback='handled';anchor.style.display='none';document.body.append(anchor);try{anchor.click();}finally{anchor.remove();}
 }
-export async function downloadPackageExport(path:string,input:Record<string,unknown>,filename:string):Promise<PreparedPackageExport>{
- const prepared=await preparePackageExport(path,input);
+export async function downloadPackageExport(path:string,input:Record<string,unknown>,filename:string):Promise<PreparedPackageExport | undefined>{
+ let prepared;
+ try { prepared=await preparePackageExport(path,input); }
+ catch(error) {
+  if (!exportStagingUnavailable(error)) throw error;
+  const contents=await readUnstagedPackage(path,input);
+  downloadBlob(new Blob([contents],{type:'application/json'}),filename,true);
+  return undefined;
+ }
  startPreparedPackageDownload(prepared,filename);return prepared;
 }
-function agentExportSelection(mode:AgentExportMode,organization:boolean,workingFiles:string[],wholeWorkingFolder:boolean,organizationWorkingFolders:boolean,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]){
- return {mode,organization,...(reviewedUserData?{reviewedUserData}:{}),...(gitStorageBindings?.length?{gitStorageBindings}:{}),...(!organizationWorkingFolders&&!wholeWorkingFolder&&workingFiles.length?{workingFiles}:{}),...(mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder?{wholeWorkingFolder:true}:{}),...(mode==='full'&&organization&&organizationWorkingFolders?{organizationWorkingFolders:true}:{})};
+function agentExportSelection(mode:AgentExportMode,organization:boolean,workingFiles:string[],wholeWorkingFolder:boolean,organizationWorkingFolders:boolean,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[],omitMemory=false){
+ return {mode,organization,...(mode==='full'&&omitMemory?{omitMemory:true}:{}),...(reviewedUserData?{reviewedUserData}:{}),...(gitStorageBindings?.length?{gitStorageBindings}:{}),...(!organizationWorkingFolders&&!wholeWorkingFolder&&workingFiles.length?{workingFiles}:{}),...(mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder?{wholeWorkingFolder:true}:{}),...(mode==='full'&&organization&&organizationWorkingFolders?{organizationWorkingFolders:true}:{})};
 }
 
 
@@ -828,7 +865,7 @@ export const realApi = {
   createAgentPreset(projectId: string, request: CreateAgentPresetRequest, idempotencyKey: string): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request) }); },
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
-  keepCurrentWorkingCopy(agentId:string,rolloverId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change/${encodeURIComponent(rolloverId)}/keep`,{method:"POST"}); },
+  keepCurrentWorkingCopy(agentId:string,rolloverId:string,freshContext=false):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change/${encodeURIComponent(rolloverId)}/keep`,{method:"POST",body:JSON.stringify({freshContext})}); },
   agentWorkingCopyChange(agentId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change`); },
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
@@ -890,11 +927,11 @@ export const realApi = {
   exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<AgentPortablePackageDto> {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export`,{method:'POST',body:JSON.stringify(agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings))});
   },
-  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<string> {
-    return requestAgentPackageText(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings));
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[],omitMemory=false,onPrepared?:(result:PreparedPackageExport)=>void): Promise<string> {
+    return requestAgentPackageText(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings,omitMemory),onPrepared);
   },
-  downloadAgentPackage(agentId:string,filename:string,mode:AgentExportMode,organization=false,workingFiles:string[]=[],wholeWorkingFolder=false,organizationWorkingFolders=false,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]):Promise<PreparedPackageExport>{
-    return downloadPackageExport(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings),filename);
+  downloadAgentPackage(agentId:string,filename:string,mode:AgentExportMode,organization=false,workingFiles:string[]=[],wholeWorkingFolder=false,organizationWorkingFolders=false,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[],omitMemory=false):Promise<PreparedPackageExport | undefined>{
+    return downloadPackageExport(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings,omitMemory),filename);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {

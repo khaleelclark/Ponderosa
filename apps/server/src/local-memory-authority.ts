@@ -119,9 +119,33 @@ export class AuthorityStorage implements MemoryStorage{
   const f=this.frame();await this.guard();const p=await c.get({ids,include:['metadatas'] as any});await this.guard();if(p.ids.length!==p.metadatas.length||p.ids.some(id=>!ids.includes(id)))throw denied();const result:string[]=[];for(let i=0;i<p.ids.length;i++){const id=p.ids[i]!,stamp=this.parse(id,scope,p.metadatas[i]),expected=f.allowed.get(key(scope,id));if(stamp&&expected&&JSON.stringify(stamp)===JSON.stringify(expected))result.push(id);}return result;
  }
 
- async run<T>(authority:MemoryAuthority,fn:()=>Promise<T>):Promise<T>{
+ private async loadReadChain(scope:string,id:string,frame:Frame):Promise<void>{
+  const collection=await this.collection(scope);
+  const seen=new Set<string>();
+  while(id&&!seen.has(id)){
+   if(seen.size>=256)throw Error('Memory read exceeded the source lineage bound');
+   seen.add(id);
+   await this.guard();
+   const page=await collection.get({ids:[id],include:['metadatas'] as any});
+   await this.guard();
+   if(page.ids.length!==page.metadatas.length||page.ids.length>1||page.ids.some(found=>found!==id))throw denied();
+   if(!page.ids.length)break;
+   const metadata:any=page.metadatas[0];
+   const stamp=this.parse(id,scope,metadata);
+   if(!stamp||!this.readable(stamp,frame.authority))break;
+   const identity=key(scope,id);
+   frame.all.set(identity,stamp);
+   frame.allowed.set(identity,stamp);
+   const parent=typeof metadata.supersedes==='string'?metadata.supersedes:'';
+   if(parent)frame.parents.set(identity,parent);
+   id=parent;
+  }
+ }
+ async run<T>(authority:MemoryAuthority,fn:()=>Promise<T>,readId?:string):Promise<T>{
   return this.raw.exclusive(async()=>{if(authority.privateFindingRecipientId!==undefined&&(authority.actor.kind!=='agent'||authority.sourceType!=='ai_inference'||authority.visibility!=='private'||authority.writeScope!==`chat:${authority.chatId}`||authority.targetId!==undefined||authority.readChat||authority.readGlobal||typeof authority.privateFindingRecipientId!=='string'||!authority.privateFindingRecipientId.trim()||authority.privateFindingRecipientId.trim()!==authority.privateFindingRecipientId||authority.privateFindingRecipientId.length>512||authority.privateFindingRecipientId.includes('\0')))throw denied();const scopes=authority.writeScope?[authority.writeScope]:[...(authority.readChat?[`chat:${authority.chatId}`]:[]),...(authority.readGlobal?['global']:[])];if(authority.writeScope==='global'&&!scopes.includes('global'))scopes.push('global');for(const scope of scopes)this.assertScopeSettled(scope);const f:Frame={owner:this,authority,all:new Map(),allowed:new Map(),scopes,parents:new Map(),created:new Set()};return context.run(f,async()=>{
-   await this.guard();for(const scope of scopes){const c=await this.collection(scope);for(let offset=0;;offset+=500){await this.guard();const p=await c.get({offset,limit:500,include:['metadatas'] as any});await this.guard();if(p.ids.length!==p.metadatas.length||new Set(p.ids).size!==p.ids.length||p.ids.some(id=>f.all.has(key(scope,id))))throw denied();for(let i=0;i<p.ids.length;i++){const s=this.parse(p.ids[i]!,scope,p.metadatas[i]);f.all.set(key(scope,p.ids[i]!),s);if(typeof (p.metadatas[i] as any)?.supersedes==='string'&&(p.metadatas[i] as any).supersedes)f.parents.set(key(scope,p.ids[i]!),(p.metadatas[i] as any).supersedes);if(s&&this.readable(s,authority))f.allowed.set(key(scope,p.ids[i]!),s);}if(f.all.size>10000)throw Error('Memory authority inventory bound exceeded');if(p.ids.length<500)break;}}for(let pass=0,bound=f.allowed.size;pass<=bound;pass++){let removed=false;for(const [k,s]of f.allowed){const parent=f.parents.get(k);if(parent){const ancestor=f.allowed.get(key(s.scope,parent));if(!ancestor||ancestor.audience!==s.audience||JSON.stringify(s.origin??s.provenance)!==JSON.stringify(ancestor.origin??ancestor.provenance)){f.allowed.delete(k);removed=true;}}}if(!removed)break;}for(const stamp of f.allowed.values()){const seen=new Set<string>();let id=stamp.id;while(f.parents.has(key(stamp.scope,id))){if(seen.has(id)){for(const visited of seen)f.allowed.delete(key(stamp.scope,visited));break;}seen.add(id);id=f.parents.get(key(stamp.scope,id))!;}}if(authority.writeScope){const target=authority.targetId?f.allowed.get(key(authority.writeScope,authority.targetId)):undefined;if(authority.targetId&&!target)throw denied();const audience=target?.audience??(authority.writeScope==='global'?'installation-global':authority.visibility==='private'?`chat:${authority.chatId}:agent:${authority.actor.id}`:`chat:${authority.chatId}:team`);for(const [k,s]of f.allowed)if(s.scope!==authority.writeScope||s.audience!==audience)f.allowed.delete(k);}const result=await fn();await this.guard();return result;
+   await this.guard();for(const scope of scopes){
+    if(readId&&!authority.writeScope){await this.loadReadChain(scope,readId,f);continue;}
+    const c=await this.collection(scope);for(let offset=0;;offset+=500){await this.guard();const p=await c.get({offset,limit:500,include:['metadatas'] as any});await this.guard();if(p.ids.length!==p.metadatas.length||new Set(p.ids).size!==p.ids.length||p.ids.some(id=>f.all.has(key(scope,id))))throw denied();for(let i=0;i<p.ids.length;i++){const s=this.parse(p.ids[i]!,scope,p.metadatas[i]);f.all.set(key(scope,p.ids[i]!),s);if(typeof (p.metadatas[i] as any)?.supersedes==='string'&&(p.metadatas[i] as any).supersedes)f.parents.set(key(scope,p.ids[i]!),(p.metadatas[i] as any).supersedes);if(s&&this.readable(s,authority))f.allowed.set(key(scope,p.ids[i]!),s);}if(f.all.size>10000)throw Error('Memory authority inventory bound exceeded');if(p.ids.length<500)break;}}for(let pass=0,bound=f.allowed.size;pass<=bound;pass++){let removed=false;for(const [k,s]of f.allowed){const parent=f.parents.get(k);if(parent){const ancestor=f.allowed.get(key(s.scope,parent));if(!ancestor||ancestor.audience!==s.audience||JSON.stringify(s.origin??s.provenance)!==JSON.stringify(ancestor.origin??ancestor.provenance)){f.allowed.delete(k);removed=true;}}}if(!removed)break;}for(const stamp of f.allowed.values()){const seen=new Set<string>();let id=stamp.id;while(f.parents.has(key(stamp.scope,id))){if(seen.has(id)){for(const visited of seen)f.allowed.delete(key(stamp.scope,visited));break;}seen.add(id);id=f.parents.get(key(stamp.scope,id))!;}}if(authority.writeScope){const target=authority.targetId?f.allowed.get(key(authority.writeScope,authority.targetId)):undefined;if(authority.targetId&&!target)throw denied();const audience=target?.audience??(authority.writeScope==='global'?'installation-global':authority.visibility==='private'?`chat:${authority.chatId}:agent:${authority.actor.id}`:`chat:${authority.chatId}:team`);for(const [k,s]of f.allowed)if(s.scope!==authority.writeScope||s.audience!==audience)f.allowed.delete(k);}const result=await fn();await this.guard();return result;
   });});
  }
  async ensureScope(scope:string){if(!this.frame().scopes.includes(scope))throw denied();await this.collection(scope);await this.collection(scope,true);}

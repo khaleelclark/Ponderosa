@@ -47,7 +47,7 @@ const CLIPPED = "[Canonical content clipped at session boundary.]\n";
 const OMITTED = "[Canonical content omitted at session boundary.]";
 const bytes = (value: string) => Buffer.byteLength(value, "utf8");
 
-/** Preserve frozen IDs/hashes/counts within the caller's remaining input budget.
+/** Retain the newest frozen messages within the caller's remaining input budget.
  * The newly accepted provider packet records these exact displayed bytes; any
  * clipped remainder stays retrievable. Previously accepted input is unchanged. */
 export function boundedFrozenSeedHistory<T extends ChatMessage>(messages: readonly T[], maxBytes = MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES): T[] {
@@ -79,7 +79,19 @@ export function boundedFrozenSeedHistory<T extends ChatMessage>(messages: readon
     }
   }
   let remaining = ceiling - selected.reduce((n, m) => n + overhead(m), 0);
-  if (remaining < 0) throw new Error("frozen seed provenance exceeds its bounded presentation; canonical sources retained");
+  let omitted = 0;
+  while (remaining < 0 && omitted < selected.length) {
+    remaining += overhead(selected[omitted++]!) + 1;
+  }
+  selected.splice(0, omitted);
+  if (!selected.length) return selected;
+  if (omitted) {
+    for (const message of selected) {
+      if (message.provenance?.sourceRecord !== undefined) {
+        message.provenance.sourceRecord -= omitted;
+      }
+    }
+  }
   for (let i = selected.length - 1; i >= 0; i--) {
     const message = selected[i]!;
     const original = message.text;

@@ -342,17 +342,21 @@ export function createServerReadModels(context: ReadModelContext) {
     // Keep unresolved notices independent of timeline pagination. Seed only
     // exact failed deliveries on this Chat's indexed projection, then follow
     // their existing bounded required-reply lineage; never inspect Agent history.
+    // Unary + removes the TEXT column's affinity without changing its value,
+    // allowing SQLite to seek the untyped JSON expression index.
     const failedMessages = store.sqlite.prepare(`
       WITH RECURSIVE chain(root, id, event_id) AS (
         SELECT root.id, root.id, message.communication_event_id
-        FROM chat_search_messages message
-        JOIN runtime_communications communication ON communication.project_id = message.project_id
+        FROM chat_search_messages message INDEXED BY idx_chat_search_chat_newest
+        CROSS JOIN runtime_communications communication INDEXED BY sqlite_autoindex_runtime_communications_1
+          ON communication.project_id = message.project_id
           AND communication.id IN (
             SELECT id FROM runtime_communications WHERE id = message.communication_event_id
-            UNION SELECT id FROM runtime_communications WHERE json_valid(payload_json)
-              AND json_extract(payload_json, '$.communication.eventId') = message.communication_event_id
+            UNION SELECT id FROM runtime_communications INDEXED BY runtime_communications_authored_event
+              WHERE json_valid(payload_json)
+              AND json_extract(payload_json, '$.communication.eventId') = +message.communication_event_id
           )
-        JOIN activation_sources source ON source.source_kind = 'communication' AND source.source_id = communication.id
+        CROSS JOIN activation_sources source ON source.source_kind = 'communication' AND source.source_id = communication.id
         JOIN agent_activations root ON root.id = source.activation_id
         WHERE message.project_id = ? AND message.chat_kind = 'conversation' AND message.chat_id = ?
           AND root.state IN ('failed','outcome_unknown','retry_pending')
@@ -370,7 +374,7 @@ export function createServerReadModels(context: ReadModelContext) {
       ), latest AS (
         SELECT chain.root, chain.event_id, run.status, run.provider_failure_json,
           ROW_NUMBER() OVER (PARTITION BY chain.root ORDER BY run.created_at DESC, run.rowid DESC) AS rank
-        FROM chain JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
+        FROM chain CROSS JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
         JOIN scheduler_runs run ON run.id = attached.run_id
       ) SELECT DISTINCT event_id FROM latest WHERE rank = 1 AND status <> 'completed'
         AND (provider_failure_json IS NULL OR json_extract(provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity','unavailable'))
@@ -659,7 +663,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const coordination = coordinationV3.agentSnapshot(agentId);
     const fingerprint = createHash("sha256").update(JSON.stringify(coordination)).digest("hex");
     if (coordinationFingerprints.get(agentId) !== fingerprint) {
-      const stored = store.appendEvent(agentId, { type: "coordination_v3_changed", coordination });
+      const stored = store.appendEvent(agentId, { type: "coordination_v3_changed" });
       coordinationFingerprints.delete(agentId);
       coordinationFingerprints.set(agentId, fingerprint);
       if (coordinationFingerprints.size > 1024) coordinationFingerprints.delete(coordinationFingerprints.keys().next().value!);

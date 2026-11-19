@@ -9,7 +9,7 @@ import {
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
-import { isIso } from "./coordination-v3-runtime-validation.js";
+import { canonicalTimestamp, isIso } from "./coordination-v3-runtime-validation.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import { taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
@@ -180,7 +180,7 @@ export class CoordinationV3CoordinateAuthority {
             request.recipientAgentId,
           );
         }
-        this.support.validateLifetime(request.lifetime, now);
+        const deadlineAt = this.support.validateLifetime(request.lifetime, now);
         const replyAuthority = request.replyAuthority
           ? {
             intent: request.replyAuthority.intent,
@@ -233,9 +233,7 @@ export class CoordinationV3CoordinateAuthority {
           stableJson(request.payload ?? null),
           replyAuthority ? stableJson(replyAuthority) : null,
           request.lifetime.kind,
-          request.lifetime.kind === "deadline"
-            ? request.lifetime.at
-            : null,
+          deadlineAt,
           now,
           now,
           input.runAuthorization?.runId ?? null,
@@ -411,7 +409,7 @@ export class CoordinationV3CoordinateAuthority {
           input.join.deadlineAt &&
           (
             !isIso(input.join.deadlineAt) ||
-            input.join.deadlineAt <= now
+            Date.parse(input.join.deadlineAt) <= Date.parse(now)
           )
         ) {
           throw new Error("join deadline must be a future ISO timestamp");
@@ -479,7 +477,7 @@ export class CoordinationV3CoordinateAuthority {
           wakePolicy,
           quorum,
           stableJson([...new Set(satisfying)]),
-          input.join.deadlineAt ?? null,
+          input.join.deadlineAt ? canonicalTimestamp(input.join.deadlineAt) : null,
           definitionHash,
           stableJson(continuationRequestIds),
           now,

@@ -11,7 +11,6 @@ import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js
 
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { readFileSync } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import { agentJsonPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, conversationJsonPath, messageDispatchesPath } from "./paths.js";
@@ -335,6 +334,11 @@ export class AgentStore extends AgentEventSessionFacade {
         try { measure("projectionProgress", () => this.projectionProgress.initialize()); }
         catch { /* Optional proof must not make a quarantined store unavailable. */ }
       }
+      if (!checkpoint) measure("projectionWalCheckpoint", () => {
+        // Full recovery may have written large derived tables. Release its WAL
+        // space before serving when there are no independent readers.
+        this.client.pragma("wal_checkpoint(TRUNCATE)");
+      });
       const completedAt = performance.now();
       this.startupProfileData = {
         mode: checkpoint ? (incremental ? "incremental" : "clean") : "recovery",
@@ -563,6 +567,12 @@ export class AgentStore extends AgentEventSessionFacade {
     return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
   }
 
+  providerSessionOriginRunId(agentId: string, sessionId: string): string | undefined {
+    const row = this.client.prepare(`SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=?
+      AND prompt_injection_state='injected' ORDER BY fencing_token LIMIT 1`).get(agentId, sessionId) as {id:string}|undefined;
+    return row?.id;
+  }
+
   /** The accepted snapshot proves a generation, not its latest turn. Same-contract
    * continuations intentionally do not rewrite that snapshot. */
   private acceptedProviderSessionCompletedRun(agentId: string) {
@@ -643,7 +653,8 @@ export class AgentStore extends AgentEventSessionFacade {
       AND json_extract(payload_json,'$.kind')='native_tool' ORDER BY seq DESC LIMIT 1`)
       .get(agentId, boundary.executionId, invocationId) as {seq: number} | undefined;
     if (!marker || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>?
-      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, marker.seq)) return undefined;
+      AND type IN ('tool_call','tool_result','command','file_change','work_start')
+      AND coalesce(json_extract(payload_json,'$.nativeRuntimeSetting'),0)<>1 LIMIT 1`).get(agentId, marker.seq)) return undefined;
     return this.appendEvent(agentId, { type: "context_usage", ...usage, providerSessionId: boundary.providerSessionId,
       providerCommand: { name: "compact", executionId: boundary.executionId, fencingToken: boundary.fencingToken, invocationId } });
   }
@@ -692,7 +703,8 @@ export class AgentStore extends AgentEventSessionFacade {
     const usage=JSON.parse(row.payload_json) as Extract<LogEvent,{type:"context_usage"}>;
     if(usage.type!=="context_usage" || usage.providerCommand?.invocationId!==row.id ||
        usage.providerSessionId!==accepted.sessionId || usage.providerSessionGeneration!==accepted.sessionId)return undefined;
-    if(this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId,row.seq))return undefined;
+    if(this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND type IN ('tool_call','tool_result','command','file_change','work_start')
+      AND coalesce(json_extract(payload_json,'$.nativeRuntimeSetting'),0)<>1 LIMIT 1`).get(agentId,row.seq))return undefined;
     const tail=this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) bytes
       FROM events WHERE agent_id=? AND seq>? AND type IN ('text','reasoning')`).get(agentId,row.seq) as {bytes:number};
     return {usage,observedAt:row.created_at,executionId:row.source_run_id,postObservationUtf8Bytes:tail.bytes};
@@ -746,7 +758,8 @@ export class AgentStore extends AgentEventSessionFacade {
     ).get(run.id, row.created_at);
     if (steering) return undefined;
     const unmeteredWork = this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
-      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, row.seq, upper);
+      AND type IN ('tool_call','tool_result','command','file_change','work_start')
+      AND coalesce(json_extract(payload_json,'$.nativeRuntimeSetting'),0)<>1 LIMIT 1`).get(agentId, row.seq, upper);
     if (unmeteredWork) return undefined;
     // SQL counts complete serialized output (including escaping/wrappers),
     // never materializing historical bodies in the compiler.
@@ -789,7 +802,8 @@ export class AgentStore extends AgentEventSessionFacade {
       AND json_extract(payload_json, '$.executionId')=? AND json_extract(payload_json, '$.status')='running'
       ORDER BY seq LIMIT 1`).get(agentId, first.id) as {seq: number} | undefined;
     if (!start || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>?
-      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, start.seq)) return undefined;
+      AND type IN ('tool_call','tool_result','command','file_change','work_start')
+      AND coalesce(json_extract(payload_json,'$.nativeRuntimeSetting'),0)<>1 LIMIT 1`).get(agentId, start.seq)) return undefined;
     const inputs = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(json_quote(p.provider_prompt) AS BLOB))+64),0) AS bytes
       FROM provider_inputs p WHERE p.execution_id IN (SELECT id FROM scheduler_runs
         WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state='injected')`
@@ -2292,25 +2306,22 @@ export class AgentStore extends AgentEventSessionFacade {
         const communication = /^projects\/([^/]+)\/(communication-events|communication-revisions|communication-projections)\.jsonl$/u.exec(tail.path);
         if (!communication) throw new Error("unsupported projection suffix");
         const file = path.join(this.dataDirectory, tail.path);
-        const prefix = readFileSync(file).subarray(0, tail.offset).toString("utf8");
-        if (tail.offset && !prefix.endsWith("\n")) throw new Error("invalid communication prefix boundary");
-        const count = prefix.split("\n").filter(line => line.trim()).length;
-        const suffix = readRepairableJsonl<CommunicationEvent | CommunicationRevisionEvent | CommunicationProjection>(file, "projection recovery", true).slice(count);
-        for (const record of suffix) {
-          if (communication[2] !== "communication-projections" &&
-              (record as CommunicationEvent | CommunicationRevisionEvent).projectId !== communication[1]) {
-            throw new Error("communication recovery owner mismatch");
-          }
-          if (communication[2] === "communication-events") this.appendCommunicationEvent(record as CommunicationEvent);
-          else if (communication[2] === "communication-revisions") this.appendCommunicationRevision(record as CommunicationRevisionEvent);
-          else {
-            const placement = record as CommunicationProjection;
-            const tuple = `${placement.eventId}\u0000${placement.surface}\u0000${placement.projectionKey}`;
-            const current = this.projectionIndex(communication[1]!).byTuple.get(tuple);
-            if (!current || !this.canProjectCommunication(communication[1]!, current)) throw new Error("unrecoverable communication placement");
-            this.chatFeed.upsertGlobalChatSearchProjection(communication[1]!, current);
-          }
-        }
+        readRepairableJsonl<CommunicationEvent | CommunicationRevisionEvent | CommunicationProjection>(
+          file, "projection recovery", true, record => {
+            if (communication[2] !== "communication-projections" &&
+                (record as CommunicationEvent | CommunicationRevisionEvent).projectId !== communication[1]) {
+              throw new Error("communication recovery owner mismatch");
+            }
+            if (communication[2] === "communication-events") this.appendCommunicationEvent(record as CommunicationEvent);
+            else if (communication[2] === "communication-revisions") this.appendCommunicationRevision(record as CommunicationRevisionEvent);
+            else {
+              const placement = record as CommunicationProjection;
+              const tuple = `${placement.eventId}\u0000${placement.surface}\u0000${placement.projectionKey}`;
+              const current = this.projectionIndex(communication[1]!).byTuple.get(tuple);
+              if (!current || !this.canProjectCommunication(communication[1]!, current)) throw new Error("unrecoverable communication placement");
+              this.chatFeed.upsertGlobalChatSearchProjection(communication[1]!, current);
+            }
+          }, tail.offset);
       }
     })();
   }

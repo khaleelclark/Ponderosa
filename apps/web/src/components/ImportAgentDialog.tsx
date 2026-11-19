@@ -85,6 +85,7 @@ export function ImportAgentForm({
   const [creationAttempt,setCreationAttempt]=useState<ChatCreationAttempt>();
   const creationAttemptRef=useRef<ChatCreationAttempt>();
   const product=currentProductScope();
+  const [omitMemory, setOmitMemory] = useState(false);
   const [activateWorkingFiles,setActivateWorkingFiles]=useState(false);
   const [confirmSharedRoot,setConfirmSharedRoot]=useState(false);
   const createDestination=useMutation({mutationFn:async()=>{
@@ -312,6 +313,7 @@ export function ImportAgentForm({
       const requestId=importRequestId.current,blob=packageBlob!;
       const metadata=JSON.parse(JSON.stringify({
         conversationId, engineMapping,...nativeChoices,
+        ...(omitMemory?{omitMemory:true}:{}),
         ...(workingFilesActivation?{workingFilesActivation}:{}),
         accessSettingsResolution:{action:accessAction,reviewSha256:accessReview.reviewSha256},
         ...(workingRoots.length?{workingRootDestinations:rootDestinations}:workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),
@@ -341,6 +343,7 @@ export function ImportAgentForm({
   });
   const inspectPackage = useCallback((blob: Blob, sourceName?: string) => {
     cancelInspection();
+    setOmitMemory(false);
     importRequestId.current = createClientId();
     if (blob.size > MAX_IMPORT_FILE_BYTES) {
       setPackageBlob(undefined);
@@ -575,6 +578,7 @@ export function ImportAgentForm({
       <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>{importRequestId.current=createClientId();setActivateWorkingFiles(event.target.checked);}}/>} label="Use Restored Files In Live Agent Working Folders"/>
       {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>{importRequestId.current=createClientId();setConfirmSharedRoot(event.target.checked);}}/>} label={`Confirm New Workspace Folder: ${createdChat.workingDirectory??'Unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
       {activateWorkingFiles&&<Stack spacing={0.5}><Typography>Recovery folders · required + separate from live folder · retained on failure</Typography><Typography>Credentials and source runtime ownership remain excluded</Typography><Typography>Root membership · server validation required</Typography></Stack>}
+      {packagePreview?.hasMemory&&<FormControlLabel control={<Checkbox checked={omitMemory} disabled={importAgents.isPending||Boolean(roleOperation)} onChange={event=>{importRequestId.current=createClientId();setOmitMemory(event.target.checked);}}/>} label="Import Without Chat Memory"/>}
       <NativePortableImportChoices summary={packagePreview?.nativeData} value={nativeChoices} onChange={value=>{importRequestId.current=createClientId();setNativeChoices(value);}} disabled={importAgents.isPending||Boolean(roleOperation)} destinations={rootDestinations}/>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={value => { setInstructionsAction(value); importRequestId.current = createClientId(); }} />

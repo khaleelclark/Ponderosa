@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
+import { canonicalTimestamp } from "./coordination-v3-runtime-validation.js";
 import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
 
 export interface CommunicationV4NextRunDelivery {
@@ -142,7 +143,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
     if (recipients.includes(input.publisherAgentId)) {
       throw new Error("an Agent cannot deliver next_run information to itself");
     }
-    this.validateExpiry(input.expiresAt, now);
+    const expiry = this.validateExpiry(input.expiresAt, now);
     const hash = this.agentPayloadHash(input, recipients);
     const deliveryId = randomUUID();
     return this.sqlite.transaction(() => {
@@ -191,7 +192,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
         hash,
         input.text,
         stableJson(recipients),
-        input.expiresAt ?? null,
+        expiry,
         now,
       );
       this.insertRecipients(deliveryId, recipients, recipientLabels, now);
@@ -227,7 +228,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
     if (recipients.length !== input.recipientAgentIds.length) {
       throw new Error("next_run recipients must be unique");
     }
-    this.validateExpiry(input.expiresAt, now);
+    const expiry = this.validateExpiry(input.expiresAt, now);
     const hash = payloadHash({
       projectId: input.projectId,
       conversationId: input.conversationId,
@@ -277,7 +278,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
         hash,
         input.text,
         stableJson(recipients),
-        input.expiresAt ?? null,
+        expiry,
         now,
       );
       this.insertRecipients(deliveryId, recipients, recipientLabels, now);
@@ -620,10 +621,11 @@ export class CommunicationV4NextRunDeliveryAuthority {
     }
   }
 
-  private validateExpiry(expiresAt: string | undefined, now: string): void {
+  private validateExpiry(expiresAt: string | undefined, now: string): string | null {
     if (expiresAt && (
       !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.parse(now)
     )) throw new Error("next_run expiry must be a future ISO timestamp");
+    return expiresAt ? canonicalTimestamp(expiresAt) : null;
   }
 
   private enforceQuota(projectId: string, newPendingRecipients: number): void {

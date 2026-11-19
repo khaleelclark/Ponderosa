@@ -8,6 +8,7 @@ import {
   type LogEvent,
   type StoredLogEvent,
 } from "@ponderosa/agents";
+import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { AssetStore } from "./assets.js";
 import type {
   ActiveRun,
@@ -19,6 +20,8 @@ import type {
 import { readWorkspaceArtifactFileAsync } from "./project-file-access.js";
 
 interface RuntimeEventAuthorityContext {
+  createOperationalNotification: ReturnType<typeof createOperationalNotifications>["createOperationalNotification"];
+  resolveOperationalNotification: ReturnType<typeof createOperationalNotifications>["resolveOperationalNotification"];
   onRunClaimed?(agentId: string, run: ActiveRun): void;
   opts: CreateServerOptions;
   activeRuns: Map<string, ActiveRun>;
@@ -113,6 +116,7 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     const recovered = run.ownershipState === "stalled";
     if (recovered) {
       run.ownershipState = "running";
+      resolveSilenceNotice(run);
     }
     publish(agentId, stored);
     if (canonicalEvent.type === "file_change" && canonicalEvent.kind !== "delete") {
@@ -252,6 +256,14 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     run.livenessTimer = undefined;
   }
 
+  function resolveSilenceNotice(run: ActiveRun): void {
+    try {
+      context.resolveOperationalNotification(`provider-silence:${run.executionId}`, true);
+    } catch (error) {
+      logWarn({ err: error }, "Could not resolve provider silence notice");
+    }
+  }
+
   function scheduleRuntimeLivenessHeartbeat(agentId: string, run: ActiveRun): void {
     clearRunLivenessTimer(run);
     if (!run.runtimeSession) return;
@@ -261,6 +273,23 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       let alive = false;
       try { alive = run.runtimeSession?.isAlive() === true; } catch { /* failed liveness checks do not renew */ }
       if (!alive) return;
+      if (run.ownershipState === "running" &&
+          executionLeaseNow() - Date.parse(run.lastEventReceivedAt ?? run.startedAt) >= executionLeaseMs) {
+        try {
+          const agent = store.getAgent(agentId);
+          context.createOperationalNotification({
+            dedupeKey: `provider-silence:${run.executionId}`,
+            category: "provider", severity: "attention", agentId, projectId: agent?.projectId,
+            conversationId: run.conversationId,
+            title: "Provider has been quiet",
+            body: "The provider is still running and has sent no updates recently. Open the Agent to inspect the Run or stop it.",
+            action: { kind: "open_agent", targetId: agentId },
+          });
+          transitionRun(agentId, run, "stalled");
+        } catch (error) {
+          logWarn({ err: error }, "Could not record provider silence notice");
+        }
+      }
       if (renewExecutionLease(agentId, run)) scheduleRuntimeLivenessHeartbeat(agentId, run);
     }, executionHeartbeatMs);
     run.livenessTimer.unref?.();
@@ -292,6 +321,7 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     // or late async continuation from this generation therefore fails its CAS.
     void closeRunBrowser(agentId, run, "run_lease_expired");
     activeRuns.delete(agentId);
+    resolveSilenceNotice(run);
     drainDeploymentIdleAuthorities();
     closeLinkPreviewsForAgent(agentId, "run lease expired");
     clearRunLeaseTimer(run);
@@ -354,6 +384,7 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     if (!run.v3SchedulerRunId || run.v3FencingToken === undefined ||
         !coordinationV3.ownsRunForCleanup(run.v3SchedulerRunId, run.v3FencingToken, coordinationV3WorkerId)) return false;
     activeRuns.delete(agentId);
+    resolveSilenceNotice(run);
     drainDeploymentIdleAuthorities();
     closeLinkPreviewsForAgent(agentId, `run ${state}`);
     clearRunLeaseTimer(run);

@@ -206,7 +206,13 @@ const assertRetainedCommand = (agentId: string, session?: RuntimeSession, expect
 };
 registerNativeControlRoutes(app, { ...context, assertRetainedAuthentication: assertRetainedCommand });
 const activeAgentProviderCommands = new Set<string>();
-registerNativeHistoryRoutes(app,{assertRetainedAuthentication:assertRetainedCommand,store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});
+registerNativeHistoryRoutes(app,{assertRetainedAuthentication:assertRetainedCommand,store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands,
+  drainNativeHistory: async agents => {
+    await providerProcessAuthority.terminateAgents(agents, "native history reservation released");
+    for (const agentId of agents) if (providerProcessAuthority.count({agentId}))
+      throw Error("Previous native history process has not exited");
+  },
+});
 const retainedPermissionsMatch = (agentId:string, engineId:string, contract:import("@ponderosa/core").RetainedNormalRuntimeContract, sourceRunId?:string) => {
   const current=runtimeRestrictions(new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId,sourceRunId),engineId);
   const prior=contract.capabilityRestrictions;
@@ -520,31 +526,22 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
   if(isClosed())return;
   let candidates:{agent_id:string}[];
   const deferFailedRead=()=>new Promise<void>(resolve=>{const timer=setTimeout(resolve,5000);timer.unref?.();});
-  try { candidates=store.sqlite.prepare(`SELECT DISTINCT a.agent_id FROM agent_activations a
-    WHERE a.state IN ('pending','retry_pending') AND a.kind='human_message'
-    UNION SELECT agent_id FROM provider_context_recovery_requests WHERE state='unsupported_fenced' LIMIT 1000`).all() as {agent_id:string}[]; }
+  try { candidates=store.sqlite.prepare(`SELECT DISTINCT agent_id FROM provider_context_recovery_requests WHERE state='unsupported_fenced' LIMIT 1000`).all() as {agent_id:string}[]; }
   catch(error){app.log.error({exception:restrictedInternalExceptionDiagnostic(error)},"Context maintenance read unavailable");await deferFailedRead();return;}
   let failedRead=false;
   for(const {agent_id:agentId} of candidates) {
     if(isClosed())return;
     try {
-    const agent=store.getAgent(agentId),boundary=coordinationV3.contextRecovery.active(agentId)??store.uncertainProviderContextRecoveryBoundary(agentId);
-    if(!agent||!boundary||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
+    const agent=store.getAgent(agentId),recovery=coordinationV3.contextRecovery.active(agentId);
+    if(!agent||!recovery||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
         activeContextRecoveries.has(agentId)||recoveryContext.unavailable(agentId,agent.projectId))continue;
-    const prior=coordinationV3.contextRecovery.active(agentId);
-    if(prior?.progress?.nextMaintenanceAt&&Date.parse(prior.progress.nextMaintenanceAt)>Date.now())continue;
-    const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId});
-    if(!pendingInput&&!prior?.progress?.automaticMaintenance&&!prior?.progress?.reconstructionRolloverId&&providerProcessAuthority.count({agentId})===0)continue;
-    if(!pendingInput&&!prior?.progress?.nativeInvoked)continue;
+    const progress=recovery.progress;
+    if(progress?.nextMaintenanceAt&&Date.parse(progress.nextMaintenanceAt)>Date.now())continue;
+    const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery);
+    if(!pendingInput&&!progress?.automaticMaintenance&&!progress?.reconstructionRolloverId&&providerProcessAuthority.count({agentId})===0)continue;
+    if(!pendingInput&&!progress?.nativeInvoked)continue;
     if(recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length)continue;
-    if(!prior&&!pendingInput)continue;
-    if(!prior?.progress?.nativeInvoked&&engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction")continue;
-    let recovery=prior,invoked=false;
-      if(!recovery?.progress?.reconstructionRolloverId&&coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))
-        recovery=coordinationV3.contextRecovery.requestMaintenance({...boundary,agentId}).request;
-      if(!recovery)continue;
-      if(recovery.state==='dismissed')continue;
-      const progress=recovery.progress;
+    if(!progress?.nativeInvoked && !progress?.reconstructionRolloverId && progress?.phase!=='context_accepted')continue;
       if(progress?.nativeInvoked) {
         // Prefer exact recorded evidence; missing telemetry never authorizes another compact.
         if(!progress.reconstructionRolloverId&&providerProcessAuthority.count({agentId})>0)await recoveryContext.stopRecovery?.(agentId,recovery.id);
@@ -557,14 +554,10 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
         }
         const unmeasured=coordinationV3.contextRecovery.active(agentId);
         if(unmeasured?.progress?.nativeInvoked&&unmeasured.progress.phase!=='context_accepted')await reconstructRecovery(unmeasured);
-      } else if(coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery)&&
-          engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status==='managed_compaction'&&
-          coordinationV3.activeRunCount()<workspace.getPreferences().maxConcurrentAgentRuns) {
-        await recoveryContext.recover?.(recovery,'automatic');invoked=true;
       }
       const observed=coordinationV3.contextRecovery.active(agentId);
       if(observed?.progress?.phase==='context_accepted'&&(pendingInput||observed.progress.automaticMaintenance)&&recoveryContext.settle?.(observed)) {
-        recoveryChanged(agentId);notifyScheduler();if(invoked){if(failedRead)await deferFailedRead();return;};continue;
+        recoveryChanged(agentId);notifyScheduler();continue;
       }
       if(observed) {
         if(!observed.progress)coordinationV3.contextRecovery.reserveOperation(agentId,observed.id);
@@ -573,7 +566,6 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
           coordinationV3.contextRecovery.advanceOperation(agentId,pending.id,pending.progress.phase,pending.progress.phase,
             {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});}
       }
-      if(invoked){if(failedRead)await deferFailedRead();return;};
     }catch(error){
       app.log.error({agentId,exception:restrictedInternalExceptionDiagnostic(error)},"Automatic context maintenance remains held");
       try {

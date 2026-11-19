@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import { WebPushDeliveryManager, pushPayload } from '../../apps/server/dist/web-
 import { requestSettingsTransition, reconcileSettingsTransitionReservations } from '../../apps/server/dist/context-transition-admission.js';
 import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 import { createRuntimeEventAuthority } from '../../apps/server/dist/runtime-event-authority.js';
+import { CoordinationV3Scheduler } from '../../apps/server/dist/coordination-v3-scheduler.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
 import { AgentWorkProjection } from '../../apps/server/dist/routes/agent-work.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
@@ -292,13 +293,13 @@ test('duplicate snapshots do not grow durable history; changes, failed writes, s
   owner.publishMessageDeliveryChanged(b.id);
   assert.equal(snapshots(a.id).length, 2, 'failed append did not suppress the retry');
   assert.equal(snapshots(b.id).length, 2, 'one Agent cannot suppress another Agent change');
-  for (const id of [a.id, b.id]) assert.deepEqual(snapshots(id).at(-1).event.coordination, coordinationV3.agentSnapshot(id));
+  for (const id of [a.id, b.id]) assert.deepEqual(snapshots(id).at(-1).event, { type: "coordination_v3_changed" });
   for (const id of [a.id, b.id]) assert.deepEqual(published.filter(x => x.id === id).map(x => x.event.seq), snapshots(id).map(x => x.seq), 'live and replay use the same ordered durable sequence');
   store.close(); store = new AgentStore(root); coordinationV3 = new CoordinationV3Store(store.sqlite); owner = models();
   assert.equal(coordinationV3.getRequest(requestId).payload.text, text, 'SQLite request authority survives reopen');
   for (let i = 0; i < 100; i++) owner.publishCoordinationV3Changed(a.id);
   assert.equal(snapshots(a.id).length, 3, 'a restart permits one fresh mirror, not another burst');
-  assert.deepEqual(snapshots(a.id).at(-1).event.coordination, coordinationV3.agentSnapshot(a.id));
+  assert.deepEqual(snapshots(a.id).at(-1).event, { type: "coordination_v3_changed" });
 });
 
 
@@ -607,4 +608,51 @@ test('active notification batches ignore stale and foreign IDs while preserving 
  assert.equal((await request('/api/notifications/active',Array(101).fill('missing'))).statusCode,400);
  assert.equal((await request('/api/notifications/active',[null])).statusCode,400);
  assert.deepEqual((await request('/api/notifications/active',[])).json(),{activeNotificationIds:[]});
+});
+
+test('workspace pulse compaction preserves notification authority and the exact replay cursor', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ponderosa-workspace-pulses-'));
+  let workspace = new WorkspaceStore(root);
+  t.after(() => { workspace.close(); rmSync(root, {recursive:true, force:true}); });
+  const notice = workspace.createNotification({dedupeKey:'compaction-test',kind:'operational',
+    category:'system',status:'open',severity:'attention',title:'Evidence retained',body:'Synthetic fixture'},false);
+  const start = workspace.cursor();
+  workspace.close();
+  const file = path.join(root, 'workspace-events.jsonl');
+  appendFileSync(file, Array.from({length:12_000}, (_,i) => JSON.stringify({
+    id:start+i+1,ts:at,event:{type:'provider_status_changed',engineId:'codex'},
+  })+'\n').join(''));
+  workspace = new WorkspaceStore(root);
+  const cursor = start+12_000;
+  assert.equal(workspace.cursor(), cursor);
+  assert.equal(workspace.getNotification(notice.id)?.title, 'Evidence retained');
+  const replay = workspace.readSince(cursor-5000);
+  assert.equal(replay.length, 5000);
+  assert.equal(replay[0].id, cursor-4999);
+  assert.equal(replay.at(-1).id, cursor);
+  assert.equal(readFileSync(file,'utf8').split('provider_status_changed').length-1, 5000);
+  assert.equal(workspace.append({type:'provider_status_changed'}).id, cursor+1);
+});
+
+test('repeated scheduler admission faults log and notify once before recovery', async t => {
+  let failing=true;
+  const health=[], errors=[];
+  const store={
+    pruneSettledOutboxes(){}, maintainCommunicationV4NextRunDeliveries(){},
+    expireDue(){if(failing)throw Error('Controlled scheduler fault');},
+    recoverExpiredRuns(){}, claimOutbox:()=>[], activeRunCount:()=>0,
+  };
+  const scheduler=new CoordinationV3Scheduler(store,async()=>{throw Error('Unexpected dispatch');},{
+    workerId:'fault-fixture',maxConcurrentRuns:0,pollMs:10,
+    onPassError:error=>errors.push(error.message),
+    onPassHealthChanged:healthy=>health.push(healthy),
+  });
+  t.after(()=>scheduler.stop());
+  scheduler.start();
+  await until(()=>health.includes(false),'scheduler failure notice');
+  assert.deepEqual(health,[false]);
+  assert.deepEqual(errors,['Controlled scheduler fault','Controlled scheduler fault']);
+  failing=false;
+  await until(()=>health.includes(true),'scheduler recovery notice');
+  assert.deepEqual(health,[false,true]);
 });

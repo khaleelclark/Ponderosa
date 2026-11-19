@@ -816,24 +816,10 @@ export function registerAgentCommunicationRoutes(
           ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
         });
       }
-      let existing;
-      try {
-        existing = store.readEvents(capability.agentId).find((item) =>
-          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
-      } catch {
-        return reply.code(202).send({
-          intent,
-          eventId: proposedCommunication.eventId,
-          committed: true,
-          recovering: true,
-          replayed: intake.replayed,
-          ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
-        });
-      }
       return {
         intent,
         eventId: proposedCommunication.eventId,
-        messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
+        messageId: proposedCommunication.eventId,
         replayed: intake.replayed,
         ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       };

@@ -74,9 +74,17 @@ function fail(owner: Owner): void {
   if (active !== owner) return;
   try { release(owner); } finally { publish({ ownerId: owner.id, status: "error", error: "The browser could not read this message aloud." }); }
 }
+export function primeSpeechFromUserGesture(): void {
+  if (active) return;
+  try {
+    const utterance = new SpeechSynthesisUtterance(" ");
+    utterance.volume = 0;
+    window.speechSynthesis.speak(utterance);
+  } catch { /* Playback can still be requested from the transcript. */ }
+}
 export interface SpeechQueue { append(text: string): boolean; finish(): void; stop(): void }
 /** One owner across all phrases, including gaps; capture never resumes between them. */
-export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean | "skip">, onSkipped?: () => void, captureOwner?: object): SpeechQueue {
+export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean | "skip">, onSkipped?: () => void, captureOwner?: object, canSkipAudioError?: () => boolean): SpeechQueue {
   if (captureOwner && !ownsPageCapture(captureOwner)) return { append: () => false, finish() {}, stop() {} };
   abandonPageCapture(captureOwner); stopSpeech();
   if (active) return { append: () => false, finish() {}, stop() {} };
@@ -91,6 +99,20 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
       else publish({ ownerId: id, status: "loading",lastPhraseEndedAt:owner.lastPhraseEndedAt });
       return;
     }
+    let optional = false;
+    const audioFailed = () => {
+      if (active !== owner) return;
+      if (!optional) { fail(owner); return; }
+      clearTimeout(owner.startTimer);
+      if (owner.utterance) {
+        owner.utterance.onstart = null; owner.utterance.onend = null; owner.utterance.onerror = null;
+        owner.utterance = undefined;
+        try { window.speechSynthesis.cancel(); } catch { fail(owner); return; }
+      }
+      if (!owner.started) onSkipped?.();
+      owner.started = false;
+      void pump();
+    };
     try {
       if (beforePhrase) {
         owner.checking = true;
@@ -103,26 +125,27 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
         if (!permitted) { fail(owner); return; }
       }
       if (active !== owner) return;
+      optional = canSkipAudioError?.() ?? false;
       const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance; owner.started = false; owner.audioUsed = true;
       utterance.lang = navigator.language || "en-US"; utterance.rate = preferences.speed;
       const current = () => active === owner && owner.utterance === utterance;
       utterance.onstart = () => { if (!current()) return; owner.started = true; clearTimeout(owner.startTimer); onStart?.(text); if (current() && snapshot.status !== "paused") publish({ ownerId: id, status: "speaking" }); };
       utterance.onend = () => {
         if (!current()) return;
-        if (!owner.started) { fail(owner); return; }
+        if (!owner.started) { audioFailed(); return; }
         clearTimeout(owner.startTimer);
         utterance.onstart = null; utterance.onend = null; utterance.onerror = null;
         owner.lastPhraseEndedAt=Date.now();owner.utterance = undefined;owner.started=false;
         publish({ownerId:id,status:"loading",lastPhraseEndedAt:owner.lastPhraseEndedAt});pump();
       };
-      utterance.onerror = () => { if (current()) fail(owner); };
-      owner.startTimer = setTimeout(() => fail(owner), 3_000);
+      utterance.onerror = () => { if (current()) audioFailed(); };
+      owner.startTimer = setTimeout(audioFailed, 3_000);
       if (!current()) return;
       // cancel() preserves the browser paused state across owners.
       if (window.speechSynthesis.paused) window.speechSynthesis.resume();
       if (!current()) return;
       window.speechSynthesis.speak(utterance);
-    } catch { fail(owner); }
+    } catch { audioFailed(); }
   };
   try { if (active === owner) owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id)); } catch { fail(owner); }
   return {

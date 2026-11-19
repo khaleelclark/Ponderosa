@@ -38,7 +38,7 @@ require operator tokens, proxy identities, browser sessions, or a particular VPN
 Legacy token and trusted-network environment variables no longer gate requests.
 Provider sign-in and scoped Agent Run capabilities are unchanged.
 
-Browser-originated mutations still require a matching Host and an allowed origin.
+API requests require the listener’s Host, a loopback Host, or the Host of a configured public origin. Browser-originated mutations also require a matching allowed origin.
 For a remote browser or reverse proxy, configure its exact browser-facing origin:
 
 ```ini

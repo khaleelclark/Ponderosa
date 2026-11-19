@@ -109,6 +109,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        hasMemory: Array.isArray(value.memory) && value.memory.length > 0,
         nativeData:await nativeDataPreview(value.agents),
         hasWorkingFiles: value.agents.some(node=>Boolean(node.workingFolder)||(Array.isArray(node.workingFiles)&&node.workingFiles.length>0)),
         hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,

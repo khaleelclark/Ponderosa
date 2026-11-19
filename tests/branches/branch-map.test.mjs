@@ -16,7 +16,7 @@ function fixture(t,{source='list',maxItems=100,maxConcurrentItems=Math.min(4,max
   edges:edges??[edge('item','map','worker','selected'),edge('return','worker','join')],policy:{maxConcurrentExecutions:2,maxPathInstances:Math.max(1100,maxItems+10),maxStepInvocations:Math.max(1100,maxItems+10),failure:{action:'stop'},...policy}};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir},...bindings}});
  branches.configure(branch.id,{...branches.configuration(branch.id),limits:{...branches.configuration(branch.id).limits,maxTraversals:Math.max(3000,maxItems*3)}},0);
- t.after(()=>{store.close();});
+ t.after(()=>{try { store.close(); } finally { rmSync(dir, {recursive:true, force:true}); }});
  return {get store(){return store},get branches(){return branches},get coordination(){return coordination},branch,definition,project,chat,dir,reopen(){store.close();open()},accept(input,key='run'){return branches.accept(branch.id,key,input)}};
 }
 async function settleAll(f,executionId,{failure}={}){

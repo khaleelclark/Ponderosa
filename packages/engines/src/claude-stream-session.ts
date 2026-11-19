@@ -168,7 +168,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     opts.assertHistoryCurrent?.();
     // Session state frames are opt-in. ClaudeTaskLifetime needs the post-result
     // idle frame to close any turn that started native background work.
-    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1", ...CLAUDE_MODEL_ENVIRONMENT };
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1", ...CLAUDE_MODEL_ENVIRONMENT, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
     this.modelEnvironment = environment;
     this.modelGuard = claudeModelGuard(opts.model, environment);
     const contained = spawnContainedCli({

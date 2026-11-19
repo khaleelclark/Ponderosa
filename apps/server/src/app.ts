@@ -603,7 +603,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     recordCommunication,
     refreshCommunicationReconciliation,
     scheduleCommunicationReconciliation,
-    stopCommunicationReconciliation,
   } = createCommunicationJournal({
     store,
     workspace,
@@ -611,7 +610,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     webPushDelivery,
     publishWorkspaceSince,
     appendWorkspace,
-    isClosed: () => closed,
   });
   const executionLeaseMs = 6 * 60 * 1000;
   const executionHeartbeatMs = Math.max(1, Math.floor(executionLeaseMs / 3));
@@ -708,6 +706,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     scheduleRuntimeLivenessHeartbeat,
     transitionRun,
   } = createRuntimeEventAuthority({
+    createOperationalNotification,
+    resolveOperationalNotification,
     onRunClaimed: (agentId, run) => {
       const agent = store.getAgent(agentId);
       if (agent) {
@@ -830,6 +830,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(503).send(error.publicResponse);
   });
   app.log.info(store.startupProfile(), "agent store startup completed");
+  for (const { projectId } of store.startupProfile().recoveryIssues) {
+    createOperationalNotification({
+      dedupeKey: `project:${projectId}:projection-recovery`,
+      renewAfterRecovery: true, category: "system", severity: "attention",
+      title: "Project Recovery Needs Attention",
+      body: `Project ${projectId} could not be loaded. Its retained data is preserved. Check the server startup log for the recovery error.`,
+    });
+  }
+  for (const project of store.listProjects()) {
+    resolveOperationalNotification(`project:${project.id}:projection-recovery`, true);
+  }
+
   // Repair operational projections before the listener accepts reads. Further
   // reconciliation is driven by canonical coordination/delivery mutations.
   reconcileCommunicationFailureNotifications();
@@ -1136,7 +1148,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     ensureDecisionResponseActivation,
     applyResolvedSavedBrowserApproval,
     refreshCommunicationReconciliation,
-    stopCommunicationReconciliation,
     stopCoordinationAttentionNotifications,
     closeRunBrowser: closeRunBrowserAfterRun,
     providerProcessAuthority,
@@ -1276,7 +1287,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     browserScopeForRun,
     browserProfiles,
     browserSessions,
-    closeRunBrowser,
+    closeRunBrowser: closeRunBrowserAfterRun,
     projectBrowserDto,
     projectBrowserGrants,
     projectBrowserScope,
@@ -1434,7 +1445,47 @@ app.server.on("upgrade", linkPreviewUpgrade);
   branchResources.setImporter(async(input,hooks,signal)=>{
     await application.packageEngine.importAgent(input.projectId,input.chatId,input.template,input.engineMapping,input.creationKey,{branchHooks:hooks,signal,accessSettingsResolution:input.accessSettingsResolution});
   });
+  let nextScheduleHoldCheck = 0;
+  const reconcileScheduleHolds = () => {
+    const now = Date.now();
+    if (now < nextScheduleHoldCheck) return;
+    nextScheduleHoldCheck = now + 5_000;
+    const holds = store.sqlite.prepare(`
+      SELECT execution.id, branch.id AS branchId, branch.name
+      FROM trigger_definitions source
+      JOIN branches branch ON branch.trigger_id=source.id
+      JOIN branch_executions execution ON execution.branch_id=branch.id
+      WHERE source.source_kind='schedule' AND source.enabled=1 AND branch.enabled=1
+        AND branch.deleting=0 AND execution.state IN ('running','waiting')
+        AND EXISTS (
+          SELECT 1 FROM branch_step_executions step
+          JOIN branch_attempts attempt ON attempt.step_execution_id=step.id
+          JOIN coordination_requests request ON request.id=attempt.request_id
+          WHERE step.execution_id=execution.id AND attempt.state='waiting' AND request.state='outcome_unknown'
+        )
+    `).all() as Array<{id:string;branchId:string;name:string}>;
+    const prefix = 'branch:schedule-held:';
+    const open = new Set<string>();
+    for (const hold of holds) {
+      const dedupeKey = prefix + hold.id;
+      open.add(dedupeKey);
+      createOperationalNotification({
+        dedupeKey, renewAfterRecovery:true, category:'coordination', severity:'attention',
+        branchId:hold.branchId, branchExecutionId:hold.id,
+        title:`${hold.name} schedule held`,
+        body:'A running workflow is waiting for an Agent Request whose outcome is unknown. Review the Run and resolve the Request before starting more scheduled work.',
+        action:{kind:'open_branch',targetId:hold.branchId},
+      });
+    }
+    workspace.forEachOpenOperationalNotification(prefix, notice => {
+      if (notice.dedupeKey && !open.has(notice.dedupeKey)) resolveOperationalNotification(notice.dedupeKey, true);
+    });
+  };
   branchScripts=new BranchScriptService(branches,store,coordinationV3WorkerId,{...opts.branches,resources:branchResources,installations:branchInstallations,appendAudit:appendWorkspace,
+    reconcileScheduleHolds: () => {
+      try { reconcileScheduleHolds(); }
+      catch (error) { app.log.error(freshFailureDiagnostic(error, "Schedule hold notices could not be refreshed")); }
+    },
     notifyAction:input=>createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,projectId:input.projectId,conversationId:input.chatId,category:'system',severity:'info',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}}).id,
     notifyGate:input=>{createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,category:'decision',severity:'attention',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}});},
     resolveGateNotification:resolveOperationalNotification,

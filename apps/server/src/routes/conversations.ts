@@ -281,7 +281,7 @@ export function registerConversationRoutes(
       defaultEngine,
       ...resolved,
       ...(body.defaultSpeed ? { defaultSpeed: body.defaultSpeed } : {}),
-    }, creationIdentity, undefined, chatId => { localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
+    }, creationIdentity, undefined, chatId => { localMemoryFor(app)?.reserveNewChat(chatId,true); freshlyCommittedChatId = chatId; });
     if (freshlyCommittedChatId) {
       try { await localMemoryFor(app)?.provisionNewChat(freshlyCommittedChatId); }
       catch { return reply.code(409).send({error:'Chat was created, but its memory setup is incomplete. The Chat and existing memory were preserved. Submitted collection creation is not repeated automatically; review memory health.',code:'memory_provision_pending',chatId:freshlyCommittedChatId}); }

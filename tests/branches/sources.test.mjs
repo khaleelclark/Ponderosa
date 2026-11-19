@@ -247,6 +247,7 @@ test('an idle schedule scan advances its cutoff when a future tick becomes due',
 test('cron forward catchup admits distinct times and retains existing DST and backward-clock semantics',async t=>{
  for(const [name,initial,expression,observations] of [
   ['forward','2026-10-30T10:00:00Z','* * * * *',[['2026-10-30T10:03:01Z',3],['2026-10-30T09:59:00Z',3],['2026-10-30T10:03:01Z',3]]],
+  ['repeated fall hour','2026-11-01T04:45:00Z','*/10 * * * *',[['2026-11-01T05:50:00Z',7],['2026-11-01T06:50:00Z',13],['2026-11-01T07:00:00Z',14]]],
   ['fall','2026-11-01T04:00:00Z','30 1 * * *',[['2026-11-01T05:30:00Z',1],['2026-11-01T06:30:00Z',1],['2026-11-02T06:30:00Z',2]]],
   ['spring','2026-03-08T05:00:00Z','30 2 * * *',[['2026-03-08T07:00:00Z',0],['2026-03-08T07:30:00Z',1],['2026-03-09T06:30:00Z',2]]],
  ])await t.test(name,async t=>{
@@ -312,5 +313,24 @@ for(const whenRunning of ['queue_all','run_latest','update_current'])test(`actua
  assert.deepEqual(f.store.sqlite.prepare('SELECT id,input_hash FROM trigger_occurrences ORDER BY id').all(),before);
  assert.deepEqual(f.store.sqlite.prepare('SELECT id FROM branch_executions ORDER BY id').all(),executions);
  assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,new Date(base+4*60000).toISOString());
+ f.noProviderWork();f.pass();
+});
+
+test('interval cadence advances on elapsed time over a backward wall-clock step', async t => {
+ const base=Date.parse('2030-01-01T12:00:00Z');
+ t.mock.timers.enable({apis:['Date'],now:base});
+ let elapsed=0;
+ t.mock.method(performance, 'now', () => elapsed);
+ const startsAt=new Date(base).toISOString();
+ const f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60_000,startsAt,whenRunning:'queue_all'},{nextFireAt:startsAt});
+ const times=()=>f.triggers.listTriggerOccurrences(f.branch.triggerId).map(o=>o.payload.scheduledTimes[0]).sort();
+ await f.sources.processDueSchedules();
+ assert.deepEqual(times(),[startsAt]);
+ t.mock.timers.setTime(base-59*60_000);elapsed+=60_000;
+ await f.sources.processDueSchedules();
+ assert.deepEqual(times(),[startsAt,new Date(base+60_000).toISOString()]);
+ t.mock.timers.setTime(base+60_000);
+ await f.sources.processDueSchedules();
+ assert.equal(times().length,2,'wall-clock correction does not reaccept a tick');
  f.noProviderWork();f.pass();
 });

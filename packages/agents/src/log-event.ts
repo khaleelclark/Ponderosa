@@ -19,10 +19,7 @@ export interface UserMessageEvent {
 }
 
 /** Clear a provider session while retaining the canonical agent history. */
-export interface SessionResetEvent {
-  type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" | "agent_cancelled";
-}
+export type SessionResetEvent = import("@ponderosa/core").ProviderSessionResetEvent;
 
 /** Durable proof of the exact provider contract and artifact roots retained by
  * one accepted native session. A raw provider `session` event deliberately
@@ -171,7 +168,7 @@ export interface AgentLifecycleEvent {
 /** Live telemetry mirror of authoritative SQLite V3 coordination state. */
 export interface CoordinationV3ChangedEvent {
   type: "coordination_v3_changed";
-  coordination: AgentCoordinationV3Dto;
+  coordination?: AgentCoordinationV3Dto;
 }
 
 /** Provider-created output copied into stable Ponderosa-managed storage. */
@@ -208,7 +205,8 @@ export type ContextUsageLogEvent = Extract<AgentEvent, { type: "context_usage" }
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = import("@ponderosa/core").MemoryChangedEvent | import("@ponderosa/core").VoiceReplyEvent | UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
   AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | ContextUsageLogEvent |
-  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
+  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string; nativeRuntimeSetting?: true }) |
+  (Extract<AgentEvent, { type: "tool_call" | "tool_result" }> & { nativeRuntimeSetting?: true }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

@@ -107,14 +107,15 @@ export function AgentPackageExportDialog({
   agents: AgentDto[];
   initialOrganization?: boolean;
   onClose(): void;
-  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<void>;
-  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): void;
+  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[], omitMemory?: boolean): Promise<void>;
+  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[], omitMemory?: boolean): void;
 }): JSX.Element {
   const [organization, setOrganization] = useState(initialOrganization);
   const [mode, setMode] = useState<PackageMode>("template");
   const [copying, setCopying] = useState(false);
   const [workingFiles,setWorkingFiles]=useState('');
   const [wholeWorkingFolder,setWholeWorkingFolder]=useState(false);
+  const [omitMemory, setOmitMemory]=useState(false);
   const [organizationWorkingFolders,setOrganizationWorkingFolders]=useState(false);
   const [nativeSelection,setNativeSelection]=useState<ReviewedUserDataSelection>({git:false,harness:false,source:'live'});
   const [gitBindings,setGitBindings]=useState<import('@ponderosa/core').GitStorageSelection[]>([]);
@@ -128,7 +129,7 @@ export function AgentPackageExportDialog({
   const selectedPaths=mode==='full'&&!wholeWorkingFolder&&!allFolders?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
   const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'});setGitBindings([]); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOmitMemory(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'});setGitBindings([]); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
@@ -137,6 +138,7 @@ export function AgentPackageExportDialog({
       <Typography variant="body2" color="text.secondary">Choose what to export from {source.title}.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={agentCount}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
+      {mode==='full'&&<FormControlLabel control={<Checkbox checked={omitMemory} onChange={event=>setOmitMemory(event.target.checked)}/>} label="Export Without Chat Memory"/>}
       {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include Every Distinct Organization Working Folder"/>}
       {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include The Whole Root Agent Working Folder"/>}
       {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
@@ -148,10 +150,10 @@ export function AgentPackageExportDialog({
       <Button onClick={onClose} disabled={copying}>Close</Button>
       <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)} onClick={async () => {
         setCopying(true);
-        try { await onCopy(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings); } finally { setCopying(false); }
+        try { await onCopy(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings, omitMemory); } finally { setCopying(false); }
       }}>{copying ? "Copying…" : "Copy JSON"}</Button>
       <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)}
-        onClick={() => onDownload(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings)}>Download JSON</Button>
+        onClick={() => onDownload(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings, omitMemory)}>Download JSON</Button>
     </DialogActions>
   </Dialog>;
 }
