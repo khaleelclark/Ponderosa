@@ -53,13 +53,14 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
     if (!unchanged(request.params.id, current)) return reply.code(409).send({ error: "Native control boundary changed" });
     return { sessionId: current.sessionId, runId: current.runId,
       fencingToken: current.fencingToken,
-      operations: catalog?.commands.filter(command => ["native-model", "native-permission-mode"].includes(command.name) &&
+      operations: catalog?.commands.filter(command => command.name === "native-permission-mode" &&
         command.invocation === "runtime" && command.status === "available").map(command => command.name.slice("native-".length)) ?? [] };
   });
   app.post<{Params:{id:string};Body:NativeRuntimeControlRequest}>("/api/agents/:id/native-controls", async (request, reply) => {
     const id = request.params.id, body = request.body;
     if (!body || !["model", "permission-mode"].includes(body.operation) || typeof body.value !== "string" ||
         !body.value || body.value.length > 200 || !Number.isSafeInteger(body.fencingToken)) return reply.code(400).send({error:"Invalid native control"});
+    if (body.operation === "model") return reply.code(409).send({error:"Save the model in Agent Settings. A model change starts a fresh provider session on the next Run."});
     if (busy.has(id)) return reply.code(409).send({error:"Native control already active"});
     const current = boundary(id);
     if (!current) return reply.code(409).send({error:"Exact retained runtime boundary unavailable"});
@@ -70,10 +71,6 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
     const catalog = await session.capabilities?.();
     if (!session.invokeCommand || !catalog?.commands.some(command => command.name === `native-${body.operation}` && command.invocation === "runtime" && command.status === "available")) return reply.code(409).send({error:"Native control unsupported"});
     if (!unchanged(id, current)) return reply.code(409).send({error:"Native control eligibility changed while loading available controls"});
-    // Human model selection already persists through the normal Agent settings UI.
-    // A live command must agree with that saved selection, never silently replace it.
-    const agent = context.store.getAgent(id)!;
-    if (body.operation === "model" && body.value !== (agent.model ?? agent.presetSnapshot?.model)) return reply.code(409).send({error:"Save this Agent's model selection first"});
     if (busy.has(id)) return reply.code(409).send({error:"Native control already active"});
     busy.add(id);
     const callId = randomUUID();

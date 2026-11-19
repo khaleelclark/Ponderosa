@@ -18,9 +18,10 @@ export function settingsTransitionTarget(agent:AgentDto,project:ProjectDto,adapt
  preferences:ReturnType<WorkspaceStore["getPreferences"]>,optionsInput:ModelOption[]|undefined,dispatch:TransitionDispatch|undefined){
  const options=optionsInput;
  const recovered=concreteRuntimeSelection(adapter,[{model:agent.model??agent.presetSnapshot?.model,effort:agent.effort??agent.presetSnapshot?.effort},project.defaultEngine===agent.activeEngine?{model:project.defaultModel,effort:project.defaultEffort}:undefined,preferences.engineDefaults?.[agent.activeEngine]],options);
- const hasModel=typeof dispatch?.model==='string',hasEffort=typeof dispatch?.effort==='string';
- const targetModel=hasModel?(dispatch!.model as string).trim()||undefined:agent.model??agent.presetSnapshot?.model??recovered.model;
- const targetEffort=hasEffort?(dispatch!.effort as string).trim()||undefined:hasModel
+ const requestedModel=typeof dispatch?.model==='string'?dispatch.model.trim():undefined;
+ const hasEffort=typeof dispatch?.effort==='string';
+ const targetModel=requestedModel||(agent.model??agent.presetSnapshot?.model??recovered.model);
+ const targetEffort=hasEffort?(dispatch!.effort as string).trim()||undefined:requestedModel
     ? concreteRuntimeSelection(adapter,[{model:targetModel},preferences.engineDefaults?.[agent.activeEngine]],options).effort
     : targetModel&&options&&!options.some(model=>model.id===targetModel)?agent.effort??agent.presetSnapshot?.effort
     : normalizedRuntimeSelection(adapter,targetModel,agent.effort??agent.presetSnapshot?.effort??recovered.effort,options).effort;
@@ -283,8 +284,14 @@ export async function requestSettingsTransition(input: {
  const historicalSources=new Set(coordinationV3.interruptedProviderSwitchSourceIds(pending.agentId,pending.projectId,candidate.scopeKey));
  if (providerSwitch?.resumesNative) historicalSources.add(providerSwitch.sourceRunId);
  const historicalWork=coordinationV3.wakesInterruptedProviderWork(pending.id,historicalSources);
- if(!ordinaryAdmission&&!providerSwitch&&!historicalWork)return true;
- let shouldHold=false,toolsChanged=false;
+ // Other same-Chat work can open a Run, but only a model change sends it through settings admission.
+ const checkQueuedModel=Boolean(nativeAdapter&&candidateAgent&&store.resumeSessionState(pending.agentId)&&
+   candidate.scopeKey===`conversation:${candidateAgent.conversationId}`&&
+   !pending.kind.startsWith('context_rollover_')&&!coordinationV3.activeContextRollover(pending.agentId)&&
+   !store.sqlite.prepare('SELECT 1 FROM agent_pause_recoveries WHERE activation_id=?').get(pending.id)&&
+   !store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'").get(pending.id));
+ if(!ordinaryAdmission&&!providerSwitch&&!historicalWork&&!checkQueuedModel)return true;
+ let shouldHold=false;
  const localHolds=unrecordedHolds.get(coordinationV3)??new Map<string,string>();unrecordedHolds.set(coordinationV3,localHolds);
  let currentFingerprint:string;
  try{currentFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);}catch{currentFingerprint='unavailable';}
@@ -304,6 +311,20 @@ export async function requestSettingsTransition(input: {
    const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state IN ('pending','retry_pending') AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
    const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown}}:undefined;
    const dispatch=payload?.dispatch,agent=candidateAgent,project=agent&&store.getChatContext(agent.conversationId);
+   let queuedPacket:ReturnType<AgentStore['acceptedProviderSessionInput']>;
+   if(checkQueuedModel&&row&&agent&&(typeof dispatch?.engine!=='string'||dispatch.engine===agent.activeEngine)){
+    try{queuedPacket=store.acceptedProviderSessionInput(agent.id);}
+    catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; Ponderosa retains the original work.'),true);}
+   }
+   const queuedContract=queuedPacket?.sourceManifest.schemaVersion===3?queuedPacket.sourceManifest.normalRuntimeContract:undefined;
+   const queuedModel=queuedContract?.model&&agent&&project&&selectedAdapter&&
+     queuedContract.engineId===agent.activeEngine&&queuedContract.workingCopyId===agent.workingCopy.id&&
+     queuedContract.cwd===agent.workingCopy.rootPath
+      ? settingsTransitionTarget(agent,project,selectedAdapter,workspace.getPreferences(),
+          cachedModelOptions(selectedAdapter,project.id),dispatch).targetModel : undefined;
+   const queuedModelChanged=Boolean(queuedModel&&queuedModel!==queuedContract?.model);
+   if(!ordinaryAdmission&&!providerSwitch&&!historicalWork&&!queuedModelChanged)return true;
+   shouldHold=queuedModelChanged;
    if(historicalWork)
     return hold('An earlier provider Run has an uncertain outcome. Its task remains in history without automatic replay.',true);
    if(row&&!coordinationV3.settingsTransitionUnsubmittedActivation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,scopeKey:row.scope_key}))
@@ -341,7 +362,7 @@ export async function requestSettingsTransition(input: {
    // Only the existing accepted measurement after explicit hold dismissal may
    // expose a formerly interrupted packet here; this is not ordinary resume permission.
    let packet:ReturnType<AgentStore['acceptedProviderSessionInput']>;
-   try{packet=agent?(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined)):undefined;void packet?.exactSystemPrompt;}
+   try{packet=queuedPacket??(agent?(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined)):undefined);void packet?.exactSystemPrompt;}
    catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; Ponderosa retains the original work.'),true);}
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
    // An engine switch cannot hand off a native session; run preparation
@@ -355,9 +376,8 @@ export async function requestSettingsTransition(input: {
    const acceptedPromptChanged=Boolean(row&&agent&&project&&accepted&&typeof packet?.exactSystemPrompt==='string'&&
     await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts)!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'));
    if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
-   shouldHold=acceptedPromptChanged;
-   let grantExpansion=false;
-   const unchangedOrHold=(reason:string)=>(acceptedPromptChanged||grantExpansion||toolsChanged)?hold(reason+' The original work remains queued for context review.'):true;
+   shouldHold=queuedModelChanged||acceptedPromptChanged;
+   const unchangedOrHold=(reason:string)=>shouldHold?hold(reason+' The original work remains queued for context review.'):true;
 
    // Older accepted packets may have no runtime contract, while their Run
    // origin and a later explicit global-read removal are still available.
@@ -391,18 +411,18 @@ export async function requestSettingsTransition(input: {
    // Do not silently reseed an explicitly changed task when the old
    // accepted generation cannot be attributed to a completed boundary.
    const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
-     (typeof dispatch?.model==='string' ||
+     (queuedModelChanged || (typeof dispatch?.model==='string' && dispatch.model.trim()) ||
       typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string'));
    if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
     return hold('The earlier provider session lacks a complete, verified context boundary. Ponderosa retains the queued work.',true);
    const policy=agent?new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id):undefined;
    const restrictions=agent&&policy?runtimeRestrictions(policy,agent.activeEngine):undefined;
    const prior=contract?.capabilityRestrictions;
-   grantExpansion=Boolean(restrictions&&isGrantOnlyRestrictionsChange(prior,restrictions));
+   const grantExpansion=Boolean(restrictions&&isGrantOnlyRestrictionsChange(prior,restrictions));
    const savedTools=retainedRuntimeTools(contract);
    const comparisonPolicy=grantExpansion&&policy?{...policy,restrictedCapabilityIds:prior!.restrictedCapabilityIds}:policy;
    const currentTools=comparisonPolicy?filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],comparisonPolicy):undefined;
-   toolsChanged=Boolean(contract&&(!savedTools||JSON.stringify(savedTools)!==JSON.stringify(currentTools)));
+   const toolsChanged=Boolean(contract&&(!savedTools||JSON.stringify(savedTools)!==JSON.stringify(currentTools)));
    shouldHold ||= grantExpansion||toolsChanged;
    if(agent&&coordinationV3.activeContextRollover(agent.id))return true;
    if(accepted&&(!packet||!contract||contract.version!==1))return hold('The saved provider contract is incomplete. Ponderosa retains the queued work.',true);
@@ -449,7 +469,9 @@ export async function requestSettingsTransition(input: {
    const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
    if(!targetModel?.trim()||!contract.model?.trim())return unchangedOrHold('The saved or target model is missing, so the instruction-change handoff cannot be verified.');
-   const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
+   const modelChanged=targetModel!==contract.model;
+   shouldHold ||= modelChanged;
+   const changed=modelChanged||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
    // A same-scope instruction change must bridge the old provider context,
    // even when model settings themselves are unchanged.
    const targetSystemPromptHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
@@ -462,7 +484,7 @@ export async function requestSettingsTransition(input: {
      prior.filesystemWriteRestricted===restrictions.filesystemWriteRestricted&&
      JSON.stringify(prior.restrictedCapabilityIds)===JSON.stringify(restrictions.restrictedCapabilityIds)&&
      JSON.stringify(prior.restrictedConnectorNames)===JSON.stringify(restrictions.restrictedConnectorNames);
-   if((!changed&&!promptChanged&&!toolsChanged&&!grantExpansion) || (changed&&sameNativePolicy)){
+   if((!changed&&!promptChanged&&!toolsChanged&&!grantExpansion) || (changed&&!modelChanged&&sameNativePolicy)){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
    }

@@ -122,7 +122,7 @@ test('stalled Claude input write reaches unknown timeout without replay',{timeou
  assert.equal((await userFrames(native)).length,0,'the stalled provider did not consume or replay a full input');
 });
 
-test('Claude model change retains tool context in the same native session',{timeout:90000},async t=>{
+test('Claude model change hands tool context to a fresh native session',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude model transition',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
@@ -136,17 +136,26 @@ test('Claude model change retains tool context in the same native session',{time
   assert.equal((await native.frames()).find(x=>x.kind==='open').autoMemoryDisabled,true);
   f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
   await f.send(agent.id,'Continue the original objective with the new model.');
-  const next=await until(async()=>(await userFrames(native))[1],'same-session task',20000);
-  assert.equal(next.session,first.session);
-  assert.ok(prompt(next).includes('Continue the original objective with the new model.'));
+  const handoff=await until(async()=>(await userFrames(native))[1],'old-session handoff',20000);
+  assert.equal(handoff.session,first.session);
+  assert.ok(!prompt(handoff).includes('Continue the original objective with the new model.'));
   assert.equal((await native.frames()).find(x=>x.kind==='restored-native-context')?.finding,'native-only research evidence');
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,0);
+  await native.answer('The research found native-only research evidence.');
+  const replacement=await until(async()=>(await userFrames(native))[2],'fresh session confirmation',20000);
+  assert.notEqual(replacement.session,first.session);
+  assert.match(prompt(replacement),/native-only research evidence/);
+  const opened=(await native.frames()).find(x=>x.kind==='open'&&x.session===replacement.session);
+  assert.equal(opened?.model,'opus');
+  await native.answer('Continuity context received.');
+  const next=await until(async()=>(await userFrames(native))[3],'task on replacement',20000);
+  assert.equal(next.session,replacement.session);
+  assert.ok(prompt(next).includes('Continue the original objective with the new model.'));
   await native.answer('The original objective is complete.');await f.settled(agent.id);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root)).adapter});
 });
 
 
-test('applying an idle Claude model setting leaves the native context eligible',{timeout:30000},async t=>{
+test('an idle Claude runtime rejects direct model changes and keeps the current session',{timeout:30000},async t=>{
  const idlePool=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
  process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='1';
  t.after(()=>{if(idlePool===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=idlePool;});
@@ -171,7 +180,9 @@ test('applying an idle Claude model setting leaves the native context eligible',
   assert.equal(fencingToken,exact?.fencingToken);
   const usage=store.acceptedProviderSessionContextUsage(agent.id)??store.acceptedProviderSessionInputEstimate(agent.id);
   assert.ok(usage,'the idle session has valid usage evidence');
-  f.ok(await f.api('POST',route,{sessionId,runId,fencingToken,operation:'model',value:'sonnet'}));
+  const rejected=await f.api('POST',route,{sessionId,runId,fencingToken,operation:'model',value:'opus'});
+  assert.equal(rejected.status,409);
+  assert.match(rejected.body.error,/fresh provider session/);
   assert.deepEqual(store.acceptedProviderSessionContextUsage(agent.id)??store.acceptedProviderSessionInputEstimate(agent.id),usage);
   await f.send(agent.id,'Continue after applying the model.');
   const next=await until(async()=>(await userFrames(native))[1],'retained turn after idle controls');

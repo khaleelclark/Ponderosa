@@ -456,9 +456,9 @@ export function AgentSettingsPane({
           )}
         </Typography>
       </Paper>
-      <Alert severity="info">Changing standing instructions or the provider tool configuration can require a fresh provider session. Saved Chat history remains available.</Alert>
+      <Alert severity="info">Changing the model starts a fresh provider session on the next Run. Changing standing instructions or the provider tool configuration can require a fresh provider session. Saved Chat history remains available.</Alert>
       <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
-      <NativeRuntimeControls key={agent.id} agentId={agent.id} savedModel={agent.model ?? agent.presetSnapshot?.model} />
+      <NativeRuntimeControls key={agent.id} agentId={agent.id} />
       <AgentWorkingCopySettings agent={agent} />
       <NativeHistoryControls agent={agent} onOpenAgent={onOpenAgent} />
       <NativeTaskControls agent={agent} />

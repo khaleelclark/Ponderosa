@@ -679,9 +679,7 @@ export async function prepareAgentRun(
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)
       ? genericHandoff : undefined);
-  // Continue only a proven first-generation Codex session that was never
-  // offered Ponderosa Local Memory tools. Voice may reuse an unchanged contract; ordinary
-  // Native model, effort and speed changes can retain the same session under the same policy.
+  // Effort and speed can change within a verified native session for the same model.
   let retainedVerifiedContext = false;
   const canRetainRuntimeSettings = () => {
     if (!resumeSessionState?.toolContractHash || !internalV3Dispatch || !schedulerRunScopeKey ||
@@ -690,7 +688,7 @@ export async function prepareAgentRun(
     const packet = store.acceptedProviderSessionInput(agent.id);
     const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
     if (!contract || contract.contractHash !== resumeSessionState.toolContractHash ||
-        contract.engineId !== runtimeEngineId || contract.cwd !== workingCopy.rootPath ||
+        contract.engineId !== runtimeEngineId || contract.model !== effectiveModel || contract.cwd !== workingCopy.rootPath ||
         contract.workingCopyId !== workingCopy.id || packet?.systemPromptHash !== systemPromptHash) return false;
     const priorHash = providerRuntimeSessionContractHash({
       runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id, contract.model, contract.effort, providerToolHash),
@@ -755,13 +753,19 @@ export async function prepareAgentRun(
   } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash &&
       !(retainedVerifiedContext = canRetainRuntimeSettings())) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff contract changed; original accepted context retained");
-    // An instruction edit may race scheduler preflight. Return this exact
-    // still-uninjected lease to admission when only the prompt changed.
+    // A model or instruction edit may race scheduler preflight. Return the
+    // exact uninjected claim before retirement can clear the accepted context.
     const oldPacket=store.acceptedProviderSessionInput(agent.id);
-    if(internalV3Dispatch && !settingsTransition && oldPacket?.exactSystemPrompt &&
-       oldPacket.exactSystemPrompt!==currentSystemPrompt &&
-       [CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter)) &&
-       !Object.hasOwn(engine.adapter,'openSession')) {
+    const oldContract=oldPacket?.sourceManifest.schemaVersion===3 ? oldPacket.sourceManifest.normalRuntimeContract : undefined;
+    if(internalV3Dispatch && nativeAdapter && !transitionActivation && !preflightActiveRollover &&
+       !pauseRecovery && !folderTransition && runtimeEngineId===agent.activeEngine &&
+       schedulerRunScopeKey===`conversation:${agent.conversationId}` &&
+       oldContract?.contractHash===resumeSessionState.toolContractHash && oldContract?.engineId===runtimeEngineId &&
+       oldContract.workingCopyId===workingCopy.id && oldContract.cwd===workingCopy.rootPath &&
+       oldContract.model && effectiveModel && oldContract.model!==effectiveModel)
+      throw new PromptContractAdmissionChanged('The model changed before admission; work remains queued for a context handoff.');
+    if(internalV3Dispatch && !settingsTransition && nativeAdapter && oldPacket?.exactSystemPrompt &&
+       oldPacket.exactSystemPrompt!==currentSystemPrompt) {
       const oldPromptHash=createHash('sha256').update(oldPacket.exactSystemPrompt).digest('hex');
       const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash,speed:effectiveSpeed,
        ...(runtimeAuthentication.billingMode?{billingMode:runtimeAuthentication.billingMode}:{}),

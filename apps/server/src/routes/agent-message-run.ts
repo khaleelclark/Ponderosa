@@ -630,8 +630,9 @@ export function registerAgentMessageRunRoute(
         project.defaultEngine === runtimeEngineId ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
         workspace.getPreferences().engineDefaults?.[runtimeEngineId],
       ], projectModelOptions);
-      const hasModelOverride = !activeRunSnapshot && request.body.model !== undefined;
+      // Blank overrides inherit the Agent selection, including in already queued work.
       const requestedModel = request.body.model?.trim() || undefined;
+      const hasModelOverride = !activeRunSnapshot && requestedModel !== undefined;
       if (hasModelOverride) {
         const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined, projectModelOptions);
         if (modelError) return reply.code(400).send({ error: modelError });
@@ -822,7 +823,7 @@ export function registerAgentMessageRunRoute(
                   id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
                 })),
                 engine: request.body.engine ?? null,
-                model: request.body.model ?? null,
+                model: requestedModel ?? null,
                 effort: request.body.effort ?? null,
                 speed: request.body.speed ?? null,
               },
@@ -914,7 +915,7 @@ export function registerAgentMessageRunRoute(
       const pendingTurn: PendingTurn = {
         text: publishedText,
         communicationEventId,
-        model: request.body.model,
+        model: requestedModel,
         effort: request.body.effort,
         speed: request.body.speed,
         agentMentionDepth: mentionDepth ?? 0,

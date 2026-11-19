@@ -665,7 +665,8 @@ app.post<{
   const engine = engines.get(engineId);
   if (!engine) return reply.code(400).send({ error: "unknown engine" });
   const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
-  if (["native-model", "native-permission-mode"].includes(name)) return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
+  if (name === "native-model") return reply.code(409).send({ error: "Change the model in Agent Settings to start a fresh provider session" });
+  if (name === "native-permission-mode") return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
   const argumentsText = request.body?.argumentsText?.trim();
   if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
     return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
@@ -796,7 +797,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     const engine = engines.get(agent.activeEngine);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
     const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
-    if (["native-model", "native-permission-mode"].includes(name)) return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
+    if (name === "native-model") return reply.code(409).send({ error: "Change the model in Agent Settings to start a fresh provider session" });
+    if (name === "native-permission-mode") return reply.code(409).send({ error: "Use Agent Settings native controls to change the retained runtime" });
     const argumentsText = request.body?.argumentsText?.trim();
     if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
       return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });

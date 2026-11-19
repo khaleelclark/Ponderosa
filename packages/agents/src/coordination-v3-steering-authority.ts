@@ -415,11 +415,14 @@ export class CoordinationV3SteeringAuthority {
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);
       const injection = this.sqlite.prepare(`
-        SELECT activation_ids_json FROM scheduler_prompt_injections
+        SELECT activation_ids_json,
+          state='pending' AND submitted_at IS NULL AND acknowledged_at IS NULL AND provider_turn_id IS NULL AS unsubmitted
+        FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ?
           AND state IN ('pending', 'submitted')
       `).get(input.injectionId, input.runId) as {
         activation_ids_json: string;
+        unsubmitted: number;
       } | undefined;
       if (!injection) throw new Error("pending steering injection not found");
       const activationIds = JSON.parse(
@@ -450,6 +453,21 @@ export class CoordinationV3SteeringAuthority {
             : input.retryDelayMs ?? 0;
           update.run(keepSteering ? 1 : 0, new Date(Date.parse(now) + delay).toISOString(), now,
             input.waitReason ?? null, activation.id);
+          // A steer deliberately queued before submission can return to
+          // pending admission. Keep its cancelled injection as exact audit evidence.
+          if (injection.unsubmitted && !input.preserveSteering) {
+            const detached = this.sqlite.prepare(`
+              DELETE FROM scheduler_run_activations WHERE run_id = ? AND activation_id = ? AND consumed_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections prior,
+                  json_each(prior.activation_ids_json) member WHERE member.value = scheduler_run_activations.activation_id
+                  AND prior.id <> ? AND (prior.state <> 'cancelled' OR prior.submitted_at IS NOT NULL
+                    OR prior.acknowledged_at IS NOT NULL OR prior.provider_turn_id IS NOT NULL))
+            `).run(input.runId, activation.id, input.injectionId);
+            if (detached.changes) this.sqlite.prepare(`
+              UPDATE agent_activations SET state='pending' WHERE id=? AND state='retry_pending'
+                AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations WHERE activation_id=?)
+            `).run(activation.id, activation.id);
+          }
           // This no-write refusal cannot settle the queued input when the old Run
           // ends. Its refused injection remains in the audit trail.
           if (unsupportedPeer || exhausted) this.sqlite.prepare(`

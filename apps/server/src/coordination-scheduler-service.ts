@@ -1,6 +1,6 @@
 import { freshFailureDiagnostic } from "./working-copy-diagnostic.js";
 import { pauseOwnedNativeGoal } from "./native-goal-stop.js";
-import { reconcileSettingsTransitionReservations, requestSettingsTransition } from "./context-transition-admission.js";
+import { reconcileSettingsTransitionReservations, requestSettingsTransition, settingsTransitionTarget } from "./context-transition-admission.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { SteeringAuthorityChangedError } from "@ponderosa/engines";
@@ -461,6 +461,20 @@ return new CoordinationV3Scheduler(
           error: "authoritative run is not currently steerable",
           steeringWaitReason: "provider_not_ready",
         };
+      }
+      const humanMessages = lease.activations.filter(activation => activation.kind === "human_message");
+      const agent = humanMessages.length ? store.getAgent(lease.agentId) : undefined;
+      const project = agent && store.getChatContext(agent.conversationId);
+      const adapter = agent && context.engines.get(agent.activeEngine)?.adapter;
+      const source = agent && store.getProviderInput(run.runId)?.sourceManifest;
+      if (agent && project && adapter && source?.schemaVersion === 3 && source.normalRuntimeContract &&
+          humanMessages.some(activation => {
+            const dispatch = (activation.payload as {dispatch?: {model?: unknown}} | null)?.dispatch;
+            const {targetModel} = settingsTransitionTarget(agent, project, adapter, workspace.getPreferences(),
+              context.cachedModelOptions(adapter, project.id), dispatch);
+            return Boolean(targetModel && targetModel !== source.normalRuntimeContract?.model);
+          })) {
+        return { accepted: false, retryable: true, error: "Model changed; queued for a fresh provider session" };
       }
       const inputFiles = compilation.inputFiles ?? [];
       requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: lease.projectId, agentId: lease.agentId, store, assets });
