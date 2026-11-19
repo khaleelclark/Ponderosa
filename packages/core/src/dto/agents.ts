@@ -671,6 +671,8 @@ export interface AgentHealthDto {
   /** Present only while the server canonically owns an active execution. */
   runtimeActivity?: {
     state: "responding";
+    /** Chat to which the Run is routed, when applicable. */
+    conversationId?: string;
     executionId: string;
     startedAt: string;
     /** Meaningful execution evidence, not a heartbeat or this projection's clock. */

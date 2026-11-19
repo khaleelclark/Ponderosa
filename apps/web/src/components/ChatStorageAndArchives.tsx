@@ -16,7 +16,10 @@ const bytes = (size: number | null) => {
   return `${(size / 1024 ** 3).toFixed(1)} GiB`;
 };
 
-export function ArchivedChats({ onClose }: { onClose(): void }): JSX.Element {
+export function ArchivedChats({ onClose, onOpen }: {
+  onClose(): void;
+  onOpen(chat: ChatArchivesDto["chats"][number]): void;
+}): JSX.Element {
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["chat-archives"], queryFn: api.listArchivedChats });
   const [resuming, setResuming] = useState<ChatArchivesDto["pendingChats"][number]>();
@@ -61,6 +64,7 @@ export function ArchivedChats({ onClose }: { onClose(): void }): JSX.Element {
             <Typography fontWeight={700}>{chat.title}</Typography>
             <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{chat.workingDirectory}</Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap">
+              <Button onClick={() => onOpen(chat)}>Open read-only</Button>
               <Button disabled={restore.isPending} onClick={() => restore.mutate(chat.id)}>Restore</Button>
               <Button color="error" onClick={() => { remove.reset(); setDeleting(chat); }}>Delete permanently</Button>
             </Stack>

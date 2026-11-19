@@ -95,8 +95,11 @@ export function useConversationMessageFocusEffect({
   setOlderMain: Dispatch<SetStateAction<OlderMain | undefined>>;
 }): void {
   useEffect(() => {
+    if (!focusMessageId) {
+      focusedMessage.current = undefined;
+      return;
+    }
     if (
-      !focusMessageId ||
       focusedMessage.current === focusMessageId ||
       focusedMessage.current === `missing:${focusMessageId}`
     )

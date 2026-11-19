@@ -445,7 +445,7 @@ function MainConversationTimeline({
   ): void;
   onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
-  mentionAgent(agentId: string): void;
+  mentionAgent?(agentId: string): void;
   markCommunicationVisible(
     communicationEventId: string | undefined,
     visible: boolean,

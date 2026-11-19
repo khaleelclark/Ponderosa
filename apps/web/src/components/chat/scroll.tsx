@@ -46,7 +46,7 @@ export function ScrollToLatestButton({ visible, onClick, label = "Jump to latest
       variant="contained"
       onClick={onClick}
       startIcon={<KeyboardArrowDownIcon />}
-      sx={sharedSx}
+      sx={{ ...sharedSx, bottom: "auto", top: 14 }}
     >{label}</Button>
   </Tooltip>;
 }

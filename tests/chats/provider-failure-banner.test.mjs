@@ -9,7 +9,7 @@ const Banner=widget('ChatLiveBanner'),Delivery=widget('MessageDeliveryStatus'),U
 function harness(messages,extra={}){
   let index=0;const values=[],calls=[],exports={};
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/ProviderFailureBanner.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,Date,Map,Set,Error,require:name=>({react:{...React,useEffect(){},useState:initial=>{const i=index++;if(!(i in values))values[i]=initial;return[values[i],v=>values[i]=v]}},'@mui/material':mui,'@tanstack/react-query':{useQueryClient:()=>({invalidateQueries:async input=>calls.push(['invalidate',input])})},'../api':{api:{recheckEngine:async provider=>{calls.push(['recheck',provider]);if(extra.recheckError)throw extra.recheckError;}}},'../queryKeys':{queryKeys:{engines:{all:['engines']}}},'./chat/ChatLiveBanner':{ChatLiveBanner:Banner},'./MessageDeliveryStatus':{MessageDeliveryStatus:Delivery},'./ProviderUsageCenter':{ProviderQuotaIndicator:Usage},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>false}}[name]??require(name))});
-  const render=()=>{index=0;return [...walk(exports.ProviderFailureBanner({projectId:'p',messages,agents:[{id:'a',title:'Full multiword Agent name'}],children:'working fallback',...extra}))]};
+  const render=()=>{index=0;return [...walk(exports.ProviderFailureBanner({projectId:'p',messages,agents:[{id:'a',title:'Full multiword Agent name'}],...extra}))]};
   return{render,calls,exports};
 }
 function* walk(node){if(!React.isValidElement(node))return;yield node;for(const child of React.Children.toArray(node.props.children))yield*walk(child)}
@@ -34,7 +34,7 @@ test('UI014 Details use canonical reset/retry state, deduplicate exact work and 
  await nodes.find(n=>n.type===mui.Button&&text(n)==='Recheck claude').props.onClick();await new Promise(setImmediate);nodes=h.render();
  assert.deepEqual(h.calls.map(c=>c[0]),['recheck','invalidate']);assert.equal(h.render().filter(n=>n.type===Delivery).length,1);assert.match(nodes.map(text).join(' '),/does not confirm that its usage allowance has reset/);
  const stopped=harness([{text:'Stopped',deliveryReceipts:[receipt('rate_limit',{recovery:'stopped'})]}]);assert.match(stopped.render().map(text).join(' '),/Automatic retries stopped/);
- const empty=harness([]);assert.match(empty.render().map(text).join(''),/working fallback/);assert.match(empty.render().map(text).join(''),/No active provider interruptions/);
+ const empty=harness([]);assert.ok(!empty.render().some(n=>n.type===Banner));assert.match(empty.render().map(text).join(''),/No active provider interruptions/);
 });
 
 test('UI014 shared broadcasts count affected deliveries, not duplicated user messages',()=>{

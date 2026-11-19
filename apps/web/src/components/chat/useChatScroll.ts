@@ -165,6 +165,7 @@ export function useChatScroll(
     messageNavigationAway.current = false;
     followLatest.current = true;
     readingAnchor.current=undefined;
+    restoreDistance.current = undefined;
     scrollChatToBottom(element);
     setShowScrollToLatest(false);
     follow.onPositionChange?.(element, true);

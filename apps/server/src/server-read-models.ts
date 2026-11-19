@@ -764,6 +764,7 @@ export function createServerReadModels(context: ReadModelContext) {
     }
     const ownership = new Map<string, ActiveRunObservation>(
       [...activeRuns].map(([agentId, run]) => [agentId, {
+        conversationId: run.conversationId,
         startedAt: run.startedAt,
         lastActivityAt: run.lastMeaningfulActivityAt,
         executionId: run.executionId,

@@ -7,6 +7,7 @@ import { useDecisionResponse } from "../../hooks/useDecisionResponse";
 import { DecisionResponseDialog } from "./DecisionResponseDialog";
 import { RuntimeElicitationActions } from "./RuntimeElicitationActions";
 import { settleDecisionResponse } from "./decisionResponse";
+import { useWorkspaceReadOnly } from "../WorkspaceReadOnlyContext";
 
 export function DecisionActions({
   decision,
@@ -26,6 +27,7 @@ export function DecisionActions({
   onOpen?(): void;
   onDismiss?(): void;
 }): JSX.Element | null {
+  const readOnly = useWorkspaceReadOnly();
   const [textDialogOpen, setTextDialogOpen] = useState(false);
   const answerTrigger = useRef<HTMLButtonElement>(null), wasEditing = useRef(false);
   useEffect(() => {
@@ -46,6 +48,7 @@ export function DecisionActions({
     // that exact mounted response owner available until its existing retry settles.
     if (textDialogOpen || currentAttempt) onRetentionChange?.(decision, textDialogOpen || response.isPending || Boolean(unconfirmedApproval));
   }, [currentAttempt, decision, onRetentionChange, response.isPending, textDialogOpen, unconfirmedApproval]);
+  if (readOnly) return children ? <>{children}</> : null;
   if (response.isSuccess && response.data.id === decision.id && response.data.status !== "pending") return children ? <>{children}</> : null;
   if (decision.status !== "pending" && !(currentAttempt && response.isPending) && !unconfirmedApproval) return children ? <>{children}</> : null;
   if (onOpen) return <>{children}<Button size="small" onClick={event => { event.stopPropagation(); onOpen(); }}>Answer Question</Button></>;

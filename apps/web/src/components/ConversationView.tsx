@@ -3,7 +3,7 @@ import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
 import { loadAgentWorkInspector } from "../projectShellLoader";
-import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
+import {WorkspaceReadOnlyContext, useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
   Alert,
   Box,
@@ -41,6 +41,7 @@ import { providerCommandResultSx, providerCommandResultText } from "../providerC
 import type { AgentStatus } from "../agents";
 import {
   useAgents,
+  useConversation,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
@@ -91,7 +92,7 @@ import { useConversationMessagingController } from "./useConversationMessagingCo
 import { ProviderFailureBanner } from "./ProviderFailureBanner";
 import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
 import { deletionCleanupNotice } from "./deletionCleanupNotice";
-import { MasterRespondingIndicator } from "./ConversationComposerStatus";
+import { ChatWorkingAgents } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
 } from "./chat/ChatMessages";
@@ -117,6 +118,7 @@ export function ConversationView({
   focusMessageId,
   initialView,
   onViewChange,
+  onClearMessageFocus,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -139,6 +141,7 @@ export function ConversationView({
   focusMessageId?: string;
   initialView?: ConversationDetailView;
   onViewChange?(view: ConversationDetailView): void;
+  onClearMessageFocus(): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: {
@@ -174,14 +177,16 @@ export function ConversationView({
     conversationId,
     initialView,
   );
-  const activeView=workflowAuditOnly&&storedView==='agents'?'main':storedView;
+  const detailQuery = useConversation(conversationId);
+  const conversation = detailQuery.data?.conversation;
+  const auditOnly = workflowAuditOnly || Boolean(conversation?.archivedAt || conversation?.archivePending);
+  const activeView = auditOnly && storedView === "agents" ? "main" : storedView;
   const {
     agents,
     collaborationHistory,
     collaborationLayoutKey,
     collaborationMessages,
     collaborationQuery,
-    detailQuery,
     loadOlderHistory,
     loadingOlder,
     mainHistory,
@@ -192,7 +197,7 @@ export function ConversationView({
     operationalLayoutKey,
     setOlderCollaboration,
     setOlderMain,
-  } = useConversationHistory(conversationId, activeView);
+  } = useConversationHistory(conversationId, activeView, detailQuery);
   const notificationsQuery = useNotifications();
   const markCommunicationVisible = useConversationNotificationVisibility(
     queryClient,
@@ -205,7 +210,8 @@ export function ConversationView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [addAgentsOpen, setAddAgentsOpen] = useState(false);
-  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
+  const [agentWorkRequested, setAgentWorkOpen] = useState(false);
+  const agentWorkOpen = agentWorkRequested && !auditOnly;
   const collaborationVisited = useRef(activeView === "collaboration");
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
@@ -237,8 +243,6 @@ export function ConversationView({
 
   useConversationActiveViewPersistence(activeView, conversationId);
 
-  const conversation = detailQuery.data?.conversation;
-  const auditOnly = workflowAuditOnly || Boolean(conversation?.archivedAt || conversation?.archivePending);
   useEffect(() => {
     if (conversation?.title) document.title = `${conversation.title} · Ponderosa`;
   }, [conversation?.title]);
@@ -886,7 +890,7 @@ export function ConversationView({
       />
     ) : null;
   return (
-    <OutgoingMessageProvider scope={conversationId} profile={preferencesQuery.data?.profile} onOpenAgent={id => onOpenAgent(id)}><Box
+    <WorkspaceReadOnlyContext.Provider value={auditOnly}><OutgoingMessageProvider scope={conversationId} profile={preferencesQuery.data?.profile} onOpenAgent={id => onOpenAgent(id)}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -918,7 +922,7 @@ export function ConversationView({
         }}
       />
 
-      {contextSettingsOpen ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
+      {contextSettingsOpen && !auditOnly ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
 
 
       <Box
@@ -944,25 +948,23 @@ export function ConversationView({
           }}
         >
           <ChatSurface
-            overlay={<Box
-            sx={{
-              position: "absolute",
-              insetInline: 0,
-              bottom: 2,
-              zIndex: 2,
-              pointerEvents: "none",
-            }}
-          >
-            <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
-            <MasterRespondingIndicator
-              messages={messages}
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-            </ProviderFailureBanner>
-          </Box>}
-            bottomPanel={<ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
-              focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />}
+            bottomPanel={!auditOnly && <Box>
+              <Stack spacing={0.5}>
+                <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId} />
+                <ChatWorkingAgents conversationId={conversationId} agents={identityAgents} healthByAgentId={healthByAgentId} />
+              </Stack>
+              <ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
+                focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />
+            </Box>}
+            latestAction={mainHistory.historical || focusMessageId && !focusMessageId.startsWith("decision:") ? {
+              historical: Boolean(mainHistory.historical),
+              onClick: () => {
+                if (mainHistory.historical) setOlderMain(undefined);
+                focusedMessageHighlightDisposer.current?.();
+                focusedMessageHighlightDisposer.current = undefined;
+                if (focusMessageId) onClearMessageFocus();
+              },
+            } : undefined}
             showOutgoingMessage
             outgoingInTimeline
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
@@ -986,9 +988,6 @@ export function ConversationView({
             beforeMessages={
               <>
                 <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>
-                {mainHistory.historical && <Alert severity="info" sx={{ m: 1.5 }} action={
-                  <Button color="inherit" size="small" onClick={() => setOlderMain(undefined)}>Return to Latest</Button>
-                }>Viewing an older part of this Chat</Alert>}
                 {olderError ? (
                   <Alert
                     severity="error"
@@ -1044,7 +1043,7 @@ export function ConversationView({
               onOpenAgent={onOpenAgent}
               onOpenReview={onOpenReview}
               onOpenFileActivity={onOpenFileActivity}
-              mentionAgent={mentionAgent}
+              mentionAgent={auditOnly ? undefined : mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
               notifications={notificationsQuery.data?.items ?? []}
             />}
@@ -1209,7 +1208,7 @@ onClose: () => setAgentWorkOpen(false)}} />
       {conversation.archivePending ? <Alert severity="warning" sx={{ m: 1 }}
         action={<Button color="inherit" onClick={() => setArchiveOpen(true)}>Resume archive</Button>}>
         Archive interrupted. Work is held until cleanup finishes.
-      </Alert> : auditOnly?<Alert severity="info" sx={{m:1}}>{conversation.archivedAt ? "Archived Chat · restore it from Manage Chats to send messages" : "Temporary workflow Chat · messages and results"}</Alert>:<ChatComposerDock
+      </Alert> : auditOnly?<Alert severity="info" sx={{m:1}}>{conversation.archivedAt ? "Archived Chat · read-only. Restore it from Manage Chats to send messages." : "Temporary workflow Chat · messages and results"}</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
@@ -1390,6 +1389,6 @@ onClose: () => setAgentWorkOpen(false)}} />
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
       />}
 
-    </Box></OutgoingMessageProvider>
+    </Box></OutgoingMessageProvider></WorkspaceReadOnlyContext.Provider>
   );
 }
