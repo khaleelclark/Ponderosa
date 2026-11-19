@@ -1,3 +1,5 @@
+import { ArchivedChats, ChatStorage } from "./ChatStorageAndArchives";
+import { ChatArchiveDialog } from "./ChatArchiveDialog";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -65,6 +67,9 @@ export function ManageChatsWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const [archivesOpen, setArchivesOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<ChatRow>();
   const notify = useMutationNotification();
   const [search, setSearch] = useState("");
   // Retained data only renders the closing Dialog; actual targets clear immediately.
@@ -264,6 +269,8 @@ export function ManageChatsWorkspace({
             spacing={1}
             sx={{ alignItems: "center", minWidth: 0, flexWrap: "wrap" }}
           >
+            <Button color="inherit" size="small" onClick={() => setArchivesOpen(true)}>Archived Chats</Button>
+            <Button color="inherit" size="small" onClick={() => setStorageOpen(true)}>Chat Storage</Button>
             <Button
               color="inherit"
               size="small"
@@ -329,6 +336,7 @@ export function ManageChatsWorkspace({
               {row.project.label}
             </Typography>
           </Box>
+          {row.conversation.branchId ? null : <Button size="small" onClick={() => setArchiveTarget(row)}>Archive</Button>}
           <Tooltip title={`Open ${row.conversation.title}`}>
             <IconButton
               aria-label={`Open ${row.conversation.title}`}
@@ -356,6 +364,17 @@ export function ManageChatsWorkspace({
       />
     </CollectionWorkspace>
 
+    {archivesOpen ? <ArchivedChats onClose={() => setArchivesOpen(false)} /> : null}
+    {storageOpen ? <ChatStorage onClose={() => setStorageOpen(false)} /> : null}
+    {archiveTarget ? <ChatArchiveDialog id={archiveTarget.conversation.id} title={archiveTarget.conversation.title}
+      onClose={() => setArchiveTarget(undefined)} onArchived={() => {
+        setSelected(current => {
+          const next = new Map(current);
+          next.delete(archiveTarget.conversation.id);
+          return next;
+        });
+        setArchiveTarget(undefined);
+      }} /> : null}
     <ResourceDeletionDialog
       open={deleteOpen}
       resourceType="Chats"

@@ -13,7 +13,7 @@ export function ChatDeletionDialog({
   onDelete,
 }: {
   open: boolean;
-  conversation?: ConversationDto;
+  conversation?: Pick<ConversationDto, "id" | "title" | "branchId">;
   pending: boolean;
   error?: string;
   onClose(): void;
@@ -43,6 +43,7 @@ export function ChatDeletionDialog({
   return <ResourceDeletionDialog
     open={open}
     resourceType="Chat"
+    confirmLabel="Delete permanently"
     resourceName={conversation?.title}
     pendingLabel="Deleting…"
     pending={pending}

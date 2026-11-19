@@ -449,6 +449,31 @@ export const realApi = {
   getProject(projectId: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`);
   },
+  listArchivedChats(): Promise<import("@ponderosa/core").ChatArchivesDto> {
+    return requestJson("/api/chat-archives");
+  },
+  previewChatArchive(id: string): Promise<import("@ponderosa/core").ChatArchivePreviewDto> {
+    return requestJson(`/api/conversations/${encodeURIComponent(id)}/archive-preview`);
+  },
+  archiveChat(id: string, stopRunIds: string[]): Promise<{ archived: true }> {
+    return requestJson(`/api/conversations/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ stopRunIds }) });
+  },
+  restoreChat(id: string): Promise<{ restored: true }> {
+    return requestJson(`/api/conversations/${encodeURIComponent(id)}/restore`, { method: "POST" });
+  },
+  releaseArchivedWork(chatId: string, activationId: string): Promise<{ released: true }> {
+    return requestJson(`/api/conversations/${encodeURIComponent(chatId)}/release-archived-work`, {
+      method: "POST", body: JSON.stringify({ activationId }),
+    });
+  },
+  getChatStorage(): Promise<import("@ponderosa/core").ChatStorageDto> {
+    return requestJson("/api/chat-storage");
+  },
+  deleteManagedChatFolder({ name, identity }: { name: string; identity: string }): Promise<{ deleted: true }> {
+    return requestJson(`/api/chat-storage/folders/${encodeURIComponent(name)}`, {
+      method: "DELETE", body: JSON.stringify({ confirmed: true, identity }),
+    });
+  },
   getProjectFolders(): Promise<ProjectFolderOptionsDto> {
     return requestJson<ProjectFolderOptionsDto>("/api/project-folders");
   },

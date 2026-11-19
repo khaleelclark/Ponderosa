@@ -39,3 +39,8 @@ jobs:
           --test-name-pattern='two-phase root exit|workspace pulse compaction'
           tests/providers/provider-access.test.mjs
           tests/workspace-navigation/folder-directory.test.mjs
+      - name: Verify Chat archive and storage custody
+        run: |
+          node --import ./tests/shared/workspace-resolution.mjs --test tests/chats/creation.test.mjs tests/providers/native-control-routes.test.mjs
+          node --import ./tests/shared/workspace-resolution.mjs --test \
+            --test-name-pattern='scopes Chat counts and user-published files' tests/branches/product-scope.test.mjs

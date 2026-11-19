@@ -1,3 +1,4 @@
+import { ChatArchiveDialog } from "./ChatArchiveDialog";
 import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
@@ -165,7 +166,7 @@ export function ConversationView({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onDeleted(): void;
 }): JSX.Element {
-  const auditOnly=useWorkspaceReadOnly();
+  const workflowAuditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
   const runtimeNamespace=productApiPath("/api/conversations");
@@ -173,7 +174,7 @@ export function ConversationView({
     conversationId,
     initialView,
   );
-  const activeView=auditOnly&&storedView==='agents'?'main':storedView;
+  const activeView=workflowAuditOnly&&storedView==='agents'?'main':storedView;
   const {
     agents,
     collaborationHistory,
@@ -202,6 +203,7 @@ export function ConversationView({
   const [contextSettingsOpen, setContextSettingsOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [addAgentsOpen, setAddAgentsOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
@@ -236,6 +238,7 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  const auditOnly = workflowAuditOnly || Boolean(conversation?.archivedAt || conversation?.archivePending);
   useEffect(() => {
     if (conversation?.title) document.title = `${conversation.title} · Ponderosa`;
   }, [conversation?.title]);
@@ -506,7 +509,7 @@ export function ConversationView({
   });
   useEffect(() => {
     if (
-      !/^New Chat$/i.test(conversation?.title ?? "") ||
+      auditOnly || !/^New Chat$/i.test(conversation?.title ?? "") ||
       titleGenerationRequested.current === conversationId
     )
       return;
@@ -516,7 +519,7 @@ export function ConversationView({
     if (!hasOperatorMessage) return;
     titleGenerationRequested.current = conversationId;
     generateTitle.mutate();
-  }, [conversation?.title, conversationId, generateTitle, messages]);
+  }, [auditOnly, conversation?.title, conversationId, generateTitle, messages]);
 
   const deleteConversation = useMutation({
     mutationFn: (expectedAgentIds: string[]) => api.deleteConversation(conversationId, expectedAgentIds),
@@ -908,6 +911,7 @@ export function ConversationView({
         setRenameOpen={setRenameOpen}
         setAddAgentsOpen={setAddAgentsOpen}
         setDeleteOpen={setDeleteOpen}
+        setArchiveOpen={setArchiveOpen}
         setActiveView={next => {
           setActiveView(next);
           onViewChange?.(next);
@@ -1199,7 +1203,13 @@ onClose: () => setAgentWorkOpen(false)}} />
 
       </Box>
 
-      {auditOnly?<Alert severity="info" sx={{m:1}}>Temporary workflow Chat · messages and results</Alert>:<ChatComposerDock
+      {conversation.archivedWorkBlockingAgents?.length ? <Alert severity="warning" sx={{ m: 1 }}>
+        New work for {conversation.archivedWorkBlockingAgents.join(", ")} waits on a held context transition. Review it in Manage Chats → Archived Chats.
+      </Alert> : null}
+      {conversation.archivePending ? <Alert severity="warning" sx={{ m: 1 }}
+        action={<Button color="inherit" onClick={() => setArchiveOpen(true)}>Resume archive</Button>}>
+        Archive interrupted. Work is held until cleanup finishes.
+      </Alert> : auditOnly?<Alert severity="info" sx={{m:1}}>{conversation.archivedAt ? "Archived Chat · restore it from Manage Chats to send messages" : "Temporary workflow Chat · messages and results"}</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
@@ -1348,6 +1358,8 @@ onClose: () => setAgentWorkOpen(false)}} />
         />
       </ChatComposerDock>}
 
+      {(!auditOnly || conversation.archivePending) && archiveOpen ? <ChatArchiveDialog id={conversation.id} title={conversation.title}
+        onClose={() => setArchiveOpen(false)} onArchived={() => { setArchiveOpen(false); onDeleted(); }} /> : null}
       {!auditOnly&&<ConversationDialogs
         conversation={conversation}
         engines={engines}

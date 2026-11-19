@@ -1,3 +1,4 @@
+import { chatArchiveBlocksAgent } from "@ponderosa/agents";
 import { acceptedGoalResumeCommand } from "../native-goal-command-availability.js";
 import {localMemoryFor} from "../local-memory.js";
 import { selectNativeCommand } from "../native-command-selection.js";
@@ -484,6 +485,7 @@ export function registerAgentMessageRunRoute(
       if (deletingProjectIds.has(project.id)) {
         return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
+      if (chatArchiveBlocksAgent(store.sqlite, agentId)) return reply.code(409).send({ error: "Restore the Chat before starting work" });
       const agentConversation = agent.conversationId
         ? store.getConversation(agent.conversationId)
         : undefined;

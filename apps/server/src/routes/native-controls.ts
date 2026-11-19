@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
+import { chatArchiveBlocksAgent, type AgentStore, type CoordinationV3Store } from "@ponderosa/agents";
 import type { NativeRuntimeControlRequest } from "@ponderosa/core";
 import type { ActiveRun, PersistentRuntime } from "../app-contracts.js";
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
@@ -16,12 +16,12 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
   deletingProjectIds: ReadonlySet<string>;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   isClosed(): boolean;
-}): void {
+}): (id: string) => boolean {
   const busy = new Set<string>();
   const boundary = (id: string) => {
     const agent = context.store.getAgent(id);
     const runtime = context.persistentRuntimeForTermination(id);
-    if (!agent || !runtime || context.isClosed() || context.deletingAgentIds.has(id) ||
+    if (!agent || !runtime || chatArchiveBlocksAgent(context.store.sqlite, id) || context.isClosed() || context.deletingAgentIds.has(id) ||
         context.deletingProjectIds.has(agent.projectId) || context.coordinationV3.contextRecovery.active(id)) return undefined;
     if (context.store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(id)) return undefined;
     try { context.assertRetainedAuthentication(id, runtime.session); } catch { return undefined; }
@@ -92,4 +92,5 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
       return reply.code(409).send({error:message});
     } finally { busy.delete(id); }
   });
+  return id => busy.has(id);
 }

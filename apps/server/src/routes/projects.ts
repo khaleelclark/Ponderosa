@@ -815,11 +815,6 @@ export function registerProjectRoutes(
     managedProjectCreationFault,
   } = context;
 
-  registerProjectFolderRoutes(app, {
-    managedWorkspacesRoot,
-    pathBoundary: projectFolderPathBoundary,
-    store,
-  });
   const reconcileManagedFolders = () => reconcileManagedProjectFolders(
     managedWorkspacesRoot,
     store,
@@ -834,6 +829,12 @@ export function registerProjectRoutes(
     completion: Promise<void>;
     complete: () => void;
   }>();
+  registerProjectFolderRoutes(app, {
+    managedWorkspacesRoot,
+    pathBoundary: projectFolderPathBoundary,
+    store,
+    chatCreationInProgress: () => projectCreationClaims.size > 0,
+  });
   const claimProjectCreation = async (
     identity: ManagedProjectCreationIdentity,
   ): Promise<() => void> => {

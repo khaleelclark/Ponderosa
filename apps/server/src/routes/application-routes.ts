@@ -1,3 +1,4 @@
+import { registerChatArchiveRoutes } from "./chat-archives.js";
 import {activeAgentProductSql} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
 import { decisionAnswersError, chatBrowserOwnerId } from "@ponderosa/core";
@@ -1057,7 +1058,7 @@ registerBrowserRoutes(app, {
   },
 });
 
-registerProviderCommandRoutes(app, {
+const providerCommands = registerProviderCommandRoutes(app, {
   engineAuthStatuses,
   store,
   coordinationV3,
@@ -1086,6 +1087,28 @@ registerProviderCommandRoutes(app, {
   reportRuntimeCapabilitiesChanged,
   providerProcessAuthority,
   workingCopies,
+});
+
+registerChatArchiveRoutes(app, {
+  store,
+  hasLocalRun: agentId => activeRuns.has(agentId),
+  hasProviderOperation: providerCommands.hasActiveOperation,
+  stopRun: (agentId, runId, key) => {
+    const result = providerCommands.stopRun(agentId, runId, key);
+    if (result.status !== 200 && "currentRunId" in result.body && result.body.currentRunId) throw new Error(result.body.error);
+  },
+  drainProviders: async agentIds => {
+    if (!agentIds.size) return;
+    await drainProviderRuntimeAuthority("Chat archive", agentIds);
+    await providerProcessAuthority.terminateAgents(agentIds, "Chat archive");
+    if ([...agentIds].some(agentId => providerProcessAuthority.count({ agentId }) > 0)) {
+      throw new Error("Provider cleanup is still pending");
+    }
+  },
+  hasIntake: id => deletingConversationIds.has(id) || (agentCreationConversationLeases.get(id) ?? 0) > 0 ||
+    (conversationDeliveryLeases.get(id) ?? 0) > 0,
+  notifyScheduler,
+  publishChanged: (projectId, conversationId) => appendWorkspace({ type: "conversation_changed", action: "updated", projectId, conversationId }),
 });
 
 registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);

@@ -1,3 +1,5 @@
+import { chatArchiveHeldWork } from "./chat-archives.js";
+import { chatArchiveBlocksChat } from "@ponderosa/agents";
 import {redactProviderDiagnostic} from "../provider-failure-event.js";
 import {redactKnownDiagnosticValues} from "../working-copy-diagnostic.js";
 import {describeChatDeletionIntentFailure} from '../branch-deletion-diagnostics.js';
@@ -184,7 +186,7 @@ export function registerConversationRoutes(
           baseSql: `
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
-            WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL AND ${activeAgentProductSql('agent',requestProduct(request))}
+            WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL AND ${activeAgentProductSql('agent',requestProduct(request),true)}
               ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE char(92)" : ""}
           `,
           params: normalizedSearch
@@ -295,7 +297,16 @@ export function registerConversationRoutes(
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
     try {
       const detail = conversationDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
-      return detail ?? reply.code(404).send({ error: "conversation not found" });
+      if (!detail) return reply.code(404).send({ error: "conversation not found" });
+      const archive = store.sqlite.prepare("SELECT archived_at FROM chat_archives WHERE conversation_id=?").get(request.params.id) as { archived_at: string | null } | undefined;
+      if (archive) return {
+        ...detail,
+        conversation: { ...detail.conversation, ...(archive.archived_at ? { archivedAt: archive.archived_at } : { archivePending: true }) },
+      };
+      const blockingAgents = chatArchiveHeldWork(store, request.params.id).filter(item => item.blocksNewWork).map(item => item.agentTitle);
+      return blockingAgents.length ? {
+        ...detail, conversation: { ...detail.conversation, archivedWorkBlockingAgents: [...new Set(blockingAgents)] },
+      } : detail;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
     }
@@ -303,6 +314,7 @@ export function registerConversationRoutes(
 
   app.post<{ Params: { id: string } }>("/api/conversations/:id/generate-title", async (request, reply) => {
     if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
+    if (chatArchiveBlocksChat(store.sqlite, request.params.id)) return { title: store.getConversation(request.params.id)!.title, generated: false };
     return generateConversationTitle(request.params.id);
   });
 
@@ -388,6 +400,9 @@ export function registerConversationRoutes(
         ...(!deleted ? { deletionPending: true, retryable: true } : {}),
         replayed: true,
       };
+    }
+    if (!pending && store.sqlite.prepare("SELECT 1 FROM chat_archives WHERE conversation_id=? AND archived_at IS NULL").get(current.id)) {
+      throw Object.assign(new Error("Finish archiving this Chat before deleting it"), { statusCode: 409 });
     }
     if (deletingConversationIds.has(current.id) && !pending) {
       throw Object.assign(new Error("Chat deletion is already in progress"),{statusCode:409});

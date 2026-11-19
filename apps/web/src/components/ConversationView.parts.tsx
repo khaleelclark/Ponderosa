@@ -284,6 +284,7 @@ function ConversationHeader({
   setRenameOpen,
   setAddAgentsOpen,
   setDeleteOpen,
+  setArchiveOpen,
   setActiveView,
 }: {
   titleControl?: ReactNode;
@@ -301,9 +302,10 @@ function ConversationHeader({
   setRenameOpen: Dispatch<SetStateAction<boolean>>;
   setAddAgentsOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
+  setArchiveOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
-  const auditOnly=useWorkspaceReadOnly();
+  const auditOnly=useWorkspaceReadOnly() || Boolean(conversation.archivedAt || conversation.archivePending);
   const chatActions = useMemo<ChatOverflowAction[]>(()=>[
     { label: "Chat Settings", onSelect: onChatSettings },
     {
@@ -324,13 +326,14 @@ function ConversationHeader({
       icon: <AddIcon fontSize="small" />,
       onSelect: () => setAddAgentsOpen(true),
     },
+    ...(!conversation.branchId ? [{ label: "Archive", onSelect: () => setArchiveOpen(true) }] : []),
     {
-      label: "Delete",
+      label: "Delete permanently",
       icon: <DeleteOutlineIcon fontSize="small" />,
       destructive: true,
       onSelect: () => setDeleteOpen(true),
     },
-  ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,setRenameOpen,setAddAgentsOpen,setDeleteOpen]);
+  ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,conversation.branchId,setRenameOpen,setAddAgentsOpen,setDeleteOpen,setArchiveOpen]);
   const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`;
   const browserAction = useMemo(() => <Tooltip title="Open Browser">
     <IconButton aria-label="Open Browser" onClick={onOpenProjectBrowser}><LanguageIcon /></IconButton>

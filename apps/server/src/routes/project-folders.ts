@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
-import { promises as fs } from "@ponderosa/native-host/fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, rmdirSync, unlinkSync, promises as fs } from "@ponderosa/native-host/fs";
 import path from "node:path";
-import type { AgentStore } from "@ponderosa/agents";
+import { managedArtifactContentPath, managedArtifactProductSql, managedWorkspacePath, type AgentStore } from "@ponderosa/agents";
+import { offlineMountIdentity } from "@ponderosa/native-host";
+import { projectInProduct, requestProduct } from "../product-scope.js";
+import { setImmediate as yieldToServer } from "node:timers/promises";
 import type {
   CreateHostFolderRequest,
   HostFolderBrowseDto,
@@ -13,7 +17,8 @@ import type { FastifyInstance } from "fastify";
 export interface ProjectFolderRoutesOptions {
   readonly managedWorkspacesRoot: string;
   readonly pathBoundary: ProjectFolderPathBoundary;
-  readonly store: Pick<AgentStore, "listProjects">;
+  readonly store: Pick<AgentStore, "listProjects" | "getConversation" | "sqlite">;
+  readonly chatCreationInProgress: () => boolean;
 }
 
 export interface ProjectFolderPathBoundary {
@@ -45,7 +50,7 @@ export function createProjectFolderPathBoundary(options: {
 
   const insideRoot = (candidate: string, root: string): boolean => {
     const relative = path.relative(root, candidate);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
   };
 
   const validatedBrowsePath = async (input: string): Promise<{ candidate: string; root: string }> => {
@@ -78,6 +83,175 @@ export function registerProjectFolderRoutes(
   options: ProjectFolderRoutesOptions,
 ): void {
   const { defaultBrowsePath, insideRoot, validatedBrowsePath } = options.pathBoundary;
+
+  const dataDir = path.dirname(options.managedWorkspacesRoot);
+  const folderIdentity = (stat: NonNullable<ReturnType<typeof lstatSync>>) =>
+    createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`).digest("hex");
+  // Anchor each descent to its parent's descriptor so a substituted symlink
+  // or a mount added after the inventory cannot redirect recursive removal.
+  const removeLinuxFolder = (folder: string, mount: bigint, identity?: string): void => {
+    const fd = openSync(folder, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const opened = `/proc/self/fd/${fd}`;
+      const info = fstatSync(fd);
+      if (offlineMountIdentity(fd) !== mount || (identity && folderIdentity(info) !== identity)) {
+        throw new Error("Managed folder identity or mount changed");
+      }
+      for (const child of readdirSync(opened, { withFileTypes: true })) {
+        const target = path.join(opened, child.name);
+        if (child.isDirectory()) removeLinuxFolder(target, mount);
+        else unlinkSync(target);
+      }
+      const current = lstatSync(folder);
+      if (info.dev !== current.dev || info.ino !== current.ino) throw new Error("Managed directory moved");
+      rmdirSync(folder);
+    } finally {
+      closeSync(fd);
+    }
+  };
+  const relatedFolders = (a: string, b: string) => insideRoot(a, b) || insideRoot(b, a);
+  const referencedFolders = () => {
+    const projects = options.store.sqlite.prepare(`
+      SELECT p.host_path AS hostPath FROM projects p
+      WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.project_id=p.id)
+        OR EXISTS (SELECT 1 FROM agents a WHERE a.project_id=p.id AND a.deleted_at IS NULL)
+    `).all() as { hostPath: string }[];
+    const chats = options.store.sqlite.prepare("SELECT id FROM conversations").all() as { id: string }[];
+    const agents = options.store.sqlite.prepare(`
+      SELECT json_extract(working_copy_json, '$.rootPath') AS hostPath FROM agents WHERE deleted_at IS NULL
+    `).all() as { hostPath: string | null }[];
+    const paths = new Set([...projects, ...agents].flatMap(row => row.hostPath ? [row.hostPath] : []));
+    for (const chat of chats) {
+      const folder = options.store.getConversation(chat.id, { includeDeleting: true })?.workingDirectory;
+      if (folder) paths.add(folder);
+    }
+    return [...paths];
+  };
+  const directoryBytes = async (root: string): Promise<number | null> => {
+    const pending = [root];
+    let count = 0;
+    let bytes = 0;
+    let rootDevice: number | undefined;
+    try {
+      while (pending.length) {
+        if (++count % 128 === 0) await yieldToServer();
+        const file = pending.pop()!;
+        const info = await fs.lstat(file);
+        rootDevice ??= info.dev;
+        if (info.dev !== rootDevice) return null;
+        if (info.isDirectory()) {
+          for (const name of await fs.readdir(file)) pending.push(path.join(file, name));
+        } else if (info.isFile()) bytes += info.size;
+      }
+      return bytes;
+    } catch (error) {
+      return count === 1 && (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null;
+    }
+  };
+  const visibleArtifacts = options.store.sqlite.prepare(`
+    SELECT artifact.artifact_id AS id FROM managed_artifact_projection artifact
+    WHERE artifact.project_id=? AND ${managedArtifactProductSql('artifact', 'dev')}
+  `);
+  const projectArtifactBytes = async (id: string): Promise<number | null> => {
+    let bytes = 0;
+    for (const artifact of visibleArtifacts.all(id) as { id: string }[]) {
+      try {
+        const info = await fs.lstat(managedArtifactContentPath(dataDir, id, artifact.id));
+        if (!info.isFile()) return null;
+        bytes += info.size;
+      } catch {
+        return null;
+      }
+    }
+    return bytes;
+  };
+  let measuring = false;
+  app.get("/api/chat-storage", async (request, reply) => {
+    if (requestProduct(request) !== "dev") return reply.code(404).send({ error: "Chat Storage belongs to Chats" });
+    if (measuring) return reply.code(409).send({ error: "A storage measurement is already running" });
+    measuring = true;
+    try {
+      await fs.mkdir(options.managedWorkspacesRoot, { recursive: true });
+      const references = referencedFolders();
+      const folders = [];
+      const entries = await fs.readdir(options.managedWorkspacesRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+        let folder: string;
+        try { folder = managedWorkspacePath(dataDir, entry.name); } catch { continue; }
+        const before = await fs.lstat(folder).catch(() => undefined);
+        if (!before?.isDirectory()) continue;
+        folders.push({ name: entry.name, path: folder, bytes: await directoryBytes(folder),
+          identity: folderIdentity(before),
+          referenced: references.some(reference => relatedFolders(reference, folder)) });
+      }
+      const projects = [];
+      for (const project of options.store.listProjects()) {
+        if (!projectInProduct(options.store, project.id, "dev")) continue;
+        projects.push({ id: project.id, label: project.label, path: project.hostPath,
+          artifactBytes: await projectArtifactBytes(project.id) });
+      }
+      return { folders, projects };
+    } finally {
+      measuring = false;
+    }
+  });
+
+  app.delete<{ Params: { name: string }; Body: { confirmed?: boolean; identity?: string } }>(
+    "/api/chat-storage/folders/:name", async (request, reply) => {
+      if (requestProduct(request) !== "dev") return reply.code(404).send({ error: "Chat Storage belongs to Chats" });
+      if (request.body?.confirmed !== true || !/^[a-f0-9]{64}$/.test(request.body?.identity ?? "")) return reply.code(400).send({ error: "Confirm permanent deletion of a reviewed managed folder" });
+      let folder: string;
+      try { folder = managedWorkspacePath(dataDir, request.params.name); }
+      catch { return reply.code(400).send({ error: "Invalid managed folder" }); }
+      if (options.chatCreationInProgress() || referencedFolders().some(reference => relatedFolders(reference, folder))) {
+        return reply.code(409).send({ error: "This folder still has Chat or Agent references, or Chat creation is in progress" });
+      }
+      try {
+        // Do not cross a mount or traverse a symlink when reclaiming managed
+        // storage. Keep the validation and removal in one synchronous turn.
+        const root = lstatSync(options.managedWorkspacesRoot);
+        const entry = lstatSync(folder);
+        if (folderIdentity(entry) !== request.body.identity) {
+          return reply.code(409).send({ error: "Folder identity changed. Refresh storage and review the folder again." });
+        }
+        if (!root.isDirectory() || !entry.isDirectory() || entry.dev !== root.dev) {
+          return reply.code(409).send({ error: "The target is not an ordinary managed folder" });
+        }
+        if (process.platform === "linux") {
+          const realFolder = realpathSync(folder);
+          const mounts = readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n").map(line => {
+            const mountPoint = line.split(" ")[4];
+            if (!mountPoint?.startsWith("/")) throw new Error("Mount inventory unavailable");
+            return mountPoint.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(parseInt(code, 8)));
+          });
+          if (mounts.some(mount => insideRoot(mount, realFolder))) {
+            return reply.code(409).send({ error: "The folder contains mounted storage" });
+          }
+          const rootFd = openSync(options.managedWorkspacesRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          try {
+            removeLinuxFolder(`/proc/self/fd/${rootFd}/${request.params.name}`, offlineMountIdentity(rootFd), request.body.identity);
+          } finally {
+            closeSync(rootFd);
+          }
+          return { deleted: true };
+        }
+        const pending = [folder];
+        while (pending.length) {
+          const current = pending.pop()!;
+          const info = lstatSync(current);
+          if (info.dev !== root.dev) return reply.code(409).send({ error: "The folder contains mounted storage" });
+          if (info.isDirectory()) for (const name of readdirSync(current)) pending.push(path.join(current, name));
+        }
+        rmSync(folder, { recursive: true });
+        return { deleted: true };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).send({ error: "Managed folder not found" });
+        request.log.error({ err: error }, "Managed folder removal failed");
+        return reply.code(409).send({ error: "Could not remove the managed folder fully. Refresh storage before retrying." });
+      }
+    },
+  );
 
   app.get("/api/project-folders", async (): Promise<ProjectFolderOptionsDto> => {
     await fs.mkdir(options.managedWorkspacesRoot, { recursive: true });

@@ -1,3 +1,4 @@
+import { chatArchiveBlocksChat } from "@ponderosa/agents";
 import { parseNativeTurnCommand } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -368,6 +369,7 @@ export function registerConversationDeliveryRoutes(
     }
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
+    if (chatArchiveBlocksChat(store.sqlite, master.id)) return reply.code(409).send({ error: "Restore the Chat before sending a message" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
@@ -791,6 +793,7 @@ export function registerConversationDeliveryRoutes(
       }
       const master = store.getConversation(request.params.id);
       if (!master) return reply.code(404).send({ error: "conversation not found" });
+      if (chatArchiveBlocksChat(store.sqlite, master.id)) return reply.code(409).send({ error: "Restore the Chat before sending a message" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) =>

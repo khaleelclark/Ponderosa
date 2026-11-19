@@ -1,3 +1,4 @@
+import { chatArchiveActivationSql } from "./chat-archive.js";
 import { settingsTransitionActivationHoldSql } from "./coordination-v3-settings-transition-hold.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import { branchScheduleTarget, branchScheduleActivationEligible, type BranchScheduleUpdateTarget } from "./coordination-v3-branch-schedule.js";
@@ -168,6 +169,7 @@ export class CoordinationV3SteeringAuthority {
           ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key
           AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT ${chatArchiveActivationSql('a')}
           ${installationFence}
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
@@ -228,6 +230,7 @@ export class CoordinationV3SteeringAuthority {
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND NOT ${chatArchiveActivationSql('agent_activations')}
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('agent_activations')}
           AND NOT ${this.settingsConfirmationRun('?')}

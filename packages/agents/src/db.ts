@@ -88,6 +88,7 @@ const schemaExtensions = [
   "0048_lifecycle_run_lookup.sql",
   "0049_new_chat_global_memory_default.sql",
   "0050_coordination_retry_and_deadlines.sql",
+  "0051_chat_archives.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

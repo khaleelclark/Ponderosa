@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
-import { CapabilityPolicyStore } from "@ponderosa/agents";
+import { CapabilityPolicyStore, chatArchiveBlocksAgent } from "@ponderosa/agents";
 import { runtimeRestrictions } from "@ponderosa/core";
 import type { ActiveRun, PersistentRuntime } from "../app-contracts.js";
 import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
@@ -19,7 +19,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
   const {store}=context,authority=new NativeHistoryAuthority(store);
   const boundary=(id:string):{boundary:HistoryBoundary;runtime:PersistentRuntime}|undefined=>{
     const a=store.getAgent(id),runtime=context.persistentRuntimeForTermination(id),b=store.providerCommandContextBoundary(id);
-    if(!a||a.workingCopy.state!=='ready'||!runtime||!b||context.isClosed()||context.deletingAgentIds.has(id)||context.deletingProjectIds.has(a.projectId)||
+    if(!a||chatArchiveBlocksAgent(store.sqlite,id)||a.workingCopy.state!=='ready'||!runtime||!b||context.isClosed()||context.deletingAgentIds.has(id)||context.deletingProjectIds.has(a.projectId)||
        context.activeRuns.has(id)||context.coordinationV3.activeAgentRun(id)||context.coordinationV3.contextRecovery.active(id)||
        store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(id)||
        runtime.session.engineAgentId!==b.providerSessionId||!runtime.session.isAlive())return undefined;
@@ -58,7 +58,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
     const id=request.params.id,body=request.body;
     if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.enabled!=='boolean')return reply.code(400).send({error:"Exact enabled boolean required"});
     if(!store.getAgent(id))return reply.code(404).send({error:"Agent not found"});
-    if(context.isClosed()||context.deletingAgentIds.has(id)||context.deletingProjectIds.has(store.getAgent(id)!.projectId))return reply.code(409).send({error:"Agent unavailable"});
+    if(chatArchiveBlocksAgent(store.sqlite,id)||context.isClosed()||context.deletingAgentIds.has(id)||context.deletingProjectIds.has(store.getAgent(id)!.projectId))return reply.code(409).send({error:"Agent unavailable"});
     try{authority.setTracking(id,body.enabled);return trackingResponse(id);}
     catch{return reply.code(409).send({error:"Claude tracking preference unavailable"});}
   });
@@ -147,7 +147,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
     if(!agent)return reply.code(404).send({error:"Agent not found"});
     if(!validKey(body?.key) || (body.acknowledgeUnknown !== undefined && body.acknowledgeUnknown !== true))
       return reply.code(400).send({error:"Exact original command key required"});
-    if(context.busy.has(id) || context.isClosed() || context.deletingAgentIds.has(id) ||
+    if(context.busy.has(id) || chatArchiveBlocksAgent(store.sqlite,id) || context.isClosed() || context.deletingAgentIds.has(id) ||
        context.deletingProjectIds.has(agent.projectId)) return reply.code(409).send({error:"Native history is busy"});
     context.busy.add(id);
     try {

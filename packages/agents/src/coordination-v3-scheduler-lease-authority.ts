@@ -1,3 +1,4 @@
+import { chatArchiveActivationSql } from "./chat-archive.js";
 import {settingsTransitionActivationHoldSql} from './coordination-v3-settings-transition-hold.js';
 import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
@@ -178,6 +179,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.id activation_id, a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT ${chatArchiveActivationSql('a')}
           AND ${heldSteeringRecovery}
           AND NOT ${settingsTransitionActivationHoldSql('a')}
           ${installationFence}
@@ -232,6 +234,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
               AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
               AND target.id<>a.id AND target.state IN ('pending','retry_pending') AND target.available_at<=?
               AND NOT ${settingsTransitionActivationHoldSql('target')}
+              AND NOT ${chatArchiveActivationSql('target')}
               AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=target.id
                 AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
               AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=target.id
@@ -283,6 +286,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT ${chatArchiveActivationSql('a')}
           AND ${heldSteeringRecovery}
           AND NOT ${settingsTransitionActivationHoldSql('a')}
           AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')

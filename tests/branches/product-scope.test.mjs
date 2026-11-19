@@ -382,11 +382,31 @@ test('a restored current-format mixed Project scopes Chat counts and user-publis
     f.ok(await f.api('POST',`${prefix(product)}/conversations/${chat.id}/messages`,{text,idempotencyKey:randomUUID()}));
    }
   }
+  let devArtifactBytes;
   for(const product of ['dev','branches']){
    const expected=product==='dev'?1:2,ids=[];let cursor;
-   do{const page=f.ok(await f.api('GET',`${prefix(product)}/projects/${project.id}/artifacts?limit=1${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`));assert.equal(page.items.length,1);ids.push(page.items[0].id);const content=f.ok(await f.api('GET',page.items[0].downloadUrl));assert.match(content,new RegExp(`Published user document ${product}`));cursor=page.history.cursor;assert.ok(ids.length<=expected);}while(cursor);
+   do{const page=f.ok(await f.api('GET',`${prefix(product)}/projects/${project.id}/artifacts?limit=1${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`));assert.equal(page.items.length,1);ids.push(page.items[0].id);const content=f.ok(await f.api('GET',page.items[0].downloadUrl));assert.match(content,new RegExp(`Published user document ${product}`));if(product==='dev')devArtifactBytes=Buffer.byteLength(content);cursor=page.history.cursor;assert.ok(ids.length<=expected);}while(cursor);
    assert.equal(ids.length,expected);assert.equal(new Set(ids).size,expected);
   }
+  const former=await f.createChat('Former managed folder');
+  f.ok(await f.api('DELETE',`/api/conversations/${former.id}`,{expectedAgentIds:[]}));
+  const descendant=path.join(former.workingDirectory,'..branch');
+  await mkdir(descendant);
+  const foreign=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{
+   label:'Branch-only storage',defaultEngine:'codex',hostPath:descendant,
+  },{'idempotency-key':randomUUID()}));
+  const storage=f.ok(await f.api('GET','/api/chat-storage'));
+  assert.ok(!storage.projects.some(item=>item.id===foreign.projectId));
+  assert.equal(storage.projects.find(item=>item.id===project.id).artifactBytes,devArtifactBytes);
+  const referenced=storage.folders.find(folder=>folder.path===former.workingDirectory);
+  assert.ok(referenced.referenced,'Branch ownership still protects a managed folder');
+  assert.equal((await f.api('DELETE',`/api/chat-storage/folders/${referenced.name}`,{
+   confirmed:true,identity:referenced.identity,
+  })).status,409);
+  assert.equal((await f.api('GET','/api/branches/engine/chat-storage')).status,404);
+  assert.equal((await f.api('DELETE','/api/branches/engine/chat-storage/folders/unowned',{
+   confirmed:true,identity:'0'.repeat(64),
+  })).status,404);
   assert.equal((await f.api('DELETE',`/api/projects/${project.id}`)).status,409,'The normal product cannot delete Branch-owned history in a mixed Project');
   for(const prefix of ['/api','/api/branches/engine'])assert.equal((await f.api('GET',`${prefix}/projects/${project.id}/deletion-preview`)).status,409,'Project-wide deletion previews must not disclose cross-product resource totals');
   await f.reopen();assert.equal(f.ok(await f.api('GET',`/api/branches/engine/workspace/directory/conversation?projectId=${project.id}`)).total,2);
