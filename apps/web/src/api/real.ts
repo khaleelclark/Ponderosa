@@ -466,8 +466,8 @@ export const realApi = {
       method: "POST", body: JSON.stringify({ activationId }),
     });
   },
-  getChatStorage(): Promise<import("@ponderosa/core").ChatStorageDto> {
-    return requestJson("/api/chat-storage");
+  getChatStorage(refresh = false): Promise<import("@ponderosa/core").ChatStorageDto> {
+    return requestJson(refresh ? "/api/chat-storage?refresh=1" : "/api/chat-storage");
   },
   deleteManagedChatFolder({ name, identity }: { name: string; identity: string }): Promise<{ deleted: true }> {
     return requestJson(`/api/chat-storage/folders/${encodeURIComponent(name)}`, {

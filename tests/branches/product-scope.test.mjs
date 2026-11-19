@@ -395,7 +395,8 @@ test('a restored current-format mixed Project scopes Chat counts and user-publis
   const foreign=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{
    label:'Branch-only storage',defaultEngine:'codex',hostPath:descendant,
   },{'idempotency-key':randomUUID()}));
-  const storage=f.ok(await f.api('GET','/api/chat-storage'));
+  let storage;
+  await until(async()=>{storage=f.ok(await f.api('GET','/api/chat-storage'));return !storage.measuring;},'scoped Chat Storage measurement');
   assert.ok(!storage.projects.some(item=>item.id===foreign.projectId));
   assert.equal(storage.projects.find(item=>item.id===project.id).artifactBytes,devArtifactBytes);
   const referenced=storage.folders.find(folder=>folder.path===former.workingDirectory);

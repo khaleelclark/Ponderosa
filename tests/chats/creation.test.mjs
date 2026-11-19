@@ -7,6 +7,16 @@ import {AgentStore, CoordinationV3Store} from '@ponderosa/agents';
 import {until, withFixture} from '../shared/fixture.mjs';
 import {normalizeExternalCitations} from '../../apps/server/dist/external-content.js';
 
+async function chatStorage(f, refresh=false) {
+  const url='/api/chat-storage';
+  const started=await f.api('GET',url+(refresh?'?refresh=1':''));
+  assert.equal(started.status,202);
+  assert.equal(started.body.measuring,true);
+  let storage;
+  await until(async()=>{storage=f.ok(await f.api('GET',url));return !storage.measuring;},'Chat Storage measurement');
+  return storage;
+}
+
 test('human file browsing shows ordinary token-named files and public links use literal address checks', async t=>withFixture(t,async f=>{
   const chat=await f.createChat('File browsing');
   await writeFile(path.join(chat.workingDirectory,'design-tokens.css'), ':root { --space: 8px; }');
@@ -114,7 +124,7 @@ test('archive retains working-folder custody and only an unreferenced managed fo
   await writeFile(file, 'keep this');
   const folderPath = `/api/chat-storage/folders/${encodeURIComponent(path.basename(chat.workingDirectory))}`;
   f.ok(await f.api('POST', `${chatPath}/archive`));
-  const storage = f.ok(await f.api('GET', '/api/chat-storage'));
+  const storage = await chatStorage(f);
   const managed = storage.folders.find(folder => folder.path === chat.workingDirectory);
   assert.deepEqual([managed.bytes, managed.referenced], [9, true]);
   assert.equal(storage.projects.find(project => project.id === chat.projectId).artifactBytes, 0);
@@ -129,7 +139,7 @@ test('archive retains working-folder custody and only an unreferenced managed fo
     label: 'Nested folder', hostPath: descendant, defaultEngine: 'codex',
   }, { 'idempotency-key': randomUUID() }));
   f.ok(await f.api('POST', `/api/conversations/${nestedChat.id}/archive`));
-  assert.equal(f.ok(await f.api('GET', '/api/chat-storage')).folders.find(folder => folder.path === chat.workingDirectory).referenced, true);
+  assert.equal((await chatStorage(f,true)).folders.find(folder => folder.path === chat.workingDirectory).referenced, true);
   assert.equal((await f.api('DELETE', folderPath, { confirmed: true, identity: managed.identity })).status, 409);
   f.ok(await f.api('DELETE', `/api/conversations/${nestedChat.id}`, { expectedAgentIds: [] }));
 

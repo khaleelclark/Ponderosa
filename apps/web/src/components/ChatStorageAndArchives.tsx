@@ -102,7 +102,11 @@ export function ArchivedChats({ onClose }: { onClose(): void }): JSX.Element {
 
 export function ChatStorage({ onClose }: { onClose(): void }): JSX.Element {
   const client = useQueryClient();
-  const query = useQuery({ queryKey: ["chat-storage"], queryFn: api.getChatStorage, retry: false });
+  const queryKey = ["chat-storage"];
+  const query = useQuery({ queryKey, queryFn: () => api.getChatStorage(), retry: false,
+    refetchInterval: current => current.state.status !== "error" && current.state.data?.measuring ? 1000 : false });
+  const refresh = useMutation({ mutationFn: () => api.getChatStorage(true),
+    onSuccess: result => client.setQueryData(queryKey,result) });
   const [target, setTarget] = useState<ChatStorageDto["folders"][number]>();
   const remove = useMutation({
     mutationFn: api.deleteManagedChatFolder,
@@ -116,8 +120,10 @@ export function ChatStorage({ onClose }: { onClose(): void }): JSX.Element {
       <DialogTitle>Chat Storage</DialogTitle>
       <DialogContent>
         <Stack spacing={1.5}>
-          {query.isPending ? <CircularProgress size={20} aria-label="Measuring storage" /> : null}
-          {query.error ? <Alert severity="error">{query.error.message}</Alert> : null}
+          {query.isPending || query.data?.measuring && !query.error ? <Stack direction="row" spacing={1} alignItems="center" role="status">
+            <CircularProgress size={20} /><Typography>Measuring storage…</Typography>
+          </Stack> : null}
+          {query.error || refresh.error ? <Alert severity="error">{(query.error ?? refresh.error)?.message}</Alert> : null}
           <Typography variant="subtitle1">Managed working folders</Typography>
           {query.data?.folders.map(folder => <Stack key={folder.path} direction="row" alignItems="center" spacing={1}>
             <Stack sx={{ flex: 1, minWidth: 0 }}>
@@ -134,7 +140,8 @@ export function ChatStorage({ onClose }: { onClose(): void }): JSX.Element {
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button disabled={query.isFetching} onClick={() => void query.refetch()}>Refresh sizes</Button>
+        <Button disabled={query.isFetching || refresh.isPending || Boolean(query.data?.measuring && !query.error)}
+          onClick={() => refresh.mutate()}>Refresh sizes</Button>
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
     </Dialog>

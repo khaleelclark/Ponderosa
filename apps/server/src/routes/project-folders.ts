@@ -11,6 +11,7 @@ import type {
   HostFolderBrowseDto,
   HostFolderCreateDto,
   ProjectFolderOptionsDto,
+  ChatStorageDto,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 
@@ -168,34 +169,50 @@ export function registerProjectFolderRoutes(
     }
     return bytes;
   };
-  let measuring = false;
-  app.get("/api/chat-storage", async (request, reply) => {
-    if (requestProduct(request) !== "dev") return reply.code(404).send({ error: "Chat Storage belongs to Chats" });
-    if (measuring) return reply.code(409).send({ error: "A storage measurement is already running" });
-    measuring = true;
-    try {
-      await fs.mkdir(options.managedWorkspacesRoot, { recursive: true });
-      const references = referencedFolders();
-      const folders = [];
-      const entries = await fs.readdir(options.managedWorkspacesRoot, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-        let folder: string;
-        try { folder = managedWorkspacePath(dataDir, entry.name); } catch { continue; }
-        const before = await fs.lstat(folder).catch(() => undefined);
-        if (!before?.isDirectory()) continue;
-        folders.push({ name: entry.name, path: folder, bytes: await directoryBytes(folder),
-          identity: folderIdentity(before),
-          referenced: references.some(reference => relatedFolders(reference, folder)) });
-      }
-      const projects = [];
-      for (const project of chatProjects.all() as { id: string; label: string; path: string }[]) {
-        projects.push({ ...project, artifactBytes: await projectArtifactBytes(project.id) });
-      }
-      return { folders, projects };
-    } finally {
-      measuring = false;
+  let measurement: Promise<void> | undefined;
+  let measured: {at:number;value:ChatStorageDto} | undefined;
+  let failedAt = -Infinity;
+  let storageRevision = 0;
+  const measure = async (): Promise<ChatStorageDto> => {
+    await yieldToServer();
+    await fs.mkdir(options.managedWorkspacesRoot, { recursive: true });
+    const references = referencedFolders();
+    const folders = [];
+    const entries = await fs.readdir(options.managedWorkspacesRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      let folder: string;
+      try { folder = managedWorkspacePath(dataDir, entry.name); } catch { continue; }
+      const before = await fs.lstat(folder).catch(() => undefined);
+      if (!before?.isDirectory()) continue;
+      folders.push({ name: entry.name, path: folder, bytes: await directoryBytes(folder),
+        identity: folderIdentity(before),
+        referenced: references.some(reference => relatedFolders(reference, folder)) });
     }
+    const projects = [];
+    for (const project of chatProjects.all() as { id: string; label: string; path: string }[]) {
+      projects.push({ ...project, artifactBytes: await projectArtifactBytes(project.id) });
+    }
+    return { folders, projects };
+  };
+  app.get<{Querystring:{refresh?:string}}>("/api/chat-storage", (request, reply) => {
+    if (requestProduct(request) !== "dev") return reply.code(404).send({ error: "Chat Storage belongs to Chats" });
+    reply.header("Cache-Control","private, no-store");
+    const now = performance.now();
+    if (request.query.refresh !== "1" && measured && now - measured.at < 15_000) return measured.value;
+    if (request.query.refresh !== "1" && now - failedAt < 15_000) return reply.code(503).send({error:"Chat Storage could not measure folders and artifacts. Try refreshing sizes."});
+    if (!measurement) {
+      measured = undefined;
+      failedAt = -Infinity;
+      const revision = storageRevision;
+      measurement = measure().then(value => {
+        if (revision === storageRevision) measured = {at:performance.now(),value};
+      }).catch(error => {
+        failedAt = performance.now();
+        app.log.warn({err:error},"Chat Storage measurement failed");
+      }).finally(() => { measurement = undefined; });
+    }
+    return reply.code(202).send({measuring:true,folders:[],projects:[]} satisfies ChatStorageDto);
   });
 
   app.delete<{ Params: { name: string }; Body: { confirmed?: boolean; identity?: string } }>(
@@ -235,6 +252,8 @@ export function registerProjectFolderRoutes(
           } finally {
             closeSync(rootFd);
           }
+          measured = undefined;
+          storageRevision++;
           return { deleted: true };
         }
         const pending = [folder];
@@ -245,6 +264,8 @@ export function registerProjectFolderRoutes(
           if (info.isDirectory()) for (const name of readdirSync(current)) pending.push(path.join(current, name));
         }
         rmSync(folder, { recursive: true });
+        measured = undefined;
+        storageRevision++;
         return { deleted: true };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).send({ error: "Managed folder not found" });
