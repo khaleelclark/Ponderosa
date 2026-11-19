@@ -158,11 +158,14 @@ export function registerProjectFolderRoutes(
   `);
   const projectArtifactBytes = async (id: string): Promise<number | null> => {
     let bytes = 0;
-    for (const artifact of visibleArtifacts.all(id) as { id: string }[]) {
+    const artifacts = visibleArtifacts.all(id) as { id: string }[];
+    for (let offset = 0; offset < artifacts.length; offset += 32) {
       try {
-        const info = await fs.lstat(managedArtifactContentPath(dataDir, id, artifact.id));
-        if (!info.isFile()) return null;
-        bytes += info.size;
+        const stats = await Promise.all(artifacts.slice(offset, offset + 32).map(
+          artifact => fs.lstat(managedArtifactContentPath(dataDir, id, artifact.id)),
+        ));
+        if (stats.some(info => !info.isFile())) return null;
+        bytes += stats.reduce((total, info) => total + info.size, 0);
       } catch {
         return null;
       }
@@ -179,15 +182,17 @@ export function registerProjectFolderRoutes(
     const references = referencedFolders();
     const folders = [];
     const entries = await fs.readdir(options.managedWorkspacesRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      let folder: string;
-      try { folder = managedWorkspacePath(dataDir, entry.name); } catch { continue; }
-      const before = await fs.lstat(folder).catch(() => undefined);
-      if (!before?.isDirectory()) continue;
-      folders.push({ name: entry.name, path: folder, bytes: await directoryBytes(folder),
-        identity: folderIdentity(before),
-        referenced: references.some(reference => relatedFolders(reference, folder)) });
+    for (let offset = 0; offset < entries.length; offset += 16) {
+      const batch = await Promise.all(entries.slice(offset, offset + 16).map(async entry => {
+        if (!entry.isDirectory() || entry.name.startsWith(".")) return;
+        let folder: string;
+        try { folder = managedWorkspacePath(dataDir, entry.name); } catch { return; }
+        const before = await fs.lstat(folder).catch(() => undefined);
+        if (!before?.isDirectory()) return;
+        return { name: entry.name, path: folder, bytes: await directoryBytes(folder),
+          identity: folderIdentity(before), referenced: references.some(reference => relatedFolders(reference, folder)) };
+      }));
+      for (const folder of batch) if (folder) folders.push(folder);
     }
     const projects = [];
     for (const project of chatProjects.all() as { id: string; label: string; path: string }[]) {
