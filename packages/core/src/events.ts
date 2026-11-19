@@ -46,6 +46,7 @@ export type ProviderErrorCode =
   | "organization_policy"
   | "plan_entitlement"
   | "network"
+  | "provider_ack_deadline"
   | "provider_error";
 
 /**

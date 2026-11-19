@@ -150,6 +150,8 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
                 if (!result.success) result = await session.tool('ponderosa_message', { text: 'Explicit fixture reply' });
                 assert.equal(result.success, true, result.text);
               }
+              if (plan.finalAnswer) events.push({type:'response_text',providerTurnId:turnId,itemId:'final',
+                kind:'complete',phase:'final_answer',text:plan.finalAnswer});
               session.finish();
             } catch (error) {
               failures.push(error); events.push({ type: 'error', terminalStatus: 'failed', message: error.message }); session.finish();

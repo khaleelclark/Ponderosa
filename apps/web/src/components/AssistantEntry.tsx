@@ -13,6 +13,7 @@ import {isUnmodifiedPrimaryClick} from '../nativeNavigation';
 /** Opening Ponderosa initializes the default once; removed speakers stay disabled. */
 export function useInitializeAssistant(){
  return useQuery({queryKey:['assistant-initialize'],staleTime:Infinity,retry:false,retryOnMount:false,refetchOnMount:false,refetchOnWindowFocus:false,refetchOnReconnect:false,
+  refetchInterval:query=>query.state.data?.waitingForProvider?15000:false,
   queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initialize:true})})});
 }
 export function AssistantEntry({wide=false,selected=false,href,onOpen}:{wide?:boolean;selected?:boolean;href:string;onOpen():void}):JSX.Element{

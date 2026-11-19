@@ -1132,7 +1132,7 @@ export class CodexAppServerSession implements RuntimeSession {
       serviceTier: serviceTierForSpeed(input.speed),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.nativeAction?.kind === "structured" ? { outputSchema: input.nativeAction.outputSchema } : {}),
-    });
+    }, null);
     if(typeof response?.turn?.id!=="string"||!response.turn.id.trim()||response.turn.id.length>1024)
       throw new Error("Native turn acceptance has no valid turn identity");
     this.activeTurnId = this.lastCompletedTurnId === response.turn.id ? undefined : response.turn.id;
@@ -1162,7 +1162,7 @@ export class CodexAppServerSession implements RuntimeSession {
         expectedTurnId: this.activeTurnId,
         input: content,
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
-      });
+      }, null);
       return { status: "accepted", turnId: response.turnId };
     } catch (error) {
       const rpcError = error && typeof error === "object" && "rpcError" in error

@@ -278,7 +278,7 @@ test('pending default bootstrap preserves an intervening imported/human speaker 
  await withFixture(t,async f=>{
   const dest=await branchChat(f),human=f.ok(await f.api('POST',`/api/branches/engine/projects/${dest.projectId}/agents`,{title:'Chosen speaker',engine:'codex',conversationId:dest.id,idempotencyKey:randomUUID()}));
   let preferences={},resume,published=0;const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),original=branches.deploy.bind(branches);branches.deploy=(...args)=>{published++;return original(...args);};
-  const wait=new Promise(resolve=>resume=resolve),owner=new OutputAgentApps(store,branches,{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},async()=>{await wait;return {id:dest.id,projectId:dest.projectId};},{validateAgent(){},async importAgent(){return {rootAgentId:human.id,agentIds:[human.id]};}},()=> 'codex');
+  const wait=new Promise(resolve=>resume=resolve),owner=new OutputAgentApps(store,branches,{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},async()=>{await wait;return {id:dest.id,projectId:dest.projectId};},{validateAgent(){},async importAgent(){return {rootAgentId:human.id,agentIds:[human.id]};}},async()=>({engine:'codex',model:'fixture'}));
   const initializing=owner.initialize(true);assert.ok(preferences.outputApps.setup);owner.designate(human.id,true,true);resume();const result=await initializing;
   assert.equal(result.app.agentId,human.id);assert.equal(preferences.outputApps.setup,undefined);assert.equal(published,0);assert.equal((await owner.initialize(true)).app.agentId,human.id);
  },{storeFactory:dir=>(store=new AgentStore(dir))});

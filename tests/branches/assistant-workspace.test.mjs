@@ -19,6 +19,21 @@ async function run(f,store,agent,work){
 async function restrict(f,path,ids){const current=f.ok(await f.api('GET',path));return f.ok(await f.api('PUT',path,{revision:current.policy.revision,restrictedCapabilityIds:ids}));}
 const options={timeout:60000};
 
+test('Assistant waits for provider setup and provisions once when the provider becomes usable',options,async t=>{
+ let installed=false;
+ await withFixture(t,async f=>{
+  let status=f.ok(await f.api('GET','/api/branches/assistant'));
+  assert.equal(status.waitingForProvider,true);
+  assert.equal(status.setupError,undefined);
+  assert.equal(status.app,undefined);
+  installed=true;
+  f.ok(await f.api('POST','/api/engines/codex/recheck'));
+  await until(async()=>{status=f.ok(await f.api('GET','/api/branches/assistant'));return Boolean(status.app);},'automatic Assistant setup');
+  const same=await Promise.all([assistant(f),assistant(f)]);
+  assert.deepEqual(same.map(app=>app.agentId),[status.app.agentId,status.app.agentId]);
+ },{providerInstalled:()=>installed});
+});
+
 test('Assistant creates Chat and starts cross-project work with exact durable source provenance, replay and conflict checks',options,t=>{
  let store;return withFixture(t,async f=>{
   const app=await assistant(f),key=randomUUID();let created,started;
@@ -154,19 +169,16 @@ for(const enabled of [false,true,'muted','attention'])test(`Assistant check aggr
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
-test('default ten-minute automation invokes the check, stays quiet without changes, and its interval is configurable',options,t=>{
+test('default ten-minute automation skips the provider without changes, and its interval is configurable',options,t=>{
  let store;return withFixture(t,async f=>{
-  const app=await assistant(f);let checked=false;
-  f.plans.set(app.agentId,[{output:false,run:async s=>{
-   const result=f.ok(await f.tool(s,'ponderosa_assistant_check',{}));assert.equal(result.published,false);checked=true;
-   f.ok(await f.tool(s,'ponderosa_update_request',{kind:'completed',text:'Project check finished; nothing new to report.'}));
-  }}]);
+  const app=await assistant(f);
   // Advance only the source's due marker; the live schedule service and scheduler do the rest.
   const {BranchStore}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
   const trigger=branches.trigger(app.branchId);assert.equal(trigger.sourceConfig.everyMs,600000);
   branches.triggers.updateTriggerDefinition(trigger.id,{nextFireAt:new Date(Date.now()-1).toISOString()});
-  await until(()=>checked,'actual automatic Assistant check',20000);
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM branch_executions WHERE branch_id=? AND state='completed'").get(app.branchId),'quiet automatic execution completes',20000);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM trigger_occurrences WHERE branch_id=? AND json_extract(provenance_json,'$.assistantCheck')='quiet'").get(app.branchId),'quiet automatic check completes',20000);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM branch_executions WHERE branch_id=?").get(app.branchId).n,0);
+  assert.equal(f.turns.filter(turn=>turn.agentId===app.agentId).length,0);
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE json_extract(payload_json,'$.assistantSources') IS NOT NULL").get().n,0);
   const changed=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:1200000}));assert.equal(changed.everyMs,1200000);assert.equal(branches.trigger(app.branchId).sourceConfig.everyMs,1200000);
   assert.equal((await f.api('POST','/api/agent-workspace',{operation:'projects'})).status,401);

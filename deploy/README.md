@@ -325,9 +325,11 @@ No diagnostic CLI is spawned to obtain resource samples.
 Defaults: `PONDEROSA_RESOURCE_RESERVE_MIB=2048` and
 `PONDEROSA_RESOURCE_STARTUP_MIB=256`. Both must be positive MiB values
 (maximum 1 TiB). A hold begins below reserve plus one startup allowance, at
-memory-full PSI 5%, or at I/O-full PSI 10%. Recovery needs two consecutive
-samples with at least 125% of that minimum, memory-full PSI at most 1%, and
-I/O-full PSI at most 2%. Available startup allowances also bound admission:
+or at memory-full PSI 5%. I/O-full PSI at 10% is advisory by default.
+Set `PONDEROSA_RESOURCE_DISK_PRESSURE=strict` to hold new Runs at that threshold.
+Recovery needs two consecutive samples with at least 125% of the memory
+minimum and memory-full PSI at most 1%. Strict mode also requires I/O-full
+PSI at most 2%. Available startup allowances also bound admission:
 each active scheduler claim reserves one allowance *in addition to* measured
 usage. This deliberately conservative policy needs calibration for large
 builds and hosts with small effective cgroup limits; it is not an OOM guarantee.

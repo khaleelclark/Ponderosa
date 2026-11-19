@@ -8,12 +8,15 @@ import type {BranchPackageEngine} from './routes/agent-packages.js';
 import {normalizeTriggerSourceConfig} from './branch-trigger-service.js';
 
 class OutputAppUnavailableError extends Error {}
+const defaultCheckInstructions='Call ponderosa_assistant_check to check granted Projects for explicit completed work and issues. It publishes a bounded deduplicated report through notification settings. If it reports no changes or deferred, stay quiet. Do not repeat its published digest. Complete this workflow Request with ponderosa_update_request after checking.';
 
 /** Local roles live in the existing canonical workspace journal; Agent imports carry no role authority. */
 export class OutputAgentApps {
   private pending?:Promise<AssistantStatusDto>;
+  private waitingForProvider=false;
   constructor(private store:AgentStore,private branches:BranchStore,private workspace:WorkspaceStore,
-    private createChat:ChatCreator,private packageEngine:BranchPackageEngine,private engine:()=>string|undefined,private publishSince?:(cursor:number)=>void){}
+    private createChat:ChatCreator,private packageEngine:BranchPackageEngine,
+    private engine:(preferred?:string)=>Promise<{engine:string;model:string}|undefined>,private publishSince?:(cursor:number)=>void){}
   private roles(){return this.workspace.getPreferences().outputApps??{agentIds:[],speakerAgentId:null,initialized:false};}
   private write(patch:Partial<NonNullable<ReturnType<WorkspaceStore['getPreferences']>['outputApps']>>){
     const cursor=this.workspace.cursor();
@@ -159,9 +162,20 @@ export class OutputAgentApps {
   status():AssistantStatusDto{
     const roles=this.roles();let app:OutputAgentAppDto|undefined;
     if(roles.speakerAgentId)try{app=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
-    return {enabled:Boolean(app),initialized:roles.initialized,...(app?{app}:{}),...(roles.setupError?{setupError:roles.setupError}:{})};
+    return {enabled:Boolean(app),initialized:roles.initialized,...(app?{app}:{}),
+      ...(!app&&this.waitingForProvider?{waitingForProvider:true}:roles.setupError?{setupError:roles.setupError}:{})};
+  }
+  defaultScheduledCheck(branchId:string):OutputAgentAppDto|undefined {
+    const app=this.status().app;
+    if(!app||app.branchId!==branchId||!app.versionId||!app.bindingRevisionId||app.triggerKind!=='schedule')return;
+    const definition=this.branches.version(branchId,app.versionId)?.definition;
+    const step=definition?.steps[0];
+    if(definition?.steps.length===1&&definition.entry==='speaker'&&step?.kind==='agent'&&
+        step.target.kind==='persistent_agent'&&step.target.ref==='speaker'&&step.instructions===defaultCheckInstructions&&
+        this.branches.bindingRevision(branchId,app.bindingRevisionId)?.agents.speaker===app.agentId)return app;
   }
   disable(){
+    this.waitingForProvider=false;
     const roles=this.roles();let app:OutputAgentAppDto|undefined;
     if(roles.speakerAgentId)try{app=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
     if(app)this.pause(app);
@@ -187,21 +201,27 @@ export class OutputAgentApps {
     return this.status();
   }
   initialize(force=false):Promise<AssistantStatusDto>{
-    if(this.pending)return this.pending.then(status=>force&&!status.enabled?this.initialize(true):status);
+    if(this.pending)return this.pending;
     if(this.status().enabled||(!force&&this.roles().initialized))return Promise.resolve(this.status());
-    const operation=this.createDefault().then(status=>{if(this.roles().setupError)this.write({setupError:undefined});return {...status,setupError:undefined};},error=>{
+    const operation=this.createDefault(force).then(status=>{if(status.enabled&&this.roles().setupError)this.write({setupError:undefined});return status.enabled?{...status,setupError:undefined}:status;},error=>{
+      this.waitingForProvider=false;
       try{this.write({setupError:{message:error instanceof Error?error.message:String(error),at:new Date().toISOString()}});}catch(reportError){throw new AggregateError([error,reportError],'Assistant setup and failure recording failed');}throw error;
     });
     this.pending=operation;
     return operation.finally(()=>{if(this.pending===operation)this.pending=undefined;});
   }
-  private async createDefault():Promise<AssistantStatusDto>{
+  private async createDefault(force:boolean):Promise<AssistantStatusDto>{
     let setup=this.roles().setup;
+    const roleEpoch=this.roles().roleEpoch;
+    const ready=await this.engine(setup?.engine);
+    if(this.roles().roleEpoch!==roleEpoch||(!force&&this.roles().initialized))return this.status();
+    this.waitingForProvider=!ready;
+    if(!ready)return this.status();
     if(!setup){
-      const engine=this.engine();if(!engine)throw new Error('Choose an available provider before enabling Assistant');
+      const {engine,model}=ready;
       const defaults=this.workspace.getPreferences().engineDefaults?.[engine];
       const key=randomUUID(),branch=this.branches.create('Assistant',`assistant-${key}`);
-      setup={key,branchId:branch.id,engine,model:defaults?.model,effort:defaults?.effort,createdAt:branch.createdAt};this.write({setup});
+      setup={key,branchId:branch.id,engine,model,effort:defaults?.effort,createdAt:branch.createdAt};this.write({setup});
     }
     const {key,branchId,engine}=setup;
     const pkg:AgentPortablePackageDto={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:setup.createdAt,sourceLabel:'Assistant',rootRef:'speaker',agents:[{
@@ -217,7 +237,7 @@ export class OutputAgentApps {
     if(!branch.versionId){
       const config={scheduleKind:'interval' as const,everyMs:600000,startsAt:new Date(Date.now()+600000).toISOString(),whenRunning:'update_current' as const};
       const normalized=normalizeTriggerSourceConfig('schedule',config);
-      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Call ponderosa_assistant_check to check granted Projects for explicit completed work and issues. It publishes a bounded deduplicated report through notification settings. If it reports no changes or deferred, stay quiet. Do not repeat its published digest. Complete this workflow Request with ponderosa_update_request after checking.',requireUserCommunication:false}],controls:[],edges:[],policy:{pauseOnSpeakerRemoval:true,maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
+      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:defaultCheckInstructions,requireUserCommunication:false}],controls:[],edges:[],policy:{pauseOnSpeakerRemoval:true,maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
     }
     this.designate(imported.rootAgentId,true,true);this.write({setup:undefined});return this.status();
   }

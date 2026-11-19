@@ -88,6 +88,8 @@ const CLIENT_UPGRADE_SUMMARY = "The provider CLI needs an update for the selecte
 const CLIENT_UPGRADE_REMEDIATION = "Update the provider CLI on this host, recheck it, then retry.";
 const INVALID_MODEL_SUMMARY = "The selected model is unavailable for this provider. Choose another model, then retry.";
 const INVALID_MODEL_REMEDIATION = "Choose a model supported by the signed-in provider account, then retry.";
+const ACK_DEADLINE_SUMMARY = "The provider did not acknowledge the operation before its deadline. Its outcome is unconfirmed.";
+const ACK_DEADLINE_REMEDIATION = "Review the original Run and provider status before deciding whether to retry.";
 
 function organizationPolicyDetail(detail: string): boolean {
   if (detail.length > MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS) return false;
@@ -148,6 +150,7 @@ const PUBLIC_PROVIDER_ERROR_CODES = new Set<ProviderErrorCode>([
   "organization_policy",
   "plan_entitlement",
   "network",
+  "provider_ack_deadline",
   "provider_error",
 ]);
 
@@ -270,7 +273,9 @@ export function publicProviderFailure(input: {
     ?? highConfidenceTextCategory(input.detail ?? "");
   return {
     category,
-    ...(category === "authentication" && (input.code === "plan_entitlement" || input.detail === PLAN_ENTITLEMENT_SUMMARY)
+    ...(input.code === "provider_ack_deadline" || input.detail === ACK_DEADLINE_SUMMARY
+      ? { summary: ACK_DEADLINE_SUMMARY, remediation: ACK_DEADLINE_REMEDIATION }
+      : category === "authentication" && (input.code === "plan_entitlement" || input.detail === PLAN_ENTITLEMENT_SUMMARY)
       ? { summary: PLAN_ENTITLEMENT_SUMMARY, remediation: PLAN_ENTITLEMENT_REMEDIATION }
       : category === "invalid_request" && (input.code === "client_upgrade_required" || input.detail === CLIENT_UPGRADE_SUMMARY)
       ? { summary: CLIENT_UPGRADE_SUMMARY, remediation: CLIENT_UPGRADE_REMEDIATION }

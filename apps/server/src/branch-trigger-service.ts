@@ -164,6 +164,8 @@ export class BranchTriggerSourceService {
     onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence" | "schedule" | "schedule_polling", episode?: string): void;
     logDiagnosticFailure?(): void;
     sourceAvailable?(): boolean;
+    assistantSchedule?(trigger:TriggerDefinitionDto):{outcome:"work"|"quiet"|"failed"|"restricted";advance?:()=>void}|undefined;
+    onAssistantCheck?(trigger:TriggerDefinitionDto,outcome:"work"|"quiet"|"failed"|"restricted"):void;
   }) {
   }
 
@@ -473,8 +475,9 @@ export class BranchTriggerSourceService {
     // Bound each poll without advancing past unaccepted due times.
     for (let count = 0; cursor && cursor.getTime() <= cutoff && count < MAX_SCHEDULE_OCCURRENCES_PER_POLL; count += 1) {
       const scheduledAt = cursor.toISOString();
+      const check=this.options.assistantSchedule?.(trigger);
       const next: Date | null = config.scheduleKind === "once" ? null
-        : config.scheduleKind === "interval" ? new Date(nextIntervalTime(config.everyMs, cursor.getTime(), cursor.getTime()))
+        : config.scheduleKind === "interval" ? new Date(nextIntervalTime(config.everyMs, cursor.getTime(), check ? cutoff : cursor.getTime()))
         : nextCronRun(cron!, config, cursor);
       this.options.triggers.recordScheduledTriggerOccurrence({
         triggerId: trigger.id,
@@ -483,10 +486,15 @@ export class BranchTriggerSourceService {
         ...(next ? { nextFireAt: next.toISOString() } : {}),
         lastFiredAt: scheduledAt,
         payload: { scheduledTimes: [scheduledAt], missedCount: 1, collapsedRecovery: false },
-        provenance: { source: "schedule", evaluatedAt: now.toISOString() },
+        provenance: { source: "schedule", evaluatedAt: now.toISOString(), ...(check?{assistantCheck:check.outcome}:{}) },
         now: now.toISOString(),
-      });
-      this.options.notify(trigger.id);
+      },check&&check.outcome!=="work"?{
+        reason:check.outcome==="failed"?"Assistant could not check for updates":check.outcome==="restricted"
+          ?"Assistant check skipped because workspace access is restricted":"Assistant had no new report to write",
+        advance:check.advance,
+      }:undefined);
+      if(check)this.reportScheduleDiagnostic(()=>this.options.onAssistantCheck?.(trigger,check.outcome));
+      if(!check||check.outcome==="work")this.options.notify(trigger.id);
       cursor = next;
     }
   }

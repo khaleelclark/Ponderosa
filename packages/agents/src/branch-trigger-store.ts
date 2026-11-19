@@ -153,7 +153,7 @@ export class BranchTriggerStore {
   }
 
 
-  recordTriggerOccurrence(input: RecordTriggerOccurrenceInput): TriggerOccurrenceResult {
+  recordTriggerOccurrence(input: RecordTriggerOccurrenceInput, skipReason?:string): TriggerOccurrenceResult {
     if (!input.triggerId.trim() || !input.occurrenceKey.trim() || !input.provenance.source?.trim()) throw new Error("Trigger identity, occurrence key and provenance source are required");
     const now = input.now ?? new Date().toISOString();
     return this.transaction(() => {
@@ -177,6 +177,10 @@ export class BranchTriggerStore {
           stableJson(input.payload,TRIGGER_CANONICAL_JSON_LIMITS),stableJson(input.provenance,TRIGGER_CANONICAL_JSON_LIMITS),
           stableJson({...snapshot,productScope:"branches"},TRIGGER_CANONICAL_JSON_LIMITS),input.payloadMediaType ?? "application/json",hash,
           stableJson(input.heldSchedule?{schedule:input.heldSchedule}:{}),now,now,now,now,definition.branch_id);
+      if(skipReason){
+        this.sqlite.prepare("UPDATE trigger_occurrences SET state='cancelled',cancelled_at=?,last_error=? WHERE id=?").run(now,skipReason,id);
+        return {occurrenceId:id,state:'cancelled',replayed:false};
+      }
       if(input.heldSchedule)return {occurrenceId:id,state:'pending',replayed:false};
       const executionId = this.accept({admissionSource:input.branchOperatorManual === true ? "manual" : "automatic",triggerId:definition.id,branchId:definition.branch_id,
         occurrenceId:id,inputHash:hash,payload:input.payload,provenance:input.provenance,payloadMediaType:input.payloadMediaType ?? "application/json",now});
@@ -185,7 +189,8 @@ export class BranchTriggerStore {
     })();
   }
 
-  recordScheduledTriggerOccurrence(input: RecordTriggerOccurrenceInput & {expectedNextFireAt:string;nextFireAt?:string;lastFiredAt:string}): TriggerOccurrenceResult {
+  recordScheduledTriggerOccurrence(input: RecordTriggerOccurrenceInput & {expectedNextFireAt:string;nextFireAt?:string;lastFiredAt:string},
+    skip?:{reason:string;advance?:()=>void}): TriggerOccurrenceResult {
     return this.transaction(() => {
       const row = this.row(input.triggerId);
       if (!row || !row.enabled || row.source_kind !== "schedule") throw new Error("Scheduled Automation is unavailable");
@@ -193,7 +198,10 @@ export class BranchTriggerStore {
       const config=JSON.parse(row.source_config_json) as import('@ponderosa/core').TriggerScheduleConfig;
       const policy=config.scheduleKind==='once'?'queue_all':config.whenRunning??'queue_all';
       let result:TriggerOccurrenceResult;
-      if(policy==='queue_all')result=this.recordTriggerOccurrence(input);
+      if(skip){
+        skip.advance?.();
+        result=this.recordTriggerOccurrence(input,skip.reason);
+      }else if(policy==='queue_all')result=this.recordTriggerOccurrence(input);
       else {
         // The source cursor and replacement of the latest held check share this
         // transaction. Original occurrence payloads/hashes/snapshots never change.

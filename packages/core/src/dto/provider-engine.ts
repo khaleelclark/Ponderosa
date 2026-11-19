@@ -273,7 +273,7 @@ export interface ProviderUsageCenterDto {
 export interface ResourceAdmissionDto {
   state: "ready" | "held" | "unavailable" | "unsupported" | "disabled";
   protected: boolean;
-  reason: "within_budget" | "host_resource_pressure" | "measurement_unavailable" | "measurement_stale" | "operator_disabled";
+  reason: "within_budget" | "disk_pressure_advisory" | "host_resource_pressure" | "measurement_unavailable" | "measurement_stale" | "operator_disabled";
   observedAt?: string;
   source?: "linux_host" | "linux_host_and_cgroup";
   availableBytes?: number;

@@ -571,10 +571,19 @@ export class ClaudeStreamSession implements RuntimeSession {
             (frame.session_id === undefined || frame.session_id === this.engineAgentId)) {
           const callbackOptions = { ...this.opts, signal: AbortSignal.any([this.opts.signal, controller.signal]) };
           const identity = { requestId, sessionId: this.engineAgentId, turnId, kind: "tool" as const };
-          if (request.tool_name === "AskUserQuestion") {
-            updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
-            allowed = updatedInput !== undefined;
-          } else allowed = await requestNativeApproval(callbackOptions, identity, request);
+          try {
+            if (request.tool_name === "AskUserQuestion") {
+              updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
+              allowed = updatedInput !== undefined;
+            } else allowed = await requestNativeApproval(callbackOptions, identity, request);
+          } catch {
+            if (controller.signal.aborted || this.closed) return;
+            const error = request.tool_name === "AskUserQuestion"
+              ? "The question could not be displayed or answered. Submit a smaller, valid question through ponderosa_decision."
+              : "Native approval exceeds the form limit. Request approval for a smaller operation.";
+            await this.writeFrame({ type: "control_response", response: { subtype: "error", request_id: requestId, error } });
+            return;
+          }
         }
         if (controller.signal.aborted || this.closed) return;
         if (request?.subtype !== "can_use_tool") {

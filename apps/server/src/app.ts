@@ -1,7 +1,7 @@
 import {createActiveAccessRevocation} from './active-access-revocation.js';
 import {sealProviderNeverStarted} from '@ponderosa/agents';
 import {ProviderStartAuthority} from './provider-start-authority.js';
-import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
+import {registerAgentWorkspaceActions,scanAssistantReport} from './routes/agent-workspace.js';
 import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {isMemoryCleanupHold} from "./local-memory-authority.js";
 import {BranchScriptService} from "./branch-script-service.js";
@@ -14,8 +14,8 @@ import {registerProductScope,rewriteProductUrl} from './product-scope.js';
 import {BranchResourceService} from "./branch-resource-service.js";
 import {BranchInstallationService} from "./branch-installation-service.js";
 import {BranchStore} from "@ponderosa/agents";
-import { chatBrowserOwnerId, browserOwnerId } from "@ponderosa/core";
-import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
+import { CAPABILITY_IDS, chatBrowserOwnerId, browserOwnerId } from "@ponderosa/core";
+import { AgentStore, CapabilityPolicyStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   DecisionDto,
@@ -430,9 +430,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   let wakeProviderScheduler: (() => void) | undefined;
-  const providerStatusChanged = (engineId?: string) => { appendWorkspace({ type: "provider_status_changed", ...(engineId ? { engineId } : {}) }); wakeProviderScheduler?.(); };
+  let wakeAssistantSetup: (() => void) | undefined;
+  const providerStatusChanged = (engineId?: string) => { appendWorkspace({ type: "provider_status_changed", ...(engineId ? { engineId } : {}) }); wakeProviderScheduler?.(); wakeAssistantSetup?.(); };
   const resourceAdmission = new ResourceAdmission(opts.resourceAdmission ?? {
     enabled: process.env.PONDEROSA_RESOURCE_ADMISSION !== "off",
+    strictDiskPressure: process.env.PONDEROSA_RESOURCE_DISK_PRESSURE === "strict",
     ...(process.env.PONDEROSA_RESOURCE_RESERVE_MIB ? { reserveBytes: Number(process.env.PONDEROSA_RESOURCE_RESERVE_MIB) * 1024 * 1024 } : {}),
     ...(process.env.PONDEROSA_RESOURCE_STARTUP_MIB ? { startupBytes: Number(process.env.PONDEROSA_RESOURCE_STARTUP_MIB) * 1024 * 1024 } : {}),
   }, opts.resourceAdmissionObservation?.sample, opts.resourceAdmissionObservation?.now,
@@ -1491,10 +1493,34 @@ app.server.on("upgrade", linkPreviewUpgrade);
     resolveGateNotification:resolveOperationalNotification,
   });
   let scheduleDiagnosticCursor: {createdAt:string;id:string}|undefined;
+  const assistantCheckPolicies=new CapabilityPolicyStore(store.sqlite);
   branchSources=new BranchTriggerSourceService({store,triggers:branches.triggers,
     sourceAvailable:()=>!closed&&!deploymentControl.isDraining(),
     logDiagnosticFailure:()=>app.log.error({code:'branch_source_diagnostic_write_failed'},'Branch source diagnostic could not be persisted'),
     notify:()=>coordinationV3Scheduler.notify(),
+    assistantSchedule:trigger=>{
+      const assistant=outputApps.defaultScheduledCheck(trigger.branchId);
+      if(!assistant)return;
+      try{
+        if(assistantCheckPolicies.resolveForAgent(assistant.agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead))return {outcome:"restricted"};
+        const scan=scanAssistantReport(store,assistant.agentId,assistant.everyMs??600000,assistantCheckPolicies);
+        return scan?.fresh.length?{outcome:"work"}:{outcome:"quiet",advance:scan?.advance};
+      }catch(error){
+        app.log.warn(freshFailureDiagnostic(error,"Assistant scheduled source check failed"));
+        return {outcome:"failed"};
+      }
+    },
+    onAssistantCheck:(trigger,outcome)=>{
+      const key=`assistant-check:${trigger.id}`;
+      if(outcome!=="failed"){resolveOperationalNotification(key);return;}
+      const recent=store.sqlite.prepare(`SELECT json_extract(provenance_json,'$.assistantCheck') outcome
+        FROM trigger_occurrences WHERE trigger_id=? ORDER BY created_at DESC,rowid DESC LIMIT 3`).all(trigger.id) as {outcome:string|null}[];
+      if(recent.length===3&&recent.every(row=>row.outcome==="failed"))createOperationalNotification({
+        dedupeKey:key,renewAfterRecovery:true,branchId:trigger.branchId,category:"system",severity:"attention",
+        title:"Assistant Check Needs Attention",body:"Assistant could not read updates on its last three scheduled checks. Review the Trigger Events and server logs.",
+        action:{kind:"open_branch",targetId:trigger.branchId},
+      });
+    },
     onSourceFailure:({trigger,kind,error,episode,cause})=>{
       const prefix = `branch-source:${trigger?.id ?? 'poller'}:${kind}`;
       // A new poller failure after confirmed recovery gets a new episode;
@@ -1533,7 +1559,19 @@ app.server.on("upgrade", linkPreviewUpgrade);
     },
   });
   registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities,policyChange:activeAccessRevocation.policyChange});
-  const outputApps=new OutputAgentApps(store,branches,workspace,application.createChat,application.packageEngine,()=>[...engines.keys()].find(id=>providerEnabled(id)),publishWorkspaceSince);
+  const outputApps=new OutputAgentApps(store,branches,workspace,application.createChat,application.packageEngine,async preferred=>{
+    for(const [id,registration] of engines){
+      if((preferred&&id!==preferred)||!providerEnabled(id))continue;
+      const status=await engineDto(registration);
+      if(!status.intakeReady)continue;
+      const configured=workspace.getPreferences().engineDefaults?.[id]?.model;
+      const model=configured?status.models.find(option=>option.id===configured&&option.availability!=='unavailable')?.id
+        :status.models.find(option=>option.id===status.defaultModel&&option.availability!=='unavailable')?.id
+          ??status.models.find(option=>option.id&&option.availability!=='unavailable')?.id;
+      if(model)return {engine:id,model};
+    }
+    return undefined;
+  },publishWorkspaceSince);
   application.packageEngine.setOutputApps(outputApps);
   branchInstallations.setOutputApps(outputApps);
   registerAgentWorkspaceActions(app,{store,coordinationV3,workspace,outputApps,createChat:application.createChat,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,recordCommunication,reconcile:reconcileRuntimeCommunicationProjections,notify:()=>coordinationV3Scheduler.notify(),providerEnabled:id=>engines.has(id)&&providerEnabled(id)});
@@ -1542,7 +1580,16 @@ app.server.on("upgrade", linkPreviewUpgrade);
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
 notify:()=>coordinationV3Scheduler.notify(),
   });
-  app.addHook('onReady',async()=>{await branchSources!.start();});
+  app.addHook('onReady',async()=>{
+    await branchSources!.start();
+    wakeAssistantSetup=()=>{
+      const status=outputApps.status();
+      if(!status.waitingForProvider||closed)return;
+      void outputApps.initialize(status.initialized).then(result=>result.enabled&&!closed?branchSources!.refresh():undefined)
+        .catch(error=>app.log.error({err:error},'Assistant setup failed; see Assistant settings'));
+    };
+    wakeAssistantSetup();
+  });
 
   return app;
   } catch (error) {

@@ -1,6 +1,6 @@
 import type { AgentEvent, EngineCommand, NativeGoalSnapshot, NativeTurnAction, RuntimeCommandResult } from "@ponderosa/core";
 
-interface NativeRpc { request<T = unknown>(method: string, params: unknown): Promise<T> }
+interface NativeRpc { request<T = unknown>(method: string, params: unknown, timeoutMs?: number | null): Promise<T> }
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native operation response");
   return value as Record<string, unknown>;
@@ -90,7 +90,7 @@ export async function setCodexPlanMode(rpc: NativeRpc, threadId: string,
 /** A review creates a provider turn, so it is admitted only by startTurn under
  * the scheduler's existing Run, lease, cancellation and event fences. */
 export async function startCodexReview(rpc: NativeRpc, threadId: string, action: Extract<NativeTurnAction, {kind: "review"}>): Promise<string> {
-  const response = record(await rpc.request("review/start", { threadId, target: action.target, delivery: "inline" }));
+  const response = record(await rpc.request("review/start", { threadId, target: action.target, delivery: "inline" }, null));
   const turn = record(response.turn);
   if (response.reviewThreadId !== threadId || typeof turn.id !== "string" || !turn.id) throw new Error("Native review did not confirm the exact retained thread and turn");
   return turn.id;

@@ -28,7 +28,16 @@ export function claudeStreamEventMapper(): (raw: unknown, context?: CodexMapCont
     if (envelope.type === "system" && envelope.subtype === "init" && identity(envelope.session_id)) {
       sessionId = envelope.session_id; clear(); voiceReady = false; voiceCallId = undefined;
     }
-    if (envelope.type === "result") { clear(); voiceReady = false; voiceCallId = undefined; }
+    if (envelope.type === "result") {
+      clear(); voiceReady = false; voiceCallId = undefined;
+      const mapped = mapClaudeEvent(raw, context);
+      if (sessionId && envelope.session_id === sessionId && envelope.subtype === "success" &&
+          envelope.is_error === false && typeof envelope.result === "string" && envelope.result.trim()) {
+        mapped.unshift({ type:"response_text", providerTurnId:sessionId, itemId:"result",
+          phase:"final_answer", kind:"complete", text:envelope.result });
+      }
+      return mapped;
+    }
     const main = Boolean(sessionId) && envelope.session_id === sessionId && envelope.parent_tool_use_id === null && envelope.isReplay !== true;
     if (envelope.type === "user" && main) {
       const content = object(envelope.message)?.content;

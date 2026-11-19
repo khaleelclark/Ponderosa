@@ -339,7 +339,8 @@ test('a retry pins the original Assistant import payload even if workspace model
  const workspace={cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})};
  const branches={create:()=>({id:'owned-branch',createdAt:'2026-10-29T00:00:00.000Z'})};
  const importer={validateAgent(){},async importAgent(project,chat,pkg,mapping,key){attempts.push({pkg,mapping,key});throw Error('Controlled interrupted import');}};
- const create=()=>new OutputAgentApps({},branches,workspace,async()=>({id:'chat',projectId:'project'}),importer,()=> 'codex');
+ const create=()=>new OutputAgentApps({},branches,workspace,async()=>({id:'chat',projectId:'project'}),importer,
+  async()=>({engine:'codex',model:preferences.engineDefaults.codex.model}));
  await assert.rejects(create().initialize(true),/Controlled interrupted/);
  preferences.engineDefaults.codex.model='changed';
  await assert.rejects(create().initialize(true),/Controlled interrupted/);
@@ -799,7 +800,7 @@ for(const removal of ['speaker','output','import'])for(const coupling of [undefi
    const {OutputAgentApps}=await import('../../apps/server/dist/output-agent-apps.js');
    const {BranchStore,CoordinationV3Store}=await import('../../packages/agents/dist/index.js');
    let preferences={outputApps:{agentIds:[previous.agent.id],speakerAgentId:previous.agent.id,initialized:true}};
-   const owner=new OutputAgentApps(store,new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},()=>{throw Error('Unexpected chat creation');},{},()=> 'codex');
+   const owner=new OutputAgentApps(store,new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},()=>{throw Error('Unexpected chat creation');},{},async()=>({engine:'codex',model:'fixture'}));
    const mapping={worker:previous.agent.id},review=owner.reviewImport([{ref:'worker',output:true,speaker:false}],'exact-package',true,mapping);
    owner.claimImport(review.id,'exact-package','import-operation');
    owner.finalizeImport(review.id,'exact-package','import-operation',mapping);

@@ -235,6 +235,21 @@ export function registerAgentCommunicationRoutes(
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
     const messagePurpose = (request.body as SendAgentMessageRequest & { messagePurpose?: "instruction" | "question" | "progress" | "fyi" })?.messagePurpose;
     const currentAuthor = store.getAgent(capability.agentId);
+    const fallback = request.headers["x-ponderosa-final-answer-fallback"];
+    if (fallback !== undefined && (!active?.finalAnswerFallbackToken || fallback !== active.finalAnswerFallbackToken)) {
+      return reply.code(403).send({ error: "Final-answer fallback is host-owned" });
+    }
+    const alreadyReplied = () => fallback !== undefined && Boolean(currentAuthor && store.sqlite.prepare(`
+      SELECT 1 FROM runtime_communications
+      WHERE project_id = ? AND intent = ?
+        AND json_extract(sender_json, '$.kind') = 'agent'
+        AND json_extract(sender_json, '$.agentId') = ?
+        AND json_extract(sender_json, '$.executionId') = ?
+        AND json_extract(payload_json, '$.communication.conversationId') IS ?
+      LIMIT 1
+    `).get(currentAuthor.projectId, candidateIntent === "direct_to_user" ? "user_dm" : "broadcast",
+      capability.agentId, capability.runId, capability.conversationId ?? null));
+    if (alreadyReplied()) return reply.code(204).send();
     if (request.body?.delivery === "next_run") {
       const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
       const recipientAgentIds = request.body.recipientAgentIds;
@@ -769,6 +784,8 @@ export function registerAgentCommunicationRoutes(
         if (active?.voiceReply && (await active.validateVoiceReplyContext?.() === false || active.validateVoiceReplyCommit?.() === false)) {
           return reply.code(409).send({ error: "Memory changed during the voice reply; start a fresh turn" });
         }
+        if (alreadyReplied()) return reply.code(204).send();
+        if (fallback && !active?.validateVoiceReplyCommit?.()) return reply.code(409).send({ error: "Retained context changed before publication" });
         intake = coordinationV3.recordRuntimeCommunication({
           id: proposedCommunication.eventId,
           projectId: currentAuthor.projectId,
@@ -896,6 +913,8 @@ export function registerAgentCommunicationRoutes(
     };
     let intake;
     try {
+      if (alreadyReplied()) return reply.code(204).send();
+      if (fallback && !active?.validateVoiceReplyCommit?.()) return reply.code(409).send({ error: "Retained context changed before publication" });
       intake = coordinationV3.recordRuntimeCommunication({
         id: proposedCommunication.eventId,
         projectId: currentAuthor.projectId,
