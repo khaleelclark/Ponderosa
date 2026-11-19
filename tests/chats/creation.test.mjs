@@ -5,6 +5,42 @@ import path from 'node:path';
 import {mkdir, readFile, symlink, writeFile} from 'node:fs/promises';
 import {AgentStore, CoordinationV3Store} from '@ponderosa/agents';
 import {until, withFixture} from '../shared/fixture.mjs';
+import {normalizeExternalCitations} from '../../apps/server/dist/external-content.js';
+
+test('human file browsing shows ordinary token-named files and public links use literal address checks', async t=>withFixture(t,async f=>{
+  const chat=await f.createChat('File browsing');
+  await writeFile(path.join(chat.workingDirectory,'design-tokens.css'), ':root { --space: 8px; }');
+  const base=`/api/conversations/${chat.id}/files`;
+  assert.ok(f.ok(await f.api('GET',base)).entries.some(file=>file.name==='design-tokens.css'));
+  assert.match(f.ok(await f.api('GET',base+'?path=design-tokens.css')).content,/--space/);
+  assert.equal(normalizeExternalCitations([{url:'https://fda.gov/',title:'FDA'}])[0].url,'https://fda.gov/');
+  assert.throws(()=>normalizeExternalCitations([{url:'http://localhost/',title:'Local machine'}]),/external HTTP/);
+}));
+
+test('Chat attachment usage includes staged uploads and clears after scoped removal', async t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Attachment usage');
+  const base=`/api/conversations/${chat.id}/attachments`, bytes=Buffer.from('A normal attachment');
+  const asset=f.ok(await f.api('POST',base,bytes,{'content-type':'application/octet-stream','x-ponderosa-filename':'notes.txt','x-ponderosa-media-type':'text/plain'}));
+  const usage=f.ok(await f.api('GET',base+'/usage'));
+  assert.equal(usage.committed,bytes.length);
+  assert.deepEqual(usage.unsent,[{id:asset.id,name:'notes.txt',size:bytes.length}]);
+  assert.equal((await f.api('DELETE',base+'/'+asset.id)).status,204);
+  assert.equal(f.ok(await f.api('GET',base+'/usage')).committed,0);
+}));
+
+test('recovered abandoned uploads can release space only after exact confirmed selection', async t=>withFixture(t,async f=>{
+  const folder=path.join(f.dataDir,'agent-import-operations');
+  await writeFile(path.join(folder,`.incoming-${randomUUID()}`),'unclaimed upload');
+  await f.reopen();
+  const base='/api/lifecycle/agent-imports/orphan-evidence';
+  const item=f.ok(await f.api('GET',base)).items.find(row=>row.discardIdentity);
+  assert.ok(item);
+  const discard=(identity,confirmed)=>f.api('POST',base+'/discard',{name:item.name,identity,confirmed});
+  assert.equal((await discard(item.discardIdentity,false)).status,400);
+  assert.equal((await discard('stale',true)).status,409);
+  assert.equal(f.ok(await discard(item.discardIdentity,true)).releasedBytes,item.byteLength);
+  assert.ok(!f.ok(await f.api('GET',base)).items.some(row=>row.name===item.name));
+}));
 
 test('shared Chat creation validates folders, replays concurrent retries once and never takes Branch ownership from HTTP payload', {timeout:30000},t=>withFixture(t,async f=>{
  const body={label:'Creation boundary',defaultEngine:'codex'},key=randomUUID();

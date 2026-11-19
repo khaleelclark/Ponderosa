@@ -10,7 +10,7 @@ import {packageExportDownloads,workingFolderOmissions} from '../package-export-d
 import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
 import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
 import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
-import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
+import {isAbandonedUploadName,orphanUploadIdentity,retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from '../portable-git-recreation.js';
 import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
@@ -391,7 +391,7 @@ export function registerAgentPackageRoutes(
     if (bytes === 0) return;
     if (stagedImportBytes + bytes > maximumStagedImportBytes) {
       throw Object.assign(
-        new Error("Agent import staging capacity is currently full"),
+        new Error("Agent import staging is full. Finish a pending import or review abandoned uploads in Settings → Recovery Records."),
         { statusCode: 503 },
       );
     }
@@ -632,6 +632,27 @@ export function registerAgentPackageRoutes(
     try{await operationHydration;return await retainedOrphanDiscovery(path.join(importOperationDirectory,'retained-orphans'),request.query);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.post<{Body:{name:string;identity:string;confirmed:boolean}}>('/api/lifecycle/agent-imports/orphan-evidence/discard',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{
+      await operationHydration;
+      const input=validatedObject(request.body,'Discard abandoned upload');
+      exactObjectFields(input,['name','identity','confirmed'],'Discard abandoned upload');
+      if(typeof input.name!=='string'||!isAbandonedUploadName(input.name)||typeof input.identity!=='string'||
+          input.confirmed!==true)return reply.code(400).send({error:'Select an abandoned upload and confirm permanent deletion'});
+      const directory=path.join(importOperationDirectory,'retained-orphans');
+      const location=path.join(directory,input.name);
+      if(!syncFs.lstatSync(directory).isDirectory())throw Error('Abandoned upload storage changed');
+      const saved=syncFs.lstatSync(location),reservationId=`orphan:${input.name}`;
+      if(!saved.isFile()||saved.nlink!==1||orphanUploadIdentity(saved)!==input.identity||stagedReservations.get(reservationId)!==saved.size)
+        throw Error('Abandoned upload changed; refresh the inventory');
+      syncFs.unlinkSync(location);
+      if(process.platform!=='win32'){
+        const fd=syncFs.openSync(directory,'r');try{syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}
+      }
+      releaseStagedReservation(reservationId);
+      return {discarded:true,releasedBytes:saved.size};
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Abandoned upload could not be discarded'});}
+  }));
   app.post<{Params:{id:string};Body:import('@ponderosa/core').AgentImportLifecycleReconcileInput}>('/api/lifecycle/agent-imports/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
     try{
       const input=validatedObject(request.body,'Import lifecycle reconciliation');exactObjectFields(input,['commandKey','reviewSha256','action','note'],'Import lifecycle reconciliation');
@@ -2911,6 +2932,15 @@ export function registerAgentPackageRoutes(
       if (deletingProjectIds.has(request.params.id)) {
         return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
+      let sourceLabel:string;
+      try{
+        ({sourceLabel}=await parsePortablePackageFile(staged.pathname,{validateOnly:true}));
+      }catch(error){
+        return reply.code((error as {statusCode?:number})?.statusCode??400)
+          .send({error:error instanceof Error?error.message:'Unsupported Agent package'});
+      }
+      if(deletingProjectIds.has(request.params.id)||!resourceInProduct(store,'conversation',destination.id,product))
+        return reply.code(409).send({error:'The destination Chat changed while the package was validated'});
       const id = randomUUID();
       const now = new Date().toISOString();
       const operation: AgentImportOperationDto = {
@@ -2921,7 +2951,7 @@ export function registerAgentPackageRoutes(
         projectId: request.params.id,
         conversationId:destination.id,
         product,
-        sourceLabel: "Agent import",
+        sourceLabel: sourceLabel.slice(0,240),
         phase: "queued",
         status: "pending",
         createdAt: now,

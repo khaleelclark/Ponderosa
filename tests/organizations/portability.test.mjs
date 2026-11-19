@@ -211,6 +211,10 @@ test('background import replays a lost completion acknowledgment after restart w
   const payload = JSON.stringify({ conversationId: f.destination.id, engineMapping: { codex: 'codex' } }) + '\n' + JSON.stringify(pkg);
   const input = { method: 'POST', url: `/api/projects/${f.project.id}/agent-import-operations`,
     headers: { 'idempotency-key': key, 'content-type': 'application/vnd.ponderosa.agent-import' }, payload };
+  const invalid=await f.request({...input,payload:payload.replace(pkg.schema,'ponderosa.unsupported.v99')});
+  assert.equal(invalid.statusCode,400,invalid.body);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM agent_import_submission_intents').get().n,0,
+    'Unsupported package is rejected before durable admission');
   const queued = f.ok(await f.request(input));
   const statusUrl = `/api/projects/${f.project.id}/agent-import-operations/${queued.id}`;
   const settled = async () => {

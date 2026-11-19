@@ -5,9 +5,10 @@ import { AgentPackageJsonParser, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AG
 import type { PackageWireEntry } from "./agent-package-codec.js";
 import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 import { exactObjectFields, validatedObject } from "./object-validation.js";
+import { validatePortableAgentPackage } from "./portable-agent-package-validation.js";
 
 const port = parentPort!;
-const input = workerData as { pathname: string; packageOnly?: boolean; jsonEnvelope?: boolean };
+const input = workerData as { pathname: string; packageOnly?: boolean; jsonEnvelope?: boolean; validateOnly?:boolean };
 
 // Only a bounded batch crosses the server event loop at once. Acknowledgement
 // prevents a fast worker from queuing an entire large package in the parent.
@@ -111,7 +112,10 @@ async function parse(): Promise<void> {
       await emit({ kind: "value", path, value });
     }
   };
-  await visit({ metadata, portable, ...(canonicalPayloadHash ? { canonicalPayloadHash } : {}) }, []);
+  const result=input.validateOnly
+    ? {sourceLabel:validatePortableAgentPackage(portable).package.sourceLabel}
+    : { metadata, portable, ...(canonicalPayloadHash ? { canonicalPayloadHash } : {}) };
+  await visit(result, []);
   await flush();
   port.postMessage({ done: true, memory: process.memoryUsage() });
 }

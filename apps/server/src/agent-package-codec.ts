@@ -61,6 +61,12 @@ export interface PackageCodecOptions {
   jsonEnvelope?: boolean;
   onMemory?: (memory: NodeJS.MemoryUsage) => void;
 }
+type ParsedPackageFile = {
+  metadata: Omit<ImportAgentPackageRequest, "package">;
+  portable: AgentPortablePackageDto;
+  canonicalPayloadHash?: string;
+};
+type PackageFilePreview = { sourceLabel: string };
 /** The serialized parser and all retained decoded originals must fit together.
  * Keep ordinary package imports serialized and refuse before allocating/writing. */
 export function assertAgentPackageMemoryAvailable(decodedBytes = 0, serializedBytes = 0): void {
@@ -77,11 +83,9 @@ export function assertAgentPackageMemoryAvailable(decodedBytes = 0, serializedBy
   }
 }
 
-export async function parsePortablePackageFile(pathname: string, options: PackageCodecOptions = {}): Promise<{
-  metadata: Omit<ImportAgentPackageRequest, "package">;
-  portable: AgentPortablePackageDto;
-  canonicalPayloadHash?: string;
-}> {
+export function parsePortablePackageFile(pathname: string, options: PackageCodecOptions & { validateOnly: true }): Promise<PackageFilePreview>;
+export function parsePortablePackageFile(pathname: string, options?: PackageCodecOptions): Promise<ParsedPackageFile>;
+export async function parsePortablePackageFile(pathname: string, options: PackageCodecOptions & { validateOnly?: boolean } = {}): Promise<ParsedPackageFile|PackageFilePreview> {
   return admission("codec", async () => {
     options.signal?.throwIfAborted();
     const { size } = await fs.stat(pathname);
@@ -92,7 +96,7 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
       const worker = new Worker(import.meta.url.endsWith(".ts")
         ? new URL("../dist/agent-package-codec-worker.js", import.meta.url)
         : new URL("./agent-package-codec-worker.js", import.meta.url), {
-        workerData: { pathname, packageOnly: options.packageOnly, jsonEnvelope: options.jsonEnvelope },
+        workerData: { pathname, packageOnly: options.packageOnly, jsonEnvelope: options.jsonEnvelope, validateOnly: options.validateOnly },
         resourceLimits: { maxOldGenerationSizeMb: AGENT_PACKAGE_CODEC_HEAP_MIB, maxYoungGenerationSizeMb: 32 },
       });
       let result: unknown;
@@ -106,7 +110,7 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
         // Admission stays held until the worker has actually released its heap.
         await worker.terminate();
         if (error) reject(error);
-        else resolve(result as Awaited<ReturnType<typeof parsePortablePackageFile>>);
+        else resolve(result as ParsedPackageFile|PackageFilePreview);
       };
       const abort = () => void finish(new Error("Agent package processing cancelled"));
       const timeout = setTimeout(() => void finish(new Error("Agent package codec exceeded its processing budget")), timeoutMs);

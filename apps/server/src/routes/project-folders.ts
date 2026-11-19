@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import path from "node:path";
 import { managedArtifactContentPath, managedArtifactProductSql, managedWorkspacePath, type AgentStore } from "@ponderosa/agents";
 import { offlineMountIdentity } from "@ponderosa/native-host";
-import { projectInProduct, requestProduct } from "../product-scope.js";
+import { projectProductSql, requestProduct } from "../product-scope.js";
 import { setImmediate as yieldToServer } from "node:timers/promises";
 import type {
   CreateHostFolderRequest,
@@ -152,6 +152,9 @@ export function registerProjectFolderRoutes(
     SELECT artifact.artifact_id AS id FROM managed_artifact_projection artifact
     WHERE artifact.project_id=? AND ${managedArtifactProductSql('artifact', 'dev')}
   `);
+  const chatProjects = options.store.sqlite.prepare(`
+    SELECT id, label, host_path AS path FROM projects WHERE ${projectProductSql("projects.id", "dev")}
+  `);
   const projectArtifactBytes = async (id: string): Promise<number | null> => {
     let bytes = 0;
     for (const artifact of visibleArtifacts.all(id) as { id: string }[]) {
@@ -186,10 +189,8 @@ export function registerProjectFolderRoutes(
           referenced: references.some(reference => relatedFolders(reference, folder)) });
       }
       const projects = [];
-      for (const project of options.store.listProjects()) {
-        if (!projectInProduct(options.store, project.id, "dev")) continue;
-        projects.push({ id: project.id, label: project.label, path: project.hostPath,
-          artifactBytes: await projectArtifactBytes(project.id) });
+      for (const project of chatProjects.all() as { id: string; label: string; path: string }[]) {
+        projects.push({ ...project, artifactBytes: await projectArtifactBytes(project.id) });
       }
       return { folders, projects };
     } finally {

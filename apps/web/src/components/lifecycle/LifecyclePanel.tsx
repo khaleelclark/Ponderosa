@@ -1,13 +1,16 @@
 import {MemoryPreserveUnknown} from './MemoryPreserveUnknown';
 import {LifecycleDiscovery} from './LifecycleDiscovery';
 import {useEffect,useState} from 'react';
-import {useInfiniteQuery,useQuery} from '@tanstack/react-query';
+import {useInfiniteQuery,useMutation,useQuery} from '@tanstack/react-query';
 import {Alert,Box,Button,MenuItem,Paper,Stack,TextField,Typography} from '@mui/material';
 import type {LifecycleDiscoveryPage,MemoryMutationHoldDto,MemoryProvisioningHoldDto} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {currentProductScope} from '../../api/productScope';
 import {lifecycleDiscoveryPage} from './lifecycleDiscovery';
 import {LifecycleReview,type LifecycleKind} from './LifecycleReview';
+import {DestructiveConfirmDialog} from '../ConfirmationDialogs';
+
+interface OrphanUpload {name:string;byteLength:number;discardIdentity?:string}
 
 function useEvidenceInventory<T>(kind:string,path:string,enabled:boolean,generation:number){
  return useInfiniteQuery({queryKey:['lifecycle-evidence',currentProductScope(),kind,generation],enabled,
@@ -19,10 +22,16 @@ function useEvidenceInventory<T>(kind:string,path:string,enabled:boolean,generat
 /** On-demand canonical inventories; no operator-entered lifecycle identities. */
 export function LifecyclePanel():JSX.Element {
  const [open,setOpen]=useState(false),[selected,setSelected]=useState(''),[generation,setGeneration]=useState(0);
+ const [discard,setDiscard]=useState<OrphanUpload>();
+ const purgeUpload=useMutation({
+  mutationFn:(item:OrphanUpload)=>requestJson('/api/lifecycle/agent-imports/orphan-evidence/discard',{
+   method:'POST',body:JSON.stringify({name:item.name,identity:item.discardIdentity,confirmed:true})}),
+  onSuccess:()=>{setDiscard(undefined);setGeneration(value=>value+1);},
+ });
  const custody=useEvidenceInventory<string>('custody','/api/lifecycle/checkpoint-custody',open,generation);
  const memory=useQuery({queryKey:['lifecycle-memory-list',currentProductScope()],queryFn:()=>requestJson<MemoryMutationHoldDto[]>('/api/local-memory/mutation-holds'),enabled:open,retry:false,refetchOnWindowFocus:false});
  const provisioning=useQuery({queryKey:['lifecycle-memory-provisioning',currentProductScope()],queryFn:()=>requestJson<MemoryProvisioningHoldDto[]>('/api/local-memory/provisioning-holds'),enabled:open,retry:false,refetchOnWindowFocus:false});
- const orphans=useEvidenceInventory<unknown>('orphans','/api/lifecycle/agent-imports/orphan-evidence',open,generation);
+ const orphans=useEvidenceInventory<OrphanUpload>('orphans','/api/lifecycle/agent-imports/orphan-evidence',open,generation);
  useEffect(()=>{if(custody.isError||memory.isError)setSelected('');},[custody.isError,memory.isError]);
  const custodyIds=custody.isError?[]:custody.data?.pages.flatMap(page=>page.items)??[];
  const orphanEntries=orphans.isError?[]:orphans.data?.pages.flatMap(page=>page.items)??[];
@@ -54,10 +63,18 @@ export function LifecyclePanel():JSX.Element {
     <Stack spacing={2} sx={{pb:2,minWidth:0}}>
      {orphans.error&&<Alert severity="warning">Preserved orphan staging evidence: {orphans.error.message} · refresh inventories</Alert>}
      {orphans.data&&!orphans.isError&&<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(orphanEntries,null,2)}</Typography>}
+     {orphanEntries.filter(item=>item.discardIdentity).map(item=><Button color="error" key={item.name}
+       onClick={()=>{purgeUpload.reset();setDiscard(item);}}>Discard abandoned upload · {item.byteLength.toLocaleString()} bytes · {item.name}</Button>)}
      {orphans.hasNextPage&&!orphans.isError&&<Button disabled={orphans.isFetching} onClick={()=>void orphans.fetchNextPage()}>Load More Orphan Evidence</Button>}
     </Stack>
    </Box>
    <Typography variant="caption">Original bytes preserved · discovery: exact identities · current review: eligibility</Typography>
   </>}
+  <DestructiveConfirmDialog open={Boolean(discard)} title="Permanently discard abandoned upload" confirmLabel="Discard upload"
+    pending={purgeUpload.isPending} error={purgeUpload.error?.message} onCancel={()=>setDiscard(undefined)}
+    onConfirm={()=>discard?purgeUpload.mutateAsync(discard).catch(()=>undefined):undefined}>
+   <Typography>Remove the retained upload and release its staging space. This cannot be undone.</Typography>
+   <Typography sx={{overflowWrap:'anywhere'}}>{discard?.name}</Typography>
+  </DestructiveConfirmDialog>
  </Stack></Paper>;
 }

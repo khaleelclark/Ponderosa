@@ -138,6 +138,11 @@ export function AgentPackageExportDialog({
       <Typography variant="body2" color="text.secondary">Choose what to export from {source.title}.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={agentCount}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
+      <Typography variant="body2" color="text.secondary" sx={{mt:1}}>
+        {mode==="template" ? "Includes Agent setup and instructions." :
+          `Includes Agent setup, private history, managed artifacts, and ${omitMemory ? "no Chat memory" : "eligible Chat memory"}.`}
+        {" "}Global memory and live provider sessions stay on this installation. Working files are included only if selected below.
+      </Typography>
       {mode==='full'&&<FormControlLabel control={<Checkbox checked={omitMemory} onChange={event=>setOmitMemory(event.target.checked)}/>} label="Export Without Chat Memory"/>}
       {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include Every Distinct Organization Working Folder"/>}
       {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include The Whole Root Agent Working Folder"/>}

@@ -1,3 +1,4 @@
+import { AttachmentStorage } from "./AttachmentStorage";
 import {createClientId} from "../clientId";
 import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
@@ -460,6 +461,7 @@ export function AgentSettingsPane({
       <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
       <NativeRuntimeControls key={agent.id} agentId={agent.id} />
       <AgentWorkingCopySettings agent={agent} />
+      <AttachmentStorage id={agent.id} owner="agents" />
       <NativeHistoryControls agent={agent} onOpenAgent={onOpenAgent} />
       <NativeTaskControls agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>

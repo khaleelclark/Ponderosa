@@ -1,7 +1,12 @@
 import path from 'node:path';
+import {createHash} from 'node:crypto';
+import type {Stats} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import type {LifecycleDiscoveryQuery} from '@ponderosa/core';
 import {lifecycleDiscoveryPage} from './lifecycle-discovery.js';
+export const isAbandonedUploadName=(name:string)=>/^[0-9a-f-]{36}-\.incoming-[0-9a-f-]{36}$/u.test(name);
+export const orphanUploadIdentity=(stat:Stats)=>createHash('sha256')
+ .update(JSON.stringify([stat.dev,stat.ino,stat.mode,stat.size,stat.mtimeMs,stat.ctimeMs])).digest('hex');
 
 /** Inspect names and metadata only. No file contents, hydration, moves or reconciliation. */
 export async function retainedOrphanDiscovery(directory:string,query:LifecycleDiscoveryQuery){
@@ -11,7 +16,8 @@ export async function retainedOrphanDiscovery(directory:string,query:LifecycleDi
  const entries=[];
  for(const name of names){
   const stat=await fs.lstat(path.join(directory,name));
-  entries.push({key:name,value:{name,byteLength:stat.size,regular:stat.isFile()&&!stat.isSymbolicLink(),state:'preserved_unresolved' as const},
+  entries.push({key:name,value:{name,byteLength:stat.size,regular:stat.isFile()&&!stat.isSymbolicLink(),state:'preserved_unresolved' as const,
+    ...(isAbandonedUploadName(name)&&stat.isFile()&&stat.nlink===1?{discardIdentity:orphanUploadIdentity(stat)}:{})},
    identity:{dev:stat.dev,ino:stat.ino,mode:stat.mode,mtimeMs:stat.mtimeMs,ctimeMs:stat.ctimeMs}});
  }
  // Metadata identity binds page continuation too; the displayed row remains concise.
