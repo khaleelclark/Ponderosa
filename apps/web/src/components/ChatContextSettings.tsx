@@ -8,6 +8,8 @@ import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import { ResourceSettingsContext } from "./ResourceSettingsContext";
 import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
+import { ForgottenMemory } from "./ForgottenMemory";
+import { AttachmentStorage } from "./AttachmentStorage";
 
 type GlobalMemoryGrant = { chatId: string; readGlobal: boolean; revision: number };
 
@@ -56,6 +58,8 @@ export function ChatContextSettings({ chat, open, onClose }: {
           }} />
       } />}
       {(grantError || updateGrant.error) && <Alert severity="error">{(grantError || updateGrant.error)?.message}</Alert>}
+      {grant.data && <ForgottenMemory chatId={chat.id} />}
+      <AttachmentStorage id={chat.id} owner="conversations" />
       <TextField label="Working Folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
         helperText="Working folder · Not a filesystem sandbox." />
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}

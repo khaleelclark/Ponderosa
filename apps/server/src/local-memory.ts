@@ -1008,7 +1008,7 @@ export class LocalMemoryService{
   }}
  }
  private async perform(operation:string,args:Record<string,any>,authority:MemoryAuthority){
-  return this.core.database.run(authority,async()=>{await authority.guard();const scope=args.source==='global'||args.destination==='global'?'global':'chat:'+authority.chatId;
+  return this.core.database.run(operation==='forget'?{...authority,forget:true}:authority,async()=>{await authority.guard();const scope=args.source==='global'||args.destination==='global'?'global':'chat:'+authority.chatId;
    const receiptKey=createHash('sha256').update(JSON.stringify([authority.chatId,authority.actor,authority.runId,authority.fenceToken,authority.writeScope?args.visibility??'write':'read',scope])).digest('hex');
    const tool=({save:'store',update:'update',forget:'delete',get:'get_chunk',search:'search',history:'get_evolution_chain'}as Record<string,string>)[operation];
    const parameters=operation==='save'?{text:args.text,source_type:authority.sourceType}:operation==='update'?{chunk_id:args.chunk_id,new_text:args.text,strategy:'version',source_type:authority.sourceType}:operation==='forget'?{chunk_id:args.chunk_id,hard_delete:false}:operation==='search'?{query:args.query,top_k:args.top_k??5,include_deprecated:args.include_history??false}: {chunk_id:args.chunk_id};
@@ -1045,6 +1045,16 @@ export class LocalMemoryService{
  }
  async preserveUnknownMutation(request:FastifyRequest,id:string,input:import('@ponderosa/core').MemoryMutationPreserveUnknownInput){
   this.operator(request);await this.ready();return this.core.database.preserveUnknownMutationHold(id,input,async()=>{this.operator(request);});
+ }
+ async forgotten(request:FastifyRequest,chatId?:string,purgeId?:string){
+  const product=requestProduct(request);
+  const guard=async()=>{this.operator(request);if(chatId)this.chat(chatId,product);};
+  await guard();await this.ready();
+  if(chatId)await this.ensurePlannedChat(chatId);else await this.ensureGlobalScope();
+  await guard();
+  const scope=chatId?`chat:${chatId}`:'global';
+  const pending=purgeId?this.core.database.purgeForgotten(scope,purgeId,guard):this.core.database.forgottenInventory(scope,guard);
+  this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
  async executeOperator(request:FastifyRequest,operation:string,args:Record<string,unknown>){
   this.operator(request);const parsed=validateMemoryCall(operation,args);await this.ready();await this.ensureGlobalScope();const write=['save','update','forget'].includes(operation);if(write?parsed.destination!=='global':parsed.source!=='global')throw new MemoryDenied('Explicit global scope required',400);if(parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);
@@ -1172,6 +1182,21 @@ export function registerLocalMemory(app:FastifyInstance,ports:Ports){
   catch(e){return reply.code(e instanceof MemoryDenied?e.statusCode:409).send({error:(e as Error).message});}
  });
  app.get('/api/local-memory/global-transfer',async(request,reply)=>{try{return await memory.globalTransfer(request,'inventory');}catch(e){return error(reply,e);}});
+ const validMemoryId=(id:unknown):id is string=>typeof id==='string'&&id.length>0&&id.length<=512&&id.trim()===id&&!id.includes('\0');
+ app.get<{Querystring:{chatId?:string}}>('/api/local-memory/forgotten',async(request,reply)=>{
+  try{
+   const {chatId}=request.query;if(chatId!==undefined&&!validMemoryId(chatId))throw new MemoryDenied('Invalid Chat ID',400);
+   return await memory.forgotten(request,chatId);
+  }catch(e){return error(reply,e);}
+ });
+ app.post<{Body:{chatId?:string;id:string;confirmed:boolean}}>('/api/local-memory/forgotten/purge',async(request,reply)=>{
+  try{
+   const value=request.body;
+   if(!value||Object.keys(value).some(key=>!['chatId','id','confirmed'].includes(key))||!validMemoryId(value.id)||
+      (value.chatId!==undefined&&!validMemoryId(value.chatId))||value.confirmed!==true)throw new MemoryDenied('Select the exact forgotten record and confirm permanent deletion',400);
+   return await memory.forgotten(request,value.chatId,value.id);
+  }catch(e){return reply.code(e instanceof MemoryDenied?e.statusCode:409).send({error:e instanceof Error?e.message:String(e)});}
+ });
  app.post<{Params:{action:string};Body:Record<string,unknown>}>('/api/local-memory/global-transfer/:action',{bodyLimit:MEMORY_SNAPSHOT_MAX_BYTES+65536},async(request,reply)=>{
   try{
    const action=request.params.action,body=request.body;

@@ -21,6 +21,32 @@ async function globalSeed(f){
  const log=await raw.client.getCollection({name:raw.names('global').log});await log.upsert({ids:[conflict],documents:['Preserve source disagreement for explicit resolution'],embeddings:[vector],metadatas:[{source_type:'ai_inference',timestamp:at,log_id:conflict,chunk_ids:JSON.stringify([parent,child]),chunk_ids_affected:JSON.stringify([parent,child]),chunks_affected:2,host_conflict_authority:JSON.stringify(stamp(conflict))}]});
  return {parent,child,outside,conflict,selection:{chunkIds:[parent,child],conflictIds:[conflict]}};
 }
+test('Forget hides an exact entry from lookup and export while permanent deletion preserves the current successor',async t=>{
+ const f=await instance(t),ids=await globalSeed(f);
+ const call=(operation,args)=>f.app.inject({method:'POST',url:'/api/local-memory/global',headers:f.headers,payload:{operation,...args}});
+ const forgotten=await call('forget',{chunk_id:ids.parent,destination:'global'});
+ assert.equal(forgotten.statusCode,200,forgotten.body);
+ assert.equal(forgotten.json().structuredContent.result.deleted,true);
+ const read=await call('get',{chunk_id:ids.parent,source:'global'});
+ assert.equal(read.statusCode,200,read.body);
+ assert.equal(read.json().structuredContent.result.found,false);
+ const snapshot=(await inventory(f)).snapshot;
+ assert.ok(!snapshot.chunks.some(row=>row.id===ids.parent));
+ assert.ok(snapshot.chunks.some(row=>row.id===ids.child&&!row.metadata.supersedes));
+ assert.ok(!snapshot.conflicts.some(row=>row.id===ids.conflict));
+ const endpoint='/api/local-memory/forgotten';
+ const backlog=await f.app.inject({method:'GET',url:endpoint,headers:f.headers});
+ assert.deepEqual(backlog.json().items.map(row=>row.id),[ids.parent]);
+ const purge=confirmed=>f.app.inject({method:'POST',url:endpoint+'/purge',headers:f.headers,payload:{id:ids.parent,confirmed}});
+ assert.equal((await purge(false)).statusCode,400);
+ const result=await purge(true);
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(result.json().deleted,true);
+ const raw=f.memory.core.database.raw;
+ const collection=await raw.client.getCollection({name:raw.names('global').memory});
+ assert.deepEqual((await collection.get({ids:[ids.parent,ids.child]})).ids,[ids.child]);
+ assert.ok((await inventory(f)).snapshot.chunks.some(row=>row.id===ids.child));
+});
 for(const branch of [false,true])test(`selected global HTTP transfer preserves destination authority, parallel facts/conflicts, explicit selection and reopen/retry in ${branch?'Branches':'Core'}`,async t=>{
  const source=await instance(t,branch),destination=await instance(t,branch);await seed(source);await seed(destination);const ids=await globalSeed(source),destIds=await globalSeed(destination);
  source.memory.setGrant(source.chat.id,true,0,branch?'branches':'dev');
