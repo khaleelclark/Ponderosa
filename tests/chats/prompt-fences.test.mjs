@@ -133,6 +133,17 @@ test('known steering refusals back off and eventually queue without consuming th
   f.sqlite.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)").run(f.agentId);
   f.store.completeRun(f.authorization.runId,f.authorization.fencingToken,now(elapsed));
   assert.equal(state().state,'retry_pending');
+  const proof = {activationId, projectId:f.projectId, agentId:f.agentId, scopeKey:f.scopeKey};
+  assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true);
+  const prior = f.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE kind='steer' ORDER BY sequence LIMIT 1").get();
+  const rollback = Error('Restore the controlled refusal history');
+  assert.throws(() => f.sqlite.transaction(() => {
+    f.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='outcome_unknown' WHERE id=?").run(prior.id);
+    assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), false);
+    throw rollback;
+  })(), error => error === rollback);
+  assert.equal(f.store.steerPendingActivation({...proof, idempotencyKey:randomUUID(), now:now(elapsed)}).steered, true);
+  assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true, 'Steer from the queue preserves refusal evidence');
   assert.ok(f.store.leaseNextRun({workerId:'fixture',now:now(elapsed)}).activationIds.includes(activationId));
 });
 
