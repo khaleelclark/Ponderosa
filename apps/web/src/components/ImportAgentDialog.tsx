@@ -666,6 +666,7 @@ export function ImportAgentDialog({
   engines,
   conversations,
   initialConversationId,
+  fixedConversationId,
   onClose,
 }: {
   open: boolean;
@@ -675,6 +676,7 @@ export function ImportAgentDialog({
   engines: EngineDto[];
   conversations: ConversationDto[];
   initialConversationId?: string;
+  fixedConversationId?: string;
   onClose(): void;
 }): JSX.Element {
   const [pending, setPending] = useState(false);
@@ -751,6 +753,7 @@ export function ImportAgentDialog({
             engines={engines}
             conversations={projectId ? conversations : destinationConversations.data?.filter(chat => !chat.deletedAt) ?? []}
             initialConversationId={projectId ? initialConversationId : undefined}
+            fixedConversationId={fixedConversationId}
             requireDestinationSelection={!projectId}
             onCancel={close}
             onPendingChange={nextPending => {
