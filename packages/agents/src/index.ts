@@ -246,3 +246,5 @@ export { requireGenerationExitDeletionReady } from "./branch-generation-exit-del
 export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from './portable-artifact-original.js';
 
 export { safeWorkingCopyFailure, safeWorkingCopyFailureCode, safeStoredWorkingCopy, isFreshStoredWorkingCopyFailure, recordWorkingCopyGitFailure, recordWorkingCopySharedFolderFailure, carryWorkingCopyGitFailure, isStoredWorkingCopyGitFailure } from "./working-copy-failure.js";
+
+export { chatArchiveBlocksAgent, chatArchiveBlocksChat, chatArchiveActivationSql } from "./chat-archive.js";

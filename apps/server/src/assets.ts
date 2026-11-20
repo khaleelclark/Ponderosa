@@ -657,6 +657,16 @@ export class AssetStore {
     } catch { return undefined; }
   }
 
+  async attachmentUsage(projectId: string, ownerId: string) {
+    const { committed, pending } = this.authority.attachmentUsage(projectId, ownerId);
+    const unsent: Array<{id:string;name:string;size:number}> = [];
+    for (const { id } of pending.slice(0,100)) {
+      const asset = await this.read(projectId,ownerId,id);
+      if (asset && asset.state !== "associated") unsent.push({id,name:asset.name,size:asset.size});
+    }
+    return { committed, limit: ASSET_LIMITS.maxAgentBytes, unsent, hasMore: pending.length > 100 };
+  }
+
   /** Resolve immutable attachment metadata and bytes at the synchronous
    * scheduler intake boundary. */
   authoritativeRuntimeAttachment(

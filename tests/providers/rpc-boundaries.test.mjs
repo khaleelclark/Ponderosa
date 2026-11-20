@@ -5,8 +5,26 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { JsonRpcOutputLimitError, JsonRpcProcess } from '../../packages/engines/dist/json-rpc-process.js';
+import { JsonRpcDeadlineError, JsonRpcOutputLimitError, JsonRpcProcess } from '../../packages/engines/dist/json-rpc-process.js';
 import { CodexAppServerSession, discoverCodexAppServerCapabilities } from '../../packages/engines/dist/codex-app-server.js';
+
+test('a timed-out control ignores late acknowledgement and leaves the RPC usable', { timeout: 10_000 }, async () => {
+  const script = `require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+    const {id,method} = JSON.parse(line);
+    const reply = () => console.log(JSON.stringify({id,result:method}));
+    if (method === 'slow') setTimeout(reply, 100);
+    else reply();
+  });`;
+  const rpc = new JsonRpcProcess({bin:process.execPath,args:['-e',script],cwd:process.cwd(),
+    signal:new AbortController().signal,onRuntimeSpawned(){},onRuntimeRootExit(){}});
+  try {
+    assert.equal(await rpc.request('ready'), 'ready');
+    await assert.rejects(rpc.request('slow', {}, 20), JsonRpcDeadlineError);
+    assert.equal(await rpc.request('after'), 'after');
+    await new Promise(resolve=>setTimeout(resolve,150));
+    assert.equal(await rpc.request('after-late'), 'after-late');
+  } finally { await rpc.close(); }
+});
 
 test('malformed records and late server replies stay inside the RPC boundary', { timeout: 15_000 }, () => {
   // Observe escaped failures in a disposable parent, so the red baseline cannot

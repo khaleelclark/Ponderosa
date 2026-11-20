@@ -348,6 +348,8 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   nativeHistory?(): Promise<NativeHistoryCatalog>;
   rewindFiles?(messageId: string, dryRun: boolean): Promise<NativeFileRewindResult>;
   listNativeTasks?(): Promise<NativeTask[]>;
+  /** Last successful nonempty terminal check while holding a completed turn. */
+  backgroundTasksObservedAt?(): number | undefined;
   stopNativeTask?(taskKey: string): Promise<NativeTaskStopOutcome>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   /** Activate an existing paused native goal inside this exact managed Run. */

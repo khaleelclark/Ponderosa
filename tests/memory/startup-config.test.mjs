@@ -4,6 +4,7 @@ import {mkdtemp,realpath,mkdir,writeFile,readFile,chmod,symlink,link,rename,rm} 
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore} from '@ponderosa/agents';
+import {createServer} from '../../apps/server/dist/app.js';
 import {LocalMemoryService} from '../../apps/server/dist/local-memory.js';
 import {loadLocalMemoryConfiguration} from '../../apps/server/dist/local-memory-config.js';
 const valid={chromaUrl:'http://127.0.0.1:8000',collectionPrefix:'private_branches',modelDir:'/synthetic/models',stateDirectory:'/synthetic/policy',provision:true};
@@ -36,6 +37,26 @@ test('Local Memory initializes its policy against the held canonical root withou
  ports.opts.localMemory.provision=false;
  const reopened=new LocalMemoryService(ports,inference);
  try{assert.equal(reopened.principalId,memory.principalId);}finally{await reopened.close();}
+}));
+
+test('new ordinary chats default to global recall and can opt out without changing existing chats',()=>admittedFixture(async({root,ports,inference})=>{
+ const memory=new LocalMemoryService(ports,inference);
+ try{
+  const existing=ports.store.createProject({label:'Existing',hostPath:root,defaultEngine:'inert',chatOwned:true});
+  const created=ports.store.createProject({label:'Created',hostPath:root,defaultEngine:'inert',chatOwned:true},undefined,chatId=>memory.reserveNewChat(chatId,true));
+  const chatId=created.lastConversationId;
+  assert.deepEqual(memory.getGrant(chatId,'dev'),{chatId,readGlobal:true,revision:0});
+  assert.equal(memory.getGrant(existing.lastConversationId,'dev').readGlobal,false);
+  assert.deepEqual(memory.setGrant(chatId,false,0,'dev'),{chatId,readGlobal:false,revision:1});
+  assert.equal(memory.getGrant(chatId,'dev').readGlobal,false);
+ }finally{await memory.close();}
+}));
+
+test('configured memory with unavailable models refuses startup and reports what to check',()=>admittedFixture(async({ports})=>{
+ const app=createServer({...ports.opts,store:ports.store,engines:[],logger:false});
+ try{
+  await assert.rejects(app.ready(),error=>/Check the model files and Chroma connection/.test(error.message)&&error.cause instanceof Error);
+ }finally{app.prepareForShutdown();await app.close();}
 }));
 
 test('Local Memory refuses policy state inside the physical admitted data directory',()=>admittedFixture(async({dataDir,ports,inference})=>{

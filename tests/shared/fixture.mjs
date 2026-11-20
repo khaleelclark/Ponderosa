@@ -81,7 +81,9 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
       const job = process.platform === 'win32' ? new WindowsProcessJob() : undefined;
       let child;
       try {
-        child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: !job, stdio: 'ignore', cwd: root, windowsHide: true });
+        // EOF on the owner pipe also stops a detached fixture when its test worker dies.
+        const watchdog = "require('node:fs').createReadStream('', { fd: 3 }).on('end', () => process.exit(0)).on('error', () => process.exit(1)).resume(); setInterval(() => {}, 1000)";
+        child = spawn(process.execPath, ['-e', watchdog], { detached: !job, stdio: ['ignore', 'ignore', 'ignore', 'pipe'], cwd: root, windowsHide: true });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       } catch (error) { job?.close(); throw error; }
       const record = { pid: child.pid, exited: false }; children.push(record);
@@ -148,6 +150,8 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
                 if (!result.success) result = await session.tool('ponderosa_message', { text: 'Explicit fixture reply' });
                 assert.equal(result.success, true, result.text);
               }
+              if (plan.finalAnswer) events.push({type:'response_text',providerTurnId:turnId,itemId:'final',
+                kind:'complete',phase:'final_answer',text:plan.finalAnswer});
               session.finish();
             } catch (error) {
               failures.push(error); events.push({ type: 'error', terminalStatus: 'failed', message: error.message }); session.finish();
@@ -192,7 +196,12 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
     await Promise.all(children.map(child => child.close()));
     await current.close();
   } };
-  await open();
+  try { await open(); }
+  catch (error) {
+    try { await close(); }
+    finally { if (process.env.KEEP_TEST_TMP !== '1') await rm(root, { recursive: true, force: true }); }
+    throw error;
+  }
   const api = async (method, url, payload, headers = {}) => {
     const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers:{...(authToken?{authorization:`Bearer ${authToken}`} :{}),...headers} });
     let body; try { body = response.json(); } catch { body = response.body; }
@@ -244,8 +253,8 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
 }
 
 export async function withFixture(t, run, options) {
-  const f = await fixture(options); let success = false;
-  try { await run(f); success = true; }
+  const f = await fixture(options);
+  try { await run(f); }
   catch (error) { t.diagnostic(`Assertion before cleanup: ${error.stack ?? error}`); throw error; }
-  finally { if (!success) t.diagnostic(`Failed disposable fixture retained: ${f.root}`); await f.dispose(success); }
+  finally { await f.dispose(process.env.KEEP_TEST_TMP !== '1'); }
 }

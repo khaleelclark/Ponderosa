@@ -1,3 +1,4 @@
+import {canonicalTimestamp} from './coordination-v3-runtime-validation.js';
 import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
 import {hostUpdateHashMatches,hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot,restorationOriginalIdentity} from './branch-host-provenance.js';
 import type {BranchHostCut} from './branch-host-cut.js';
@@ -175,7 +176,7 @@ export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(inp
   const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload),original=u?hostUpdateFact(cut,u).payload:hostRequestPayload(cut,r);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof (original as Row)?.text==='string'?`\n\n${(original as Row).text}`:''}`,historicalOrigin:origin(r,u),historicalPayload,...(destination?{destinationAdmissionId:destination.admissionId,artifactBindings:Object.fromEntries(cut.artifactRefs.filter(e=>cut.updates.some(v=>v.row.request_id===r.id&&v.row.id===e.row.owner_id)).map(e=>[e.row.id,destination.artifactMap[e.row.id]]))}:{})};};
   // Insert final projections directly. No intermediate live intake/update hooks run.
   for(const request of requests)db.prepare(`INSERT INTO coordination_requests(id,project_id,conversation_id,requester_agent_id,recipient_agent_id,payload_json,state,version,lifetime_kind,deadline_at,open_question_update_id,created_at,updated_at,terminal_at)
-   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestMap[request.id],project(request.project_id),chat(request.conversation_id),agent(request.requester_agent_id),agent(request.recipient_agent_id),stableJson(evidence(request.payload_json,request)),request.state,request.version,request.lifetime_kind,request.deadline_at,request.open_question_update_id?updateMap[request.open_question_update_id]:null,now,now,TERMINAL_REQUEST_STATES.has(request.state)?now:null);
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestMap[request.id],project(request.project_id),chat(request.conversation_id),agent(request.requester_agent_id),agent(request.recipient_agent_id),stableJson(evidence(request.payload_json,request)),request.state,request.version,request.lifetime_kind,request.deadline_at?canonicalTimestamp(request.deadline_at):null,request.open_question_update_id?updateMap[request.open_question_update_id]:null,now,now,TERMINAL_REQUEST_STATES.has(request.state)?now:null);
   for(const update of updates){
    const request=requests.find(r=>r.id===update.request_id)!,payload=evidence(update.payload_json,request,update),kind=update.kind==='question'?'historical_question':update.kind==='answer'?'historical_answer':update.kind;
    db.prepare('INSERT INTO coordination_request_updates(id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(updateMap[update.id],requestMap[request.id],kind,'system','host-cut-restoration',update.in_reply_to_update_id?updateMap[update.in_reply_to_update_id]:null,stableJson(payload),payloadHash(payload),update.resulting_state,update.resulting_version,now);
@@ -184,7 +185,7 @@ export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(inp
   for(const join of joins){
    const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),continuations=JSON.parse(join.continuation_request_ids_json).map((id:string)=>requestMap[id]);
    db.prepare(`INSERT INTO coordination_joins(id,project_id,conversation_id,owner_agent_id,mode,quorum,satisfying_outcomes_json,state,deadline_at,definition_hash,continuation_request_ids_json,wake_policy,created_at,updated_at,terminal_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(joinMap[join.id],project(join.project_id),chat(join.conversation_id),agent(join.owner_agent_id),join.mode,join.quorum,join.satisfying_outcomes_json,join.state,join.deadline_at,payloadHash({restorationId,source:join.definition_hash,members:members.map(m=>requestMap[m.request_id]),continuations}),stableJson(continuations),join.wake_policy,now,now,join.state==='open'?null:now);
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(joinMap[join.id],project(join.project_id),chat(join.conversation_id),agent(join.owner_agent_id),join.mode,join.quorum,join.satisfying_outcomes_json,join.state,join.deadline_at?canonicalTimestamp(join.deadline_at):null,payloadHash({restorationId,source:join.definition_hash,members:members.map(m=>requestMap[m.request_id]),continuations}),stableJson(continuations),join.wake_policy,now,now,join.state==='open'?null:now);
    for(const member of members)db.prepare('INSERT INTO coordination_join_members VALUES(?,?,?)').run(joinMap[join.id],requestMap[member.request_id],member.position);
   }
   for(const {row:s} of cut.suspensions)db.prepare('INSERT INTO coordination_question_suspensions VALUES(?,?,?,?,?,?,?,?,?)').run(updateMap[s.question_update_id],requestMap[s.request_id],agent(s.owner_agent_id),'join',joinMap[s.dependency_id],s.state,now,now,s.state==='open'?null:now);
@@ -211,14 +212,14 @@ export function validateRetainedCoordinationGraph(cut:BranchHostCut,now:string,e
  if(!cut.coverage.complete||requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id&&(!evidenceOnly||!requests.some(q=>q.id===r.superseded_by_request_id))))throw Error('Incomplete graph, unknown effect or recovery chain requires reconciliation');
   for(const request of requests){
    validateHistoricalRequest(request,updates.filter(u=>u.request_id===request.id).sort((a,b)=>a.resulting_version-b.resulting_version),cut);
-   if(!evidenceOnly&&request.deadline_at&&request.deadline_at<=now)throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
+   if(!evidenceOnly&&request.deadline_at&&Date.parse(request.deadline_at)<=Date.parse(now))throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
    if(request.state==='waiting_dependency'&&!joins.some(j=>JSON.parse(j.continuation_request_ids_json).includes(request.id)))throw Error('Waiting historical Request lacks a captured Join continuation');
   }
   for(const join of joins){
    const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),continuations=JSON.parse(join.continuation_request_ids_json) as string[];
    if(!members.length||members.some((m,i)=>m.position!==i||!requests.some(r=>r.id===m.request_id))||continuations.some(id=>!requests.some(r=>r.id===id)))throw Error('Historical Join closure is incomplete');
    for(const id of continuations){const request=requests.find(r=>r.id===id)!;if(request.project_id!==join.project_id||request.conversation_id!==join.conversation_id||request.recipient_agent_id!==join.owner_agent_id&&!(request.requester_agent_id===join.owner_agent_id&&request.state==='awaiting_answer'))throw Error('Historical continuation owner differs');}
-   if(!evidenceOnly&&join.deadline_at&&join.deadline_at<=now)throw Error('Expired Join lifetime needs an explicit fresh lifetime policy');
+   if(!evidenceOnly&&join.deadline_at&&Date.parse(join.deadline_at)<=Date.parse(now))throw Error('Expired Join lifetime needs an explicit fresh lifetime policy');
    const computed=evaluateCoordinationJoin({state:'open',mode:join.mode,quorum:join.quorum,requestIds:members.map(m=>m.request_id),satisfyingOutcomes:JSON.parse(join.satisfying_outcomes_json)},new Map(requests.map(r=>[r.id,r.state])));
    if(!['open','satisfied','impossible'].includes(join.state)||computed!==join.state)throw Error('Historical Join final outcome needs a separate disposition');
    if(join.state!=='open'){

@@ -426,6 +426,8 @@ test('native diagnostic handles remain owned blockers after failed cleanup and c
  try{Object.defineProperty(process,'platform',{...platform,value:'win32'});owner.register(handle,{purpose:'codex availability diagnostic'});}finally{Object.defineProperty(process,'platform',platform)}
  assert.equal(owner.count({purpose:'codex availability diagnostic'}),1);await assert.rejects(owner.terminatePurpose('codex availability diagnostic'),/pending/);assert.equal(owner.count(),1);
  owner.pruneExited();assert.equal(owner.count(),1);fail=false;await owner.terminateDiagnostics();assert.equal(owner.count(),0);assert.equal(closes,2);
+ const evidence=db.prepare("SELECT COUNT(*) AS count FROM host_lifecycle_commits WHERE kind IN ('provider-process-registration','provider-process-exit')").get();
+ assert.equal(evidence.count,0,'Unscoped diagnostics retain live cleanup authority without writing permanent receipts');
 });
 
 import {providerSessionFacade,projectProviderRootExitDetail,ProviderRuntimeBoundaryError} from '../../apps/server/dist/provider-session-facade.js';
@@ -448,17 +450,22 @@ test('native persistent runtime aliases retain one root and cancellation never t
 import {createRuntimeAuthority} from '../../apps/server/dist/runtime-authority.js';
 test('two-phase root exit preserves the first causal observation instead of attributing cleanup as a crash cause',async()=>{
  for(const hostOperation of [undefined,'failed resume replacement','Run cancellation']){
-  const identity={},audit=[],failures=[],run={runId:'run',executionId:'run',v3SchedulerRunId:'run',v3FencingToken:1,generation:1,persistentRuntimeIdentity:identity,messageCapability:'capability',controller:new AbortController()};
-  const runtime={identity,session:{isAlive:()=>false,close:async()=>{}}},authority={oneShots:new Map(),retryAttempt:0,...(hostOperation?{closing:{runtime,reason:hostOperation}}:{reusable:runtime})};
+  const identity={},audit=[],failures=[],cleared=[],run={runId:'run',executionId:'run',v3SchedulerRunId:'run',v3FencingToken:1,generation:1,persistentRuntimeIdentity:identity,messageCapability:'capability',controller:new AbortController()};
+  const runtime={identity,session:{engineAgentId:'unverified-transcript-fork',validatesResumeBeforeTurn:false,isAlive:()=>false,close:async()=>{}}},authority={oneShots:new Map(),retryAttempt:0,...(hostOperation?{closing:{runtime,reason:hostOperation}}:{reusable:runtime})};
   const activeRuns=new Map([['agent',run]]),agentMessageCapabilities=new Map([['capability',{}]]);
   const owner=createRuntimeAuthority({runtimeAuthorities:new Map([['agent',authority]]),activeRuns,agentMessageCapabilities,organizationEnvelopeStates:new Map(),scheduledSessionRollovers:new Map(),
    store:{getAgent:()=>({projectId:'project'}),appendEvent:(_id,event)=>{audit.push(event);return {event}}},coordinationV3:{ownsRunForCleanup:()=>true,agentSnapshot:()=>({activeRun:{promptInjectionState:'injected'}}),failRun:value=>failures.push(value)},coordinationV3WorkerId:'owned',
-   runtimeAuthority:()=>authority,reusableRuntime:()=>authority.reusable,openingRuntime:()=>authority.opening,closingRuntime:()=>authority.closing,pruneRuntimeAuthority(){},clearAgentResumeSession(){},closeRunBrowser:async()=>{},closeLinkPreviewsForAgent(){},publish(){},publishMessageDeliveryChanged(){},resolveOperationalNotification(){},notifyScheduler(){},logError(){},transitionRun:()=>true,clearRunLeaseTimer(){},clearRunLivenessTimer(){},isClosed:()=>false});
+   runtimeAuthority:()=>authority,reusableRuntime:()=>authority.reusable,openingRuntime:()=>authority.opening,closingRuntime:()=>authority.closing,pruneRuntimeAuthority(){},clearAgentResumeSession(...args){cleared.push(args);},closeRunBrowser:async()=>{},closeLinkPreviewsForAgent(){},publish(){},publishMessageDeliveryChanged(){},resolveOperationalNotification(){},notifyScheduler(){},logError(){},transitionRun:()=>true,clearRunLeaseTimer(){},clearRunLivenessTimer(){},isClosed:()=>false});
   owner.persistentRootExited('agent',identity,{exitCode:1,outputDraining:true});assert.equal(failures.length,0);
   owner.persistentRootExited('agent',identity,{exitCode:1,stderr:'SYNTHETIC_OBSERVED_STDERR'});
   if(hostOperation==='failed resume replacement'){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
   else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,hostOperation?'host_operation_observed':'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,hostOperation);assert.equal(run.controller.signal.aborted,true)}
   assert.equal(audit.filter(event=>event.type==='error'&&event.message.includes('SYNTHETIC_OBSERVED_STDERR')).length,hostOperation?0:1);
+  if(hostOperation)assert.deepEqual(cleared,[]);
+  else{
+   assert.ok(cleared.length>0,'unexpected exit cannot retain an unverified fork for cold resume');
+   for(const args of cleared)assert.deepEqual(args,['agent','provider_root_exit']);
+  }
   await authority.closing?.operation;
  }
 });

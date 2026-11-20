@@ -337,7 +337,7 @@ export interface OutputAgentAppDto {
   runtimeSettings: import('./dto/agents.js').AgentRuntimeSettingsSnapshot;
   pauseOnSpeakerRemoval?: boolean; automatic: boolean; triggerKind: 'manual' | TriggerSourceKind; schedule?: TriggerScheduleConfig; everyMs?: number;
 }
-export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; setupError?:{message:string;at:string} }
+export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; waitingForProvider?:boolean; setupError?:{message:string;at:string} }
 
 /** Before-entry checkpoint; saved historical frontiers use the separate continuation contract. */
 export interface BranchInitialCheckpointDto {

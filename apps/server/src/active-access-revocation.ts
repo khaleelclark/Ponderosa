@@ -1,9 +1,9 @@
-import { newlyRestrictedCodexAccess } from "./codex-access-restrictions.js";
+import { newlyRestrictedRuntimeAccess } from "./provider-access-restrictions.js";
 import {CapabilityPolicyStore,type AgentStore,type CoordinationV3Store} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import type {ActiveRun} from './app-contracts.js';
 
-/** Fences only currently owned Codex Runs affected by an actual restriction.
+/** Fences only currently owned provider Runs affected by an actual restriction.
  * The stored pause explicitly holds ordinary checkpoint recovery. */
 export function createActiveAccessRevocation(context:{
  store:AgentStore;coordinationV3:CoordinationV3Store;activeRuns:Map<string,ActiveRun>;
@@ -20,7 +20,7 @@ export function createActiveAccessRevocation(context:{
   for(const agentId of affected)try{context.publishPause(agentId);}catch(error){context.logError(error,'publish pause');}
  };
  const candidates=()=>[...context.activeRuns].filter(([agentId,run])=>
-  run.runtimeEngineId==='codex' && !!run.v3SchedulerRunId && context.ownsRun(agentId,run));
+  !!run.v3SchedulerRunId && context.ownsRun(agentId,run));
  const hold=(agentId:string,run:ActiveRun)=>{
   context.coordinationV3.pauseAgentRun({agentId,runId:run.v3SchedulerRunId!,
    idempotencyKey:`access-revocation:${run.v3SchedulerRunId}`,accessRevocationHold:true});
@@ -34,7 +34,7 @@ export function createActiveAccessRevocation(context:{
    for(const item of before){
     if(!context.ownsRun(item.agentId,item.run))continue;
     const after=policies.resolveForAgent(item.agentId,item.run.v3SchedulerRunId).restrictedCapabilityIds;
-    if(newlyRestrictedCodexAccess(item.restricted,after)){hold(item.agentId,item.run);affected.push(item.agentId);}
+    if(newlyRestrictedRuntimeAccess(item.restricted,after,item.run.runtimeEngineId ?? context.store.getAgent(item.agentId)?.activeEngine)){hold(item.agentId,item.run);affected.push(item.agentId);}
    }
    return value;
   })();

@@ -112,3 +112,9 @@ export interface HostFolderCreateDto {
   name: string;
   hostPath: string;
 }
+
+export interface ChatStorageDto {
+  measuring?: true;
+  folders: Array<{ name: string; path: string; bytes: number | null; identity: string; referenced: boolean }>;
+  projects: Array<{ id: string; label: string; path: string; artifactBytes: number | null }>;
+}

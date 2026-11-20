@@ -48,7 +48,7 @@ export interface HistoryBoundary {
 }
 export interface HistoryReceipt {
   id:string; key:string; kind:"preview"|"rewind"|"fork"; boundary:HistoryBoundary;
-  state:"prepared"|"started"|"completed"|"opened"|"cancelled";
+  state:"prepared"|"started"|"completed"|"opened"|"cancelled"|"failed"|"abandoned";
   requestHash?:string;inputHash:string; createdAt:string; targetAgentId?:string; throughId?:string;
   newSessionId?:string; targetRunId?:string; targetFence?:number; result?:NativeHistoryResult;
 }

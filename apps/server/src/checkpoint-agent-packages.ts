@@ -11,7 +11,7 @@ export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageS
 export function checkpointPackageCustody(dataDir:string){
   const directory=path.join(dataDir,'checkpoint-package-custody');
   syncFs.mkdirSync(directory,{recursive:true,mode:0o700});
-  const directoryStat=syncFs.lstatSync(directory);if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink()||(directoryStat.mode&0o077))throw new Error('Checkpoint custody directory must be private');
+  const directoryStat=syncFs.lstatSync(directory);if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink()||(process.platform!=='win32'&&(directoryStat.mode&0o077)))throw new Error(`Checkpoint custody directory must be private: ${directory}`);
   if(process.platform!=='win32'){const parent=syncFs.openSync(dataDir,'r');try{syncFs.fsyncSync(parent);}finally{syncFs.closeSync(parent);}}
   let tail:Promise<unknown>=Promise.resolve();
   const serial=<T>(work:()=>Promise<T>):Promise<T>=>{const next=tail.then(work,work);tail=next.catch(()=>{});return next;};
@@ -110,9 +110,10 @@ export function checkpointPackageCustody(dataDir:string){
       try{await fs.access(pending);throw new Error('Checkpoint capture was interrupted; choose a new checkpoint identity');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       // Pending evidence survives failure/restart. Never silently recapture a later source cut.
       await claimCapture(`${id}.pending.json`,{version:1,...source,boundaryId,state:'capturing'});
+      const temporary=path.join(directory,`${id}.${randomUUID()}.tmp`);
       try{
       const portable=validateMembership(validatePortableAgentPackage(await capture()).package,source);
-      const temporary=path.join(directory,`${id}.${randomUUID()}.tmp`),handle=await fs.open(temporary,'wx',0o600),hash=createHash('sha256');let byteLength=0;
+      const handle=await fs.open(temporary,'wx',0o600),hash=createHash('sha256');let byteLength=0;
       try{for await(const part of portablePackageJsonChunks(portable)){const bytes=Buffer.from(part,'utf8');byteLength+=bytes.length;if(byteLength>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint package exceeds package byte limit');hash.update(bytes);await handle.writeFile(bytes);}await handle.sync();}finally{await handle.close();}
       await fs.rename(temporary,path.join(directory,`${id}.payload`));await syncDirectory();
       const receipt:CheckpointPackageReceipt={version:1,custodyId:id,...source,agentIds:[...source.agentIds],intent:{...source.intent},boundaryId,sha256:hash.digest('hex'),byteLength};
@@ -121,6 +122,12 @@ export function checkpointPackageCustody(dataDir:string){
       await fs.unlink(pending);await syncDirectory();return receipt;
       }catch(error){
         await writeJson(`${id}.pending.json`,{version:1,...source,boundaryId,state:'failed',reason:error instanceof Error&&error.name==='SourceCaptureChangedError'?'source_changed':'capture_failed'});
+        await fs.rm(temporary, { force: true });
+        // SourceChanged is raised before the synchronous seal publishes any receipt.
+        if (error instanceof Error && error.name === 'SourceCaptureChangedError' && !await receiptAt(id)) {
+          await fs.rm(path.join(directory,`${id}.payload`), { force: true });
+        }
+        await syncDirectory();
         throw error;
       }
     }),

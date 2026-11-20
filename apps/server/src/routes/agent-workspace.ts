@@ -21,6 +21,35 @@ const hash=(value:unknown)=>createHash('sha256').update(stableJson(value)).diges
 const toolFor=(operation:string)=>operation==='check'?'ponderosa_assistant_check':`ponderosa_workspace_${operation}`;
 const required=(body:Record<string,unknown>,key:string,max=200)=>{const v=body[key];if(typeof v!=='string'||!v.trim()||Buffer.byteLength(v,'utf8')>max)throw failure(`Invalid ${key}`,400);return key==='text'?v:v.trim();};
 
+/** Scheduled admission and the manual tool share the same bounded source scan. */
+export function scanAssistantReport(store:AgentStore,agentId:string,everyMs:number,policies:CapabilityPolicyStore) {
+    const last=store.sqlite.prepare('SELECT MAX(reported_at) at FROM assistant_report_sources WHERE speaker_agent_id=?').get(agentId) as {at:string|null};
+    if(last.at&&Date.now()-Date.parse(last.at)<everyMs)return undefined;
+    const cursor=store.sqlite.prepare('SELECT after_sequence sequence FROM assistant_report_scan WHERE speaker_agent_id=?').get(agentId) as {sequence:number}|undefined;
+    const rows=store.sqlite.prepare(`SELECT s.sequence,s.source_key sourceKey,s.project_id projectId,s.chat_id chatId,s.agent_id agentId,
+      CASE s.kind WHEN 'communication' THEN substr(json_extract(c.payload_json,'$.communication.text'),1,300)
+       WHEN 'request' THEN substr(json_extract(u.payload_json,'$.text'),1,300) ELSE substr(r.title,1,300) END text,
+      CASE WHEN s.kind='communication' OR u.resulting_state='completed' THEN 'completed' ELSE 'issue' END state
+      FROM assistant_status_sources s
+      LEFT JOIN runtime_communications c ON s.kind='communication' AND c.id=s.source_id
+      LEFT JOIN coordination_request_updates u ON s.kind='request' AND u.id=(SELECT update_row.id FROM coordination_request_updates update_row WHERE update_row.request_id=s.source_id AND update_row.resulting_version=s.source_version ORDER BY update_row.rowid DESC LIMIT 1)
+      LEFT JOIN runs r ON s.kind='run' AND r.id=s.source_id AND r.agent_id=s.agent_id
+      WHERE s.sequence>? AND s.agent_id<>? ORDER BY s.sequence LIMIT 201`).all(cursor?.sequence??0,agentId) as Array<{sequence:number;sourceKey:string;projectId:string;chatId:string;agentId:string;text:string;state:string}>;
+    const seen=store.sqlite.prepare('SELECT 1 FROM assistant_report_sources WHERE speaker_agent_id=? AND source_key=?');
+    const fresh:typeof rows=[];let scanned:typeof rows[number]|undefined,scanCount=0;
+    for(const row of rows.slice(0,200)){
+      scanned=row;scanCount++;
+      const owner=activeChatResourceOwner(store,'chat',row.chatId);
+      if(owner&&!owner.executionId&&!policies.resolveForChat(row.chatId).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead)&&
+          activeChatResourceOwner(store,'agent',row.agentId)&&!policies.resolveForAgent(row.agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead)&&
+          !seen.get(agentId,row.sourceKey))fresh.push(row);
+      if(fresh.length===50)break;
+    }
+    const sequence=scanned?.sequence??(store.sqlite.prepare('SELECT COALESCE(MAX(sequence),0) sequence FROM assistant_status_sources').get() as {sequence:number}).sequence;
+    const advance=()=>{store.sqlite.prepare('INSERT INTO assistant_report_scan VALUES(?,?) ON CONFLICT(speaker_agent_id) DO UPDATE SET after_sequence=MAX(after_sequence,excluded.after_sequence)').run(agentId,sequence);};
+    return {fresh,advance,hasMore:scanCount<rows.length};
+}
+
 /** Workspace actions are a separate host relay, never cross-Chat Communication authority. */
 export function registerAgentWorkspaceActions(app:FastifyInstance,context:Context):void {
  const {store,coordinationV3}=context,policies=new CapabilityPolicyStore(store.sqlite);
@@ -61,29 +90,9 @@ export function registerAgentWorkspaceActions(app:FastifyInstance,context:Contex
    if(operation==='check'){
     exactObjectFields(body,['operation','steeringInjectionId'],'Assistant check');
     if(context.outputApps.status().app?.agentId!==author.id)throw failure('Only the current Ponderosa speaker can publish an Assistant check');
-    const everyMs=context.outputApps.get(author.id).everyMs??600000;
-    const last=store.sqlite.prepare('SELECT MAX(reported_at) at FROM assistant_report_sources WHERE speaker_agent_id=?').get(author.id) as {at:string|null};
-    if(last.at&&Date.now()-Date.parse(last.at)<everyMs)return {published:false,deferred:true};
-    // Only explicit terminal task results count as completed work; a successful provider Run alone does not.
-    const cursor=store.sqlite.prepare('SELECT after_sequence sequence FROM assistant_report_scan WHERE speaker_agent_id=?').get(author.id) as {sequence:number}|undefined;
-    const rows=store.sqlite.prepare(`SELECT s.sequence,s.source_key sourceKey,s.project_id projectId,s.chat_id chatId,s.agent_id agentId,
-      CASE s.kind WHEN 'communication' THEN substr(json_extract(c.payload_json,'$.communication.text'),1,300)
-       WHEN 'request' THEN substr(json_extract(u.payload_json,'$.text'),1,300) ELSE substr(r.title,1,300) END text,
-      CASE WHEN s.kind='communication' OR u.resulting_state='completed' THEN 'completed' ELSE 'issue' END state
-      FROM assistant_status_sources s
-      LEFT JOIN runtime_communications c ON s.kind='communication' AND c.id=s.source_id
-      LEFT JOIN coordination_request_updates u ON s.kind='request' AND u.id=(SELECT update_row.id FROM coordination_request_updates update_row WHERE update_row.request_id=s.source_id AND update_row.resulting_version=s.source_version ORDER BY update_row.rowid DESC LIMIT 1)
-      LEFT JOIN runs r ON s.kind='run' AND r.id=s.source_id AND r.agent_id=s.agent_id
-      WHERE s.sequence>? AND s.agent_id<>? ORDER BY s.sequence LIMIT 201`).all(cursor?.sequence??0,author.id) as Array<{sequence:number;sourceKey:string;projectId:string;chatId:string;agentId:string;text:string;state:string}>;
-    const seen=store.sqlite.prepare('SELECT 1 FROM assistant_report_sources WHERE speaker_agent_id=? AND source_key=?');
-    const fresh:typeof rows=[];let scanned:typeof rows[number]|undefined,scanCount=0;
-    for(const row of rows.slice(0,200)){
-     scanned=row;scanCount++;
-     if(chatAllowed(row.chatId,CAPABILITY_IDS.workspaceRead)&&activeChatResourceOwner(store,'agent',row.agentId)&&!policies.resolveForAgent(row.agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead)&&!seen.get(author.id,row.sourceKey))fresh.push(row);
-     if(fresh.length===50)break;
-    }
-    const advance=()=>{const sequence=scanned?.sequence??(store.sqlite.prepare('SELECT COALESCE(MAX(sequence),0) sequence FROM assistant_status_sources').get() as {sequence:number}).sequence;store.sqlite.prepare('INSERT INTO assistant_report_scan VALUES(?,?) ON CONFLICT(speaker_agent_id) DO UPDATE SET after_sequence=excluded.after_sequence').run(author.id,sequence);};
-    const hasMore=scanCount<rows.length;
+    const scan=scanAssistantReport(store,author.id,context.outputApps.get(author.id).everyMs??600000,policies);
+    if(!scan)return {published:false,deferred:true};
+    const {fresh,advance,hasMore}=scan;
     if(!fresh.length){store.sqlite.transaction(()=>{fence();advance();})();return {published:false,changes:0,hasMore};}
     const event:CommunicationEvent={eventId:`assistant-report:${randomUUID()}`,schemaVersion:2,projectId:author.projectId,conversationId:author.conversationId!,sender:{kind:'agent',agentId:author.id,executionId:cap.runId},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:author.id},createdAt:new Date().toISOString(),text:fresh.map(r=>`${r.state==='completed'?'Completed':'Issue'} — ${store.getConversation(r.chatId)?.title??'Chat'} / ${store.getAgent(r.agentId)?.title??'Agent'}: ${String(r.text??'Work requires attention').slice(0,300)}`).join('\n')};
     store.sqlite.transaction(()=>{

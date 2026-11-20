@@ -250,7 +250,7 @@ export class ProjectFileAuthority {
       : path.resolve(root, safeRelativePath(requested));
     if (candidate === root || candidate.startsWith(`${root}${path.sep}`)) {
       const relative = path.relative(root, candidate).replaceAll(path.sep, "/");
-      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
+      if (!relative || !isProjectFileReferenceAllowed(relative, true)) return undefined;
       return {
         root,
         relative,

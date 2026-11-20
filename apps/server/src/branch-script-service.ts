@@ -27,7 +27,7 @@ export class BranchScriptService {
   private readonly pendingScripts = new Map<string,BranchScriptLease>();
   private readonly active = new Map<string, { handle: RuntimeProcessHandle; done: Promise<void> }>();
   constructor(private readonly branches: BranchStore, private readonly store: AgentStore, private readonly workerId: string,
-    private readonly options: { notifyAction?: (input: {dedupeKey:string;branchId:string;branchExecutionId:string;projectId?:string;chatId?:string;title:string;body:string})=>string; notifyGate?: (input:{dedupeKey:string;branchId:string;branchExecutionId:string;title:string;body:string})=>void; resolveGateNotification?: (dedupeKey:string)=>void; resources?: BranchResourceService; installations?:BranchInstallationService; maxConcurrentScripts?: number; appendAudit?: (event: WorkspaceEvent) => unknown } = {}) {
+    private readonly options: { reconcileScheduleHolds?: () => void; notifyAction?: (input: {dedupeKey:string;branchId:string;branchExecutionId:string;projectId?:string;chatId?:string;title:string;body:string})=>string; notifyGate?: (input:{dedupeKey:string;branchId:string;branchExecutionId:string;title:string;body:string})=>void; resolveGateNotification?: (dedupeKey:string)=>void; resources?: BranchResourceService; installations?:BranchInstallationService; maxConcurrentScripts?: number; appendAudit?: (event: WorkspaceEvent) => unknown } = {}) {
     if (!Number.isSafeInteger(options.maxConcurrentScripts ?? 4) || (options.maxConcurrentScripts ?? 4) < 1) throw new Error("Invalid Script concurrency limit");
   }
   private publishAudit(): void { if (this.options.appendAudit) this.branches.publishAudit(this.options.appendAudit); }
@@ -51,7 +51,9 @@ export class BranchScriptService {
     if (this.stopped) { this.checkpointErrors(); return; }
     if (!admit) { this.reconcileGateNotifications(); this.driveResources(false); await Promise.resolve(); this.checkpointErrors(); return; }
     void this.options.installations?.tick().catch(() => undefined);
+    this.branches.unitSaver.retryFailedSaves();
     this.branches.advance();
+    this.options.reconcileScheduleHolds?.();
     this.reconcileGateNotifications();
     this.driveResources(admit);
     // Yield at resource start, not completion: stop must fence the next effect.

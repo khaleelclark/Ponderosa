@@ -29,7 +29,7 @@ export function WorkspaceFileView({ projectId, path, agentId, conversationId, ba
       {query.isLoading ? (
         <Stack sx={{ height: "100%", alignItems: "center", justifyContent: "center" }}><FilePreview title={path} loading hideHeader /></Stack>
       ) : query.isError || !file ? (
-        <Alert severity="error" action={<Button color="inherit" onClick={() => void query.refetch()}>Retry</Button>}>This file is missing, outside its Chat or Agent working folder, or unavailable.</Alert>
+        <Alert severity="error" action={<Button color="inherit" onClick={() => void query.refetch()}>Retry</Button>}>{query.error instanceof Error ? query.error.message : "This file is unavailable."}</Alert>
       ) : (
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
           <FilePreview

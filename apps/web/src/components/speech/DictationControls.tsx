@@ -16,6 +16,7 @@ import {
 import { useWorkspaceReadOnly } from "../WorkspaceReadOnlyContext";
 import { useDictation } from "./useDictation";
 import { VoiceConversation, type VoiceConversationContext } from "./VoiceConversation";
+import { primeSpeechFromUserGesture } from "./speechCoordinator";
 
 export function DictationControls({
   disabled: suppliedDisabled,
@@ -115,6 +116,7 @@ export function DictationControls({
   const callDisabled=disabled || callOpen || recordingOpen || active || paused || !callEligible;
   const openCall=(invoker:HTMLButtonElement|null)=>{
     if(callDisabled || !invoker)return;
+    primeSpeechFromUserGesture();
     callInvoker.current={node:invoker,owner:callOwner};
     setAnchor(null);setOpenedCallOwner(callOwner);
   };

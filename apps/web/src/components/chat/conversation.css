@@ -5,7 +5,7 @@
 .chat-message-column { line-height: 1.65; }
 .chat-message-agent-header { margin-bottom: 4px; gap: 8px; }
 .chat-message-agent-header [data-message-sender] { font-weight: 600; }
-.chat-message-frame .chat-message-body { font-size: 1rem; line-height: 1.65; }
+.chat-message-frame .chat-message-body { line-height: 1.65; }
 .chat-message-frame .chat-message-actions .MuiIconButton-root { min-width: 36px; min-height: 36px; }
 .chat-message-frame .chat-message-actions { margin-top: 3px; }
 @media (max-width: 599px) {
@@ -20,8 +20,10 @@
  @keyframes conversation-appear { from { opacity: .75; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 }
 
-.chat-message-frame .chat-prose { font-size: 1rem; line-height: 1.65; --chat-prose-paragraph-margin: .5em; --chat-prose-list-margin: .5em; --chat-prose-list-gap: .2em; }
-.chat-message-frame .chat-prose.chat-prose-small { font-size: .9375rem; line-height: 1.55; }
+.chat-message-frame .chat-prose { line-height: 1.65; --chat-prose-paragraph-margin: .5em; --chat-prose-list-margin: .5em; --chat-prose-list-gap: .2em; }
+.chat-message-frame .chat-prose.chat-prose-small { line-height: 1.55; }
+.chat-message-assistant .chat-message-body, .chat-message-assistant .chat-prose { font-size: 1rem; }
+.chat-message-assistant .chat-prose.chat-prose-small { font-size: .9375rem; }
 
 /* Assistant Messages keeps the shared lane and each canonical row/action intact. */
 .chat-message-frame.chat-message-assistant { padding-block: 11px; }

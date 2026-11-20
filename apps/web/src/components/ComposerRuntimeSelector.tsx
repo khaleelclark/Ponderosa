@@ -363,6 +363,7 @@ export function ComposerRuntimeSelector({
               <ArrowBackIcon fontSize="small" /><Typography variant="body2" sx={{ fontWeight: 700 }}>Model</Typography>
             </ButtonBase>
             <Divider sx={{ my: 0.5 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1.25, mb: 0.5 }}>Changing the model starts a fresh provider session.</Typography>
             {optionList}
           </Box> : <>
           <ButtonBase ref={engineButton}

@@ -5,9 +5,10 @@ import { AgentPackageJsonParser, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AG
 import type { PackageWireEntry } from "./agent-package-codec.js";
 import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 import { exactObjectFields, validatedObject } from "./object-validation.js";
+import { validatePortableAgentPackage } from "./portable-agent-package-validation.js";
 
 const port = parentPort!;
-const input = workerData as { pathname: string; packageOnly?: boolean; jsonEnvelope?: boolean };
+const input = workerData as { pathname: string; packageOnly?: boolean; jsonEnvelope?: boolean; validateOnly?:boolean };
 
 // Only a bounded batch crosses the server event loop at once. Acknowledgement
 // prevents a fast worker from queuing an entire large package in the parent.
@@ -39,7 +40,7 @@ async function parse(): Promise<void> {
   let canonicalPayloadHash: string | undefined;
   if (input.jsonEnvelope) {
     const envelope = validatedObject(portable, "Agent import request");
-    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation"], "Agent import request");
+    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation", "omitMemory"], "Agent import request");
     metadata = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== "package"));
     try { agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES); }
     catch (error) {
@@ -54,7 +55,7 @@ async function parse(): Promise<void> {
   }
   if (input.jsonEnvelope) {
     const mapping = validatedObject(metadata.engineMapping, "Agent import engine mapping");
-    if (typeof metadata.conversationId !== "string" || Object.values(mapping).some(value => typeof value !== "string") ||
+    if ((metadata.omitMemory !== undefined && typeof metadata.omitMemory !== "boolean") || typeof metadata.conversationId !== "string" || Object.values(mapping).some(value => typeof value !== "string") ||
         (metadata.acknowledgeElevatedManagementPermissions !== undefined && typeof metadata.acknowledgeElevatedManagementPermissions !== "boolean")) {
       throw new Error("Agent import request fields are invalid");
     }
@@ -67,6 +68,7 @@ async function parse(): Promise<void> {
       conversationId: metadata.conversationId,
       engineMapping: Object.fromEntries(Object.entries(mapping).map(([source, target]) => [source, (target as string).trim()])),
       ...(metadata.accessSettingsResolution?{accessSettingsResolution:metadata.accessSettingsResolution}:{}),
+      ...(metadata.omitMemory===true?{omitMemory:true}:{}),
       ...(metadata.reviewedUserDataActivation?{reviewedUserDataActivation:metadata.reviewedUserDataActivation}:{}),
       ...(metadata.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:metadata.reviewedMetadataActivation}:{}),
       ...(metadata.workingFilesActivation?{workingFilesActivation:metadata.workingFilesActivation}:{}),
@@ -110,7 +112,10 @@ async function parse(): Promise<void> {
       await emit({ kind: "value", path, value });
     }
   };
-  await visit({ metadata, portable, ...(canonicalPayloadHash ? { canonicalPayloadHash } : {}) }, []);
+  const result=input.validateOnly
+    ? {sourceLabel:validatePortableAgentPackage(portable).package.sourceLabel}
+    : { metadata, portable, ...(canonicalPayloadHash ? { canonicalPayloadHash } : {}) };
+  await visit(result, []);
   await flush();
   port.postMessage({ done: true, memory: process.memoryUsage() });
 }

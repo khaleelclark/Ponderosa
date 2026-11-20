@@ -93,6 +93,7 @@ test('bulk Chat deletion reports pending removal separately from retained cleanu
   const mutations=[],notices=[],requests=[];
   const responses={one:{deleted:true,cleanupPending:true},two:{deleted:false,cleanupPending:true},three:{deleted:true,cleanupPending:false}};
   const m=load('components/ManageChatsWorkspace.tsx',{
+    './ChatStorageAndArchives':{}, './ChatArchiveDialog':{}, '../routeRegistry':{}, '../nativeNavigation':{},
     react:stateReact,'@mui/material':mui,
     '@tanstack/react-query':{useMutation:options=>(mutations.push(options),{}),useQueryClient:()=>client,useQuery:()=>({})},
     '../api':{api:{deleteConversation:async id=>(requests.push(id),responses[id])}},

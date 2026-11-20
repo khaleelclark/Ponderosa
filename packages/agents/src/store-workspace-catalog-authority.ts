@@ -1429,6 +1429,7 @@ export class AgentWorkspaceCatalogAuthority {
         // no new work can target the Chat after its projection disappears.
         beforeProjectionDelete?.(id);
         this.setHistoryConversationVisibility(row.projectId, id, false);
+        this.client.prepare("DELETE FROM chat_archives WHERE conversation_id=?").run(id);
         tx.delete(conversations).where(eq(conversations.id, id)).run();
         tx.update(conversationDeletionReceipts).set({
           canonicalDeletionCompleted: 1,

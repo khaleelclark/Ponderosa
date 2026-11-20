@@ -24,19 +24,20 @@ const snapshot=(input='input',agent='agent',run='run',stream='stream',text='Firs
 const canonical=(status:any,id='final'):any=>({id,communicationEventId:id,conversationId:'chat',agentId:status.reply.agentId,seq:2,role:'assistant',authorAgentId:status.reply.agentId,executionId:status.runId,communicationIntent:status.reply.publication.intent==='direct_to_user'?'user_dm':status.reply.publication.intent,text:status.reply.text,createdAt:'2026-11-10T12:00:04.000Z',replyStream:{streamId:status.reply.streamId,sourceId:status.messageId,runId:status.runId,fence:status.reply.fence}});
 async function fixture(run:(f:any)=>Promise<void>){
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});
- const oldRead=api.getTextReplyStatus,oldSubscribe=api.subscribeAgent,oldPreferences=api.getWorkspacePreferences;api.getWorkspacePreferences=async()=>({} as any);const statuses=new Map<string,any>(),handlers=new Set<any>();let error:unknown,opened=0,closed=0,reads=0;
+ const oldRead=api.getTextReplyStatus,oldSubscribe=api.subscribeAgent,oldPreferences=api.getWorkspacePreferences;api.getWorkspacePreferences=async()=>({} as any);const statuses=new Map<string,any>();let error:unknown,opened=0,closed=0,reads=0;
  api.getTextReplyStatus=async(_chat,input,agent)=>{reads++;if(error)throw error;const state=statuses.get(input+':'+agent);assert(state,'Exact source lookup '+input+':'+agent);return structuredClone(state);};
- api.subscribeAgent=((agent:any,cursor:any,callbacks:any)=>{opened++;const handler={agent,cursor,callbacks,closed:false};handlers.add(handler);return {close(){if(!handler.closed){handler.closed=true;closed++;handlers.delete(handler);}}};}) as any;
+ api.subscribeAgent=(()=>{opened++;return {close(){closed++;}};}) as any;
  const render=(element:JSX.Element)=>{flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><MutationNotificationProvider>{element}</MutationNotificationProvider></QueryClientProvider></ThemeProvider>));};
  const pane=(messages:any[],assistant=false,owner='agent',work:any={})=>render(<ConversationChromeContext.Provider value={assistant?{assistantAgentId:owner,statusHost:null,callActionsHost:null}:undefined}><div style={{height:480,display:'flex',flexDirection:'column'}}><ChatPane {...work} messages={messages} projectId="project" fileOwnerAgentId={owner} agentNameForId={id=>'Real '+id} onOpenAgent={()=>{}} scrollStorageKey={'stable-'+owner}/></div></ConversationChromeContext.Provider>);
- const wake=(agent='agent')=>{for(const handler of [...handlers])if(handler.agent===agent)handler.callbacks.onStatus?.();};
- try{await run({host,client,render,pane,wake,statuses,handlers,setError:(value:unknown)=>{error=value;},counts:()=>({opened,closed,reads})});}
+ const wake=(agent='agent',eventType='voice_reply')=>window.dispatchEvent(new CustomEvent('ponderosa:reply-hint',{detail:{agentId:agent,projectId:'project',eventType}}));
+ try{await run({host,client,render,pane,wake,statuses,setError:(value:unknown)=>{error=value;},counts:()=>({opened,closed,reads})});}
  finally{root.unmount();host.remove();client.clear();api.getTextReplyStatus=oldRead;api.subscribeAgent=oldSubscribe;api.getWorkspacePreferences=oldPreferences;}
 }
 const row=(host:HTMLElement,agent='agent')=>host.querySelector<HTMLElement>(`article[aria-label="Real ${agent} Message"]`);
 
 export async function directReplyEligibilityRegression():Promise<void>{await fixture(async(f:any)=>{
  let sent=source(),status=snapshot();f.statuses.set('input:agent',status);f.pane([sent],true);await until(()=>Boolean(row(f.host)),'First authorized text is an Assistant agent row');
+ const initialReads=f.counts().reads;await new Promise(resolve=>setTimeout(resolve,550));assert(f.counts().reads===initialReads,'Quiet reply streams do not poll');
  const node=row(f.host)!,avatar=node.querySelector('[aria-label="Real agent Avatar"]'),body=node.querySelector('.chat-message-body');assert(avatar&&body&&node.querySelector('strong'),'Actual avatar, name and incremental Markdown use normal frame/body');
  for(const state of ['queued','started','delivered','processed']){sent={...sent,deliveryReceipts:[receipt(state)]};f.pane([sent],true);f.wake();await settle();assert(row(f.host)===node&&node.querySelector('.chat-message-body')===body,'Receipt '+state+' preserves mounted row/body');}
  status={...status,reply:{...status.reply,sequence:2,text:'First **bold** chunk\n\nSecond paragraph'}};f.statuses.set('input:agent',status);f.wake();await until(()=>node.textContent?.includes('Second paragraph')===true,'Second chunk grows normal body');
@@ -82,15 +83,15 @@ export async function replyPreviewRateLimitRegression():Promise<void>{await fixt
 });}
 
 export async function requestLifecyclePreviewOwnerRegression():Promise<void>{await fixture(async(f:any)=>{
- const sent=source();f.statuses.set('input:agent',snapshot());f.pane([sent]);await until(()=>Boolean(row(f.host)),'Owner stream admitted');const stale=[...f.handlers][0];
- f.pane([source('next','other','other-run')],false,'other');f.statuses.set('next:other',snapshot('next','other','other-run','other-stream','Other owner'));stale.callbacks.onEvent({agentId:'agent',seq:2,event:{type:'voice_reply',reply:snapshot().reply}});await settle();assert(!row(f.host)&&!f.host.textContent?.includes('First bold chunk'),'Navigation fences old owner and late callbacks');
- f.wake('other');await until(()=>Boolean(row(f.host,'other')),'New owner has only its own stream');f.setError(new ApiRequestError(403,'Permission revoked'));f.wake('other');await until(()=>!row(f.host,'other'),'Access revocation removes provisional content');f.setError(undefined);const before=f.counts().reads;f.host.querySelector<HTMLButtonElement>('[aria-label="Retry Reply"]')!.click();await until(()=>f.counts().reads>before&&Boolean(row(f.host,'other')),'Explicit read Retry revalidates only the current owner');stale.callbacks.onStatus();await settle();assert(!row(f.host),'Late old-owner status cannot revive revoked text');
+ const sent=source();f.statuses.set('input:agent',snapshot());f.pane([sent]);await until(()=>Boolean(row(f.host)),'Owner stream admitted');assert(f.counts().opened===0,'Reply previews do not open per-Agent streams');
+ f.pane([source('next','other','other-run')],false,'other');f.statuses.set('next:other',snapshot('next','other','other-run','other-stream','Other owner'));f.wake();await settle();assert(!row(f.host)&&!f.host.textContent?.includes('First bold chunk'),'Navigation fences old owner and late callbacks');
+ f.wake('other');await until(()=>Boolean(row(f.host,'other')),'New owner has only its own stream');f.setError(new ApiRequestError(403,'Permission revoked'));f.wake('other');await until(()=>!row(f.host,'other'),'Access revocation removes provisional content');f.setError(undefined);const before=f.counts().reads;f.host.querySelector<HTMLButtonElement>('[aria-label="Retry Reply"]')!.click();await until(()=>f.counts().reads>before&&Boolean(row(f.host,'other')),'Explicit read Retry revalidates only the current owner');f.wake();await settle();assert(!row(f.host),'Late old-owner status cannot revive revoked text');
 });}
 
 export async function replyStreamAttemptFencesRegression():Promise<void>{await fixture(async(f:any)=>{
  let sent={...source(),deliveryReceipts:[{...receipt(),injectionKind:'steer',injectionId:'steer-one'}]};let status=snapshot();status.reply.steeringInjectionId='steer-one';f.statuses.set('input:agent',status);f.pane([sent]);await until(()=>Boolean(row(f.host)),'First exact steering attempt admitted');
  sent={...sent,deliveryReceipts:[{...receipt(),injectionKind:'steer',injectionId:'steer-two'}]};f.pane([sent]);await settle();assert(!row(f.host),'New steering authority fences old stream');status={...snapshot('input','agent','run','stream-two','Current steering reply'),reply:{...snapshot('input','agent','run','stream-two','Current steering reply').reply,steeringInjectionId:'steer-two'}};f.statuses.set('input:agent',status);f.wake();await until(()=>row(f.host)?.textContent?.includes('Current steering reply')===true,'Stale first status does not poison a new same-Run attempt');
- const handler=[...f.handlers][0];handler.callbacks.onEvent({agentId:'agent',seq:10,event:{type:'memory_changed',projectId:'project',scope:'chat',conversationId:'chat'}});await until(()=>!row(f.host),'Memory invalidation removes authorized text');handler.callbacks.onStatus();await settle();assert(!row(f.host),'Invalidated authority cannot revive from late callbacks');
+ f.wake('agent','memory_changed');await until(()=>!row(f.host),'Memory invalidation removes authorized text');f.wake();await settle();assert(!row(f.host),'Invalidated authority cannot revive from late callbacks');
 });}
 
 export async function replyStreamScrollContinuityRegression():Promise<void>{await fixture(async(f:any)=>{

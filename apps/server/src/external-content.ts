@@ -72,8 +72,11 @@ export function normalizeExternalCitations(value: unknown, verifiedAt = new Date
     }
     let url: URL;
     try { url = new URL(source.url); } catch { throw new Error("citation URL is invalid"); }
-    const hostname = url.hostname.toLowerCase();
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || hostname === "localhost" || hostname.endsWith(".local") || /^(?:127\.|10\.|192\.168\.|169\.254\.|0\.|::1$|fc|fd)/i.test(hostname)) {
+    const hostname = url.hostname.toLowerCase().replace(/\.$/u, "");
+    const address = hostname.replace(/^\[|\]$/gu, "");
+    const family = isIP(address);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || hostname === "localhost" || hostname.endsWith(".local") ||
+      (family !== 0 && nonPublicFaviconAddresses.check(address, family === 6 ? "ipv6" : "ipv4"))) {
       throw new Error("citation URL must be an external HTTP(S) address without credentials");
     }
     url.hash = "";

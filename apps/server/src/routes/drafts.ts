@@ -508,11 +508,7 @@ export class DraftService {
       if (orphaned.has(item.draftId)) continue;
       for (const assetId of item.attachmentIds) {
         const stored = await this.readStored(item.draftId, item.ownerId, assetId);
-        if (!stored) {
-          throw new Error(
-            `referenced draft attachment ${assetId} is missing or invalid`,
-          );
-        }
+        if (!stored) continue; // Hydration and conflict restore report unavailable attachments.
         this.cleanupAuthority.syncDraftAttachment(
           item.draftId,
           item.ownerId,
@@ -865,12 +861,6 @@ export function registerDraftRoutes(
             throw error;
           }
         };
-        if (draftRevisionConflicts(
-          current,
-          body,
-        )) {
-          return persist();
-        }
         const referencedIds = [
           ...(body.captureMetadataOnly ? current.attachmentIds : body.attachmentIds),
           ...((body.captureMetadataOnly ? current.pastedTextAttachmentId : body.pastedTextAttachmentId) ? [body.captureMetadataOnly ? current.pastedTextAttachmentId! : body.pastedTextAttachmentId!] : []),
@@ -891,6 +881,7 @@ export function registerDraftRoutes(
             unavailableAttachmentIds,
           });
         }
+        if (draftRevisionConflicts(current, body)) return persist();
         const saved = await persist();
         if (reply.sent || reply.statusCode >= 400) return saved;
         service.enqueueReleasedAttachments(request.params.id, ownerId, current, workspace.getDraft(request.params.id, ownerId));

@@ -6,11 +6,11 @@ import {MemoryHostClosing} from '../local-memory.js';
 import {verifyPortableWorkingFileParts} from '../portable-working-file-parts.js';
 import {isMemoryCleanupHold} from '../local-memory-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
-import {packageExportDownloads} from '../package-export-downloads.js';
+import {packageExportDownloads,workingFolderOmissions} from '../package-export-downloads.js';
 import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
 import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
 import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
-import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
+import {isAbandonedUploadName,orphanUploadIdentity,retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from '../portable-git-recreation.js';
 import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
@@ -391,7 +391,7 @@ export function registerAgentPackageRoutes(
     if (bytes === 0) return;
     if (stagedImportBytes + bytes > maximumStagedImportBytes) {
       throw Object.assign(
-        new Error("Agent import staging capacity is currently full"),
+        new Error("Agent import staging is full. Finish a pending import or review abandoned uploads in Settings → Recovery Records."),
         { statusCode: 503 },
       );
     }
@@ -632,6 +632,27 @@ export function registerAgentPackageRoutes(
     try{await operationHydration;return await retainedOrphanDiscovery(path.join(importOperationDirectory,'retained-orphans'),request.query);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.post<{Body:{name:string;identity:string;confirmed:boolean}}>('/api/lifecycle/agent-imports/orphan-evidence/discard',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{
+      await operationHydration;
+      const input=validatedObject(request.body,'Discard abandoned upload');
+      exactObjectFields(input,['name','identity','confirmed'],'Discard abandoned upload');
+      if(typeof input.name!=='string'||!isAbandonedUploadName(input.name)||typeof input.identity!=='string'||
+          input.confirmed!==true)return reply.code(400).send({error:'Select an abandoned upload and confirm permanent deletion'});
+      const directory=path.join(importOperationDirectory,'retained-orphans');
+      const location=path.join(directory,input.name);
+      if(!syncFs.lstatSync(directory).isDirectory())throw Error('Abandoned upload storage changed');
+      const saved=syncFs.lstatSync(location),reservationId=`orphan:${input.name}`;
+      if(!saved.isFile()||saved.nlink!==1||orphanUploadIdentity(saved)!==input.identity||stagedReservations.get(reservationId)!==saved.size)
+        throw Error('Abandoned upload changed; refresh the inventory');
+      syncFs.unlinkSync(location);
+      if(process.platform!=='win32'){
+        const fd=syncFs.openSync(directory,'r');try{syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}
+      }
+      releaseStagedReservation(reservationId);
+      return {discarded:true,releasedBytes:saved.size};
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Abandoned upload could not be discarded'});}
+  }));
   app.post<{Params:{id:string};Body:import('@ponderosa/core').AgentImportLifecycleReconcileInput}>('/api/lifecycle/agent-imports/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
     try{
       const input=validatedObject(request.body,'Import lifecycle reconciliation');exactObjectFields(input,['commandKey','reviewSha256','action','note'],'Import lifecycle reconciliation');
@@ -779,7 +800,8 @@ export function registerAgentPackageRoutes(
               headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
               if(separator>=0){
                 const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
-                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination','workingRootDestinations','workingFilesActivation','reviewedUserDataActivation','reviewedMetadataActivation'],'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination','workingRootDestinations','workingFilesActivation','reviewedUserDataActivation','reviewedMetadataActivation','omitMemory'],'Agent upload metadata');
+                if (value.omitMemory !== undefined && typeof value.omitMemory !== 'boolean') throw Object.assign(new Error('Memory omission must be an explicit boolean'), { statusCode: 400 });
                 const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
                 if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
                 metadata=value as unknown as StagedImportUpload['metadata'];
@@ -843,7 +865,7 @@ export function registerAgentPackageRoutes(
     omitWorkingData=false,
     expertFinal?:()=>void,
     omitMemory=false,
-    operatorTitleHistory=false,
+    operatorExport=false,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
@@ -933,17 +955,17 @@ export function registerAgentPackageRoutes(
       return chosen.harness||chosen.extendedMetadata||chosen.persistentNodes?{...chosen,git:false}:undefined;
     };
     if(organizationWorkingFolders)for(const sourceRoot of [...workingRoots.keys()].sort((a,b)=>a.length-b.length||a.localeCompare(b))){
-      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,workingRoots,hardlinkCapture,workingRootNesting.filter(boundary=>boundary.parentRootRef===workingRoots.get(sourceRoot)).map(boundary=>boundary.path)));
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,workingRoots,hardlinkCapture,workingRootNesting.filter(boundary=>boundary.parentRootRef===workingRoots.get(sourceRoot)).map(boundary=>boundary.path),operatorExport));
     }
     if(!organizationWorkingFolders&&wholeWorkingFolder){
       const sourceRoot=path.resolve(root.workingCopy.rootPath);
-      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,new Map([[sourceRoot,root.id]]),hardlinkCapture));
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,new Map([[sourceRoot,root.id]]),hardlinkCapture,[],operatorExport));
     }
     if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
     const included = new Set(nodes.map((agent) => agent.id));
     const chat = store.getConversation(root.conversationId);
-    if(operatorTitleHistory&&mode==='full'&&!context.workspace)throw Error('Selected Chat title history exporter is unavailable');
-    const selectedTitleHistory=operatorTitleHistory&&mode==='full'?context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES}):undefined;
+    if(operatorExport&&mode==='full'&&!context.workspace)throw Error('Selected Chat title history exporter is unavailable');
+    const selectedTitleHistory=operatorExport&&mode==='full'?context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES}):undefined;
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
     let retainedArtifactWireBytes = 0;
@@ -986,7 +1008,7 @@ export function registerAgentPackageRoutes(
       if (mode !== "template") retainedImportedBytes += agentPackageJsonUtf8Bytes(messages);
       if (importedInstructions !== undefined) retainedImportedBytes += agentPackageJsonUtf8Bytes(importedInstructions);
       if (retainedImportedBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedImportedBytes} serialized UTF-8 bytes)`);
-      importedHistories.set(agent.id, { messages,...(operatorTitleHistory&&imported.chatTitleHistory?{chatTitleHistory:imported.chatTitleHistory}:{}), ...(imported.portableState?{portableState:imported.portableState}:{}), ...(importedInstructions !== undefined ? { initialInstructions: importedInstructions } : {}) });
+      importedHistories.set(agent.id, { messages,...(operatorExport&&imported.chatTitleHistory?{chatTitleHistory:imported.chatTitleHistory}:{}), ...(imported.portableState?{portableState:imported.portableState}:{}), ...(importedInstructions !== undefined ? { initialInstructions: importedInstructions } : {}) });
     }
     const histories = new Map<string, ImportedHistory["messages"]>();
     let retainedHistoryBytes = 0;
@@ -1415,20 +1437,20 @@ export function registerAgentPackageRoutes(
 
   const downloads=packageExportDownloads(app,context.dataDir,context.store.sqlite,undefined,typeof context.store.stateAdmission==='function'?()=>context.store.stateAdmission():undefined);
   const exportPackage=async(agentId:string,input:Record<string,unknown>,reply:FastifyReply,attachment=false)=>withAgentImportAdmission(async()=>{
-    exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings'],'Agent export');
-    for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');
+    exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings','omitMemory'],'Agent export');
+    for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders','omitMemory'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');
     if(input.mode!==undefined&&!['template','context','full'].includes(input.mode as string))throw new AssetError(400,'Choose a supported Agent export mode');
     const requestedMode=(input.mode??'full') as AgentExportMode,selectedWorkingFiles=input.workingFiles??[];
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Selected working files must be relative paths');
     let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined,gitStorageBindings:import('@ponderosa/core').GitStorageSelection[]|undefined;
     if(input.reviewedUserData!==undefined){validateReviewedUserDataSelection(input.reviewedUserData);reviewedUserData=input.reviewedUserData;}
     if(input.gitStorageBindings!==undefined){validateGitStorageSelections(input.gitStorageBindings);gitStorageBindings=input.gitStorageBindings;}
-    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings,undefined,false,undefined,false,true);
+    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings,undefined,false,undefined,input.omitMemory===true,true);
     if(result.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
     const safeTitle=result.sourceLabel.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-+|-+$/gu,'').toLocaleLowerCase().slice(0,80);
-    return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment);
+    return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment,workingFolderOmissions(result.agents));
   });
-  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await downloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'agent',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
+  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await downloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'agent',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message,...(reply.hasHeader('x-ponderosa-export-staging')?{code:'EXPORT_STAGING_UNAVAILABLE'}:{})});}});
   app.get<{Params:{id:string};Querystring:Record<string,string|undefined>}>('/api/agents/:id/export',{onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
     const q=request.query,input:Record<string,unknown>={mode:q.mode,organization:q.organization==='true',wholeWorkingFolder:q.wholeWorkingFolder==='true',organizationWorkingFolders:q.organizationWorkingFolders==='true'};
     try{for(const key of ['workingFiles','reviewedUserData','gitStorageBindings'])if(q[key]!==undefined)input[key]=JSON.parse(q[key]!);}catch{throw new AssetError(400,'Export selections must be valid JSON');}
@@ -1476,9 +1498,10 @@ export function registerAgentPackageRoutes(
         importBody = validatedObject(body, "Agent import request");
         exactObjectFields(
           importBody,
-          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation"],
+          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation", "omitMemory"],
           "Agent import request",
         );
+        if (importBody.omitMemory !== undefined && typeof importBody.omitMemory !== 'boolean') throw new Error('Memory omission must be an explicit boolean');
         if(importBody.workingFilesDestination!==undefined&&(typeof importBody.workingFilesDestination!=='string'||!path.isAbsolute(importBody.workingFilesDestination)))throw new Error('Choose an absolute new working-files destination');
         if (importBody.workingCopyMode!==undefined&&!['shared','separate_git'].includes(String(importBody.workingCopyMode)))throw new Error('Invalid destination working-copy mode');
         if(importBody.reviewedUserDataActivation!==undefined)validateReviewedUserDataActivation(importBody.reviewedUserDataActivation);
@@ -1519,6 +1542,7 @@ export function registerAgentPackageRoutes(
             engineMapping: normalizedEngineMapping,
             ...(importBody.accessSettingsResolution?{accessSettingsResolution:importBody.accessSettingsResolution}:{}),
             ...(importBody.reviewedUserDataActivation?{reviewedUserDataActivation:importBody.reviewedUserDataActivation}:{}),
+            ...(importBody.omitMemory===true?{omitMemory:true}:{}),
             ...(importBody.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:importBody.reviewedMetadataActivation}:{}),
             ...(importBody.workingFilesActivation?{workingFilesActivation:importBody.workingFilesActivation}:{}),
         ...(importBody.workingRootDestinations?{workingRootDestinations:importBody.workingRootDestinations}:{}),
@@ -2056,7 +2080,7 @@ export function registerAgentPackageRoutes(
         abandonMutationFreeOperation(error instanceof Error ? error.message : "Agent package exceeds its byte limit");
         return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "Agent package exceeds its byte limit" });
       }
-      const packageMemory=portablePackage.memory??[];
+      const packageMemory=body.omitMemory===true?[]:portablePackage.memory??[];
       if(packageMemory.length){
         const memory=localMemoryFor(app);if(!memory)throw new AssetError(409,'Package contains memory; configure destination local memory before importing');
         for(const entry of packageMemory){try{validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}catch(error){throw new AssetError(400,error instanceof Error?error.message:'Invalid memory snapshot');}}
@@ -2908,6 +2932,15 @@ export function registerAgentPackageRoutes(
       if (deletingProjectIds.has(request.params.id)) {
         return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
+      let sourceLabel:string;
+      try{
+        ({sourceLabel}=await parsePortablePackageFile(staged.pathname,{validateOnly:true}));
+      }catch(error){
+        return reply.code((error as {statusCode?:number})?.statusCode??400)
+          .send({error:error instanceof Error?error.message:'Unsupported Agent package'});
+      }
+      if(deletingProjectIds.has(request.params.id)||!resourceInProduct(store,'conversation',destination.id,product))
+        return reply.code(409).send({error:'The destination Chat changed while the package was validated'});
       const id = randomUUID();
       const now = new Date().toISOString();
       const operation: AgentImportOperationDto = {
@@ -2918,7 +2951,7 @@ export function registerAgentPackageRoutes(
         projectId: request.params.id,
         conversationId:destination.id,
         product,
-        sourceLabel: "Agent import",
+        sourceLabel: sourceLabel.slice(0,240),
         phase: "queued",
         status: "pending",
         createdAt: now,

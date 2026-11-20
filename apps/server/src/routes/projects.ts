@@ -815,11 +815,6 @@ export function registerProjectRoutes(
     managedProjectCreationFault,
   } = context;
 
-  registerProjectFolderRoutes(app, {
-    managedWorkspacesRoot,
-    pathBoundary: projectFolderPathBoundary,
-    store,
-  });
   const reconcileManagedFolders = () => reconcileManagedProjectFolders(
     managedWorkspacesRoot,
     store,
@@ -834,6 +829,12 @@ export function registerProjectRoutes(
     completion: Promise<void>;
     complete: () => void;
   }>();
+  registerProjectFolderRoutes(app, {
+    managedWorkspacesRoot,
+    pathBoundary: projectFolderPathBoundary,
+    store,
+    chatCreationInProgress: () => projectCreationClaims.size > 0,
+  });
   const claimProjectCreation = async (
     identity: ManagedProjectCreationIdentity,
   ): Promise<() => void> => {
@@ -983,7 +984,7 @@ export function registerProjectRoutes(
         ...(resolvedCreation.model ? { defaultModel: resolvedCreation.model } : {}),
         ...(resolvedCreation.effort ? { defaultEffort: resolvedCreation.effort } : {}),
         defaultSpeed: resolvedCreation.speed,
-      }, creationIdentity, chatId => { onCreated?.(chatId); localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
+      }, creationIdentity, chatId => { onCreated?.(chatId); localMemoryFor(app)?.reserveNewChat(chatId,!owner?.executionId); freshlyCommittedChatId = chatId; });
     } catch (error) {
       const committed = store.getProjectCreation(creationIdentity);
       if (committed) project = committed;

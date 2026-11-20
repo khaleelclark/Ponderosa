@@ -17,7 +17,7 @@ export function chatProductSql(chat:string,product:ProductScope):string {
   return `${chat}.branch_id IS ${product==='branches'?'NOT ':''}NULL`;
 }
 export function activeChatProductSql(chat:string,product:ProductScope):string {
-  return `(${chatProductSql(chat,product)}) AND (${activeChatOwnerSql(chat)})`;
+  return `(${chatProductSql(chat,product)}) AND (${activeChatOwnerSql(chat)}) AND NOT EXISTS(SELECT 1 FROM chat_archives archive WHERE archive.conversation_id=${chat}.id AND archive.archived_at IS NOT NULL)`;
 }
 export function activeAgentOwnerSql(agent:string):string {
   return `${agent}.deleted_at IS NULL
@@ -30,12 +30,12 @@ export function activeAgentOwnerSql(agent:string):string {
     AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive_agent WHERE inactive_agent.local_id=${agent}.id AND inactive_agent.state!='active')
     AND NOT ${branchInstallationHoldSql(`${agent}.id`,`${agent}.conversation_id`)}`;
 }
-export function activeAgentProductSql(agent:string,product:ProductScope):string {
+export function activeAgentProductSql(agent:string,product:ProductScope,includeArchived=false):string {
   return `(${activeAgentOwnerSql(agent)}) AND EXISTS(SELECT 1 FROM conversations product_owner
-    WHERE product_owner.id=${agent}.conversation_id AND product_owner.project_id=${agent}.project_id AND ${activeChatProductSql('product_owner',product)})`;
+    WHERE product_owner.id=${agent}.conversation_id AND product_owner.project_id=${agent}.project_id AND ${includeArchived ? `(${chatProductSql('product_owner',product)}) AND (${activeChatOwnerSql('product_owner')})` : activeChatProductSql('product_owner',product)})`;
 }
 export function projectProductSql(project:string,product:ProductScope):string {
-  const owned=`EXISTS(SELECT 1 FROM conversations product_chat WHERE product_chat.project_id=${project} AND ${activeChatProductSql('product_chat',product)})`;
+  const owned=`EXISTS(SELECT 1 FROM conversations product_chat WHERE product_chat.project_id=${project} AND ${chatProductSql('product_chat',product)} AND ${activeChatOwnerSql('product_chat')})`;
   const removed=`EXISTS(SELECT 1 FROM conversation_deletion_receipts removed_chat WHERE removed_chat.project_id=${project} AND removed_chat.canonical_deletion_completed=1 AND ${chatProductSql('removed_chat',product)})`;
   const history=`EXISTS(SELECT 1 FROM conversations product_chat WHERE product_chat.project_id=${project}) OR EXISTS(SELECT 1 FROM conversation_deletion_receipts removed_chat WHERE removed_chat.project_id=${project})`;
   return product==='branches'?`((${owned}) OR (${removed}))`:`((${owned}) OR (${removed}) OR NOT (${history}))`;

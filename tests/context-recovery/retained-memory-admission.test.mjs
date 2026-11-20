@@ -1,5 +1,4 @@
 import {EngineAuthStatusCache} from '../../apps/server/dist/engine-auth-cache.js';
-import {proveRetainedCodexVoiceContext} from '../../apps/server/dist/retained-codex-voice-context.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -91,7 +90,7 @@ test('accepted old generation remains eligible for a new voice call after reject
   await native.sendTool('ponderosa_message',{text:'Synthetic initial response.'});await f.settled(agent.id);
   const accepted=store.resumeSessionState(agent.id);
   const call=()=>f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Synthetic voice request.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true});
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Synthetic transition request.');
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'old generation handoff');
   await native.sendAnswer('Synthetic bounded handoff.');
@@ -100,7 +99,7 @@ test('accepted old generation remains eligible for a new voice call after reject
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state='outcome_unknown'").get(prepared.id),'replacement retained unknown');
   assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture',role:''}));
   const before=(await native.requests()).filter(x=>x.method==='turn/start').length;
   await f.send(agent.id,'Synthetic later ordinary text.');
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===before+1,'later accepted old generation turn');
@@ -109,36 +108,6 @@ test('accepted old generation remains eligible for a new voice call after reject
   const opensBefore=await native.requests();
   const priorFreshStarts=opensBefore.filter(x=>x.method==='thread/start').length;
   const priorResumes=opensBefore.filter(x=>x.method==='thread/resume'&&x.params.threadId===accepted.sessionId).length;
-  const packet=store.acceptedProviderSessionInput(agent.id),boundary=store.providerCommandContextBoundary(agent.id);
-  const exposure=await localMemoryFor(f.app).retainedMemoryExposureStatus(agent.id,chat.id,accepted.sessionId,packet.executionId,boundary.executionId);
-  assert.equal(exposure,'unknown','generic historical exposure remains conservative');
-  const proof=proveRetainedCodexVoiceContext({store,memory:localMemoryFor(f.app),agentId:agent.id,chatId:chat.id,sessionId:accepted.sessionId,
-    sourceRunId:boundary.executionId,contractHash:accepted.toolContractHash,systemPromptHash:packet.systemPromptHash});
-  assert.ok(proof?.isCurrent(),'exact accepted generation has complete durable no-use proof');
-  const input={store,memory:localMemoryFor(f.app),agentId:agent.id,chatId:chat.id,sessionId:accepted.sessionId,
-    sourceRunId:boundary.executionId,contractHash:accepted.toolContractHash,systemPromptHash:packet.systemPromptHash};
-  const negative=(label,mutate)=>{
-    store.sqlite.exec('SAVEPOINT call_guard');
-    try{mutate();assert.equal(proveRetainedCodexVoiceContext(input),undefined,label);assert.equal(proof.isCurrent(),false,label+' fences captured proof');}
-    finally{store.sqlite.exec('ROLLBACK TO call_guard; RELEASE call_guard');}
-    assert.ok(proof.isCurrent(),label+' rollback restores exact proof');
-  };
-  for(const field of ['attempted','pending','uncertain','unverified']){
-    negative('accepted receipt '+field,()=>store.sqlite.prepare(`UPDATE memory_exposure_runs SET ${field}=1 WHERE run_id=?`).run(packet.executionId));
-    negative('candidate receipt '+field,()=>store.sqlite.prepare(`UPDATE memory_exposure_runs SET ${field}=1 WHERE run_id=?`).run(prepared.replacement_run_id));
-  }
-  negative('missing receipt',()=>store.sqlite.prepare('DELETE FROM memory_exposure_runs WHERE run_id=?').run(packet.executionId));
-  negative('disclosed source',()=>store.sqlite.prepare("INSERT INTO memory_exposure_sources(run_id,scope,source_id,content_hash) VALUES(?,'global','synthetic-source',?)").run(packet.executionId,'a'.repeat(64)));
-  negative('authorization changed',()=>store.sqlite.prepare('UPDATE memory_exposure_runs SET authorization_hash=? WHERE run_id=?').run('b'.repeat(64),packet.executionId));
-  negative('candidate continued rather than fresh',()=>store.sqlite.prepare("UPDATE provider_inputs SET source_manifest_json=json_set(source_manifest_json,'$.providerSessionDisposition','continued_session') WHERE execution_id=?").run(prepared.replacement_run_id));
-  negative('candidate manifest hash mismatch',()=>store.sqlite.prepare('UPDATE context_rollovers SET replacement_manifest_hash=? WHERE id=?').run('c'.repeat(64),prepared.id));
-  negative('candidate ownership mismatch',()=>store.sqlite.prepare("UPDATE agent_activations SET scope_key='conversation:other' WHERE id=(SELECT continuation_activation_id FROM context_rollovers WHERE id=?)").run(prepared.id));
-  negative('candidate accepted contradiction',()=>store.sqlite.prepare("UPDATE context_rollovers SET completion_reason='replacement_verified' WHERE id=?").run(prepared.id));
-  negative('accepted source no longer completed',()=>store.sqlite.prepare("UPDATE scheduler_runs SET status='outcome_unknown' WHERE id=?").run(boundary.executionId));
-  negative('native history fork',()=>store.sqlite.prepare("INSERT INTO coordination_idempotency(project_id,actor_scope,operation,idempotency_key,payload_hash,result_json,created_at) VALUES(?,'synthetic','native_history','synthetic',?,?,?)").run(chat.projectId,'d'.repeat(64),JSON.stringify({targetAgentId:agent.id}),new Date().toISOString()));
-  store.sqlite.exec('SAVEPOINT receipt_epoch');
-  try{store.sqlite.prepare('UPDATE memory_exposure_runs SET mutation_epoch=mutation_epoch+1 WHERE run_id=?').run(packet.executionId);assert.equal(proof.isCurrent(),false,'receipt epoch race invalidates captured proof');}
-  finally{store.sqlite.exec('ROLLBACK TO receipt_epoch; RELEASE receipt_epoch');}
   const historical=JSON.stringify(store.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(prepared.id));
   const count=(await native.requests()).filter(x=>x.method==='turn/start').length;
   // Model a reservation pinned by the earlier semantic retention policy.

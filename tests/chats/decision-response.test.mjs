@@ -176,7 +176,7 @@ test('cancelled and unrelated missing decisions do not fabricate a saved answer'
 });
 
 test('Decision actions finish from canonical POST data and retain retries for unconfirmed approvals', () => {
-  let mutation, tree;
+  let mutation, tree, readOnly = false;
   const exports = {};
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/decisions/DecisionActions.tsx', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
@@ -185,6 +185,7 @@ test('Decision actions finish from canonical POST data and retain retries for un
     if (name === '../../hooks/useDecisionResponse') return { useDecisionResponse: () => mutation };
     if (name === '../../decisions') return { decisionAcceptsText: () => true, decisionTextActionLabel: () => 'Answer' };
     if (name === './decisionResponse') return { settleDecisionResponse() {} };
+    if (name === '../WorkspaceReadOnlyContext') return { useWorkspaceReadOnly: () => readOnly };
     return new Proxy({}, { get: () => () => null });
   } });
   function Probe({ decision }) { tree = exports.DecisionActions({ decision }); return null; }
@@ -192,6 +193,7 @@ test('Decision actions finish from canonical POST data and retain retries for un
   mutation = { isSuccess: true, data: answered, variables: { decision: pending } }; render(pending); assert.equal(tree, null);
   mutation = { isError: true, error: Error('Completion not confirmed'), variables: { decision: { ...pending, mode: 'approval' } } }; render({ ...answered, mode: 'approval' }); assert.ok(tree);
   mutation = { isError: true, variables: { decision: { ...pending, id: 'other', mode: 'approval' } } }; render({ ...answered, mode: 'approval' }); assert.equal(tree, null);
+  readOnly = true; render(pending); assert.equal(tree, null, 'A read-only transcript exposes no pending decision controls');
 });
 
 test('UI019 a notification detail collection and ordinary lists update together without failing an accepted save',async t=>{

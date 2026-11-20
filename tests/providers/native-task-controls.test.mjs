@@ -77,11 +77,13 @@ test('Codex native registry holds source completion and reports removal without 
   const iterator=runtime.retainBackgroundTasks()[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).value.status,'running');
   assert.equal(runtime.nativeTaskHold,true);
+  assert.ok(Date.now()-runtime.backgroundTasksObservedAt()<1000);
   await assert.rejects(runtime.startTurn({prompt:'new source'}),/owns the source Run/);
   rows=[];
   assert.equal((await iterator.next()).value.status,'done');
   assert.equal((await iterator.next()).done,true);
   assert.equal(runtime.nativeTaskHold,false);
+  assert.equal(runtime.backgroundTasksObservedAt(),undefined);
 });
 
 

@@ -2,6 +2,34 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
+import { ResourceAdmission } from '../../apps/server/dist/resource-admission.js';
+
+test('disk pressure warns by default and can hold admission in strict mode', async () => {
+  const sample = async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 50, source: 'linux_host' });
+  const advisory = new ResourceAdmission({}, sample, Date.now, 'linux');
+  const strict = new ResourceAdmission({ strictDiskPressure: true }, sample, Date.now, 'linux');
+  assert.equal((await advisory.observe()).reason, 'disk_pressure_advisory');
+  assert.ok(advisory.capacity() > 0);
+  assert.equal((await strict.observe()).state, 'held');
+  assert.equal(strict.capacity(), 0);
+});
+
+test('a confirmed human-turn final answer fills a missing reply without duplicating a committed reply', fixtureTestOptions, async t => {
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Final answer fallback'), agent = await f.createIdleAgent(chat, 'Reader');
+    f.plans.set(agent.id, [
+      { finalAnswer:'Confirmed final answer', run:async()=>{} },
+      { finalAnswer:'Do not duplicate this', run:async s=>{ assert.equal((await s.tool('ponderosa_message',{text:'Published already'})).success,true); } },
+    ]);
+    await f.send(agent.id, 'First human message');
+    await f.settled(agent.id);
+    await f.send(agent.id, 'Second human message');
+    await until(async ()=>(await f.detail(agent.id)).messages.some(m=>m.text==='Published already'),'explicit reply');
+    await f.settled(agent.id);
+    const detail = await f.detail(agent.id);
+    assert.deepEqual(detail.messages.filter(m=>m.role==='assistant').map(m=>m.text), ['Confirmed final answer','Published already']);
+  });
+});
 
 test('UI013 receipt projection batches current targets, respects per-message engine and never decorates terminal/steering or cross-Project data', () => {
   const calls = [], rows = [
@@ -45,7 +73,7 @@ test('UI013 a current host-resource hold explains the exact queued receipt on ev
   await withFixture(t, async f => {
     const chat = await f.createChat('Queue hold projection'), agent = await f.createIdleAgent(chat, 'Held reader');
     pressure = true;
-    await until(async () => f.ok(await f.api('GET', '/api/engines')).some(e => e.resourceAdmission?.state === 'held'), 'observed resource hold');
+    await until(async () => f.ok(await f.api('POST', '/api/engines/codex/recheck')).resourceAdmission?.state === 'held', 'observed resource hold');
     const accepted = await f.send(agent.id, 'Exact held message');
     const eventId = accepted.communicationEventId;
     const rows = await receiptViews(f, chat, agent, eventId);
@@ -53,11 +81,11 @@ test('UI013 a current host-resource hold explains the exact queued receipt on ev
     for (const row of rows) { assert.ok(row); assert.equal(row.state, 'queued'); assert.equal(row.queueWaitReason, 'host_resource_pressure'); assert.equal(row.providerAcknowledged, undefined); }
     assert.equal(f.turns.length, 0);
     pressure = false;
-    await until(async () => f.ok(await f.api('GET', '/api/engines')).every(e => e.resourceAdmission?.state !== 'held'), 'two healthy resource samples');
+    await until(async () => f.ok(await f.api('POST', '/api/engines/codex/recheck')).resourceAdmission?.state !== 'held', 'two healthy resource samples');
     await f.settled(agent.id);
     for (const row of await receiptViews(f, chat, agent, eventId)) assert.equal(row.queueWaitReason, undefined);
     assert.equal(f.turns.length, 1, 'one preserved activation produces one provider turn');
-  }, { resourceAdmissionObservation: { platform: 'linux', sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: pressure ? 50 : 0, source: 'linux_host' }) } });
+  }, { resourceAdmissionObservation: { platform: 'linux', sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: pressure ? 50 : 0, ioFullPercent: 0, source: 'linux_host' }) } });
 });
 
 test('UI013 a later queued message names its current Run barrier without claiming the earlier turn was its acknowledgement', fixtureTestOptions, async t => {

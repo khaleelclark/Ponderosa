@@ -11,17 +11,35 @@ import type Database from 'better-sqlite3';
 import {SqlitePackageExportDownloads,type ExportPool} from './sqlite-package-export-downloads.js';
 import {lazyPackageExportPool} from './lazy-package-export-pool.js';
 import type {StateAdmission} from '@ponderosa/agents';
-import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES,type PortableAgentNodeDto,type WorkingFolderOmissions} from '@ponderosa/core';
 import {stableJson} from '@ponderosa/agents';
 import {portablePackageJsonChunks} from './agent-package-codec.js';
 
 export const PACKAGE_EXPORT_TICKET_LIFETIME_MS=15*60_000;
-export interface PackageExportDownload {downloadUrl:string;expiresAt:string;byteLength:number}
+export interface PackageExportDownload {downloadUrl:string;expiresAt:string;byteLength:number;workingFolderOmissions?:WorkingFolderOmissions}
+export function workingFolderOmissions(nodes: readonly PortableAgentNodeDto[]): WorkingFolderOmissions | undefined {
+ const roots = new Set<string>();
+ const paths: string[] = [];
+ let count = 0;
+ for (const node of nodes) {
+  const root = node.workingRootRef ?? node.ref;
+  if (roots.has(root) || !node.workingFolder) continue;
+  roots.add(root);
+  for (const path of node.workingFolder.excludedPaths) {
+   count++;
+   if (paths.length < 20) {
+    const display=path.replace(/[\x00-\x1f\x7f]/gu,"�");
+    paths.push(display.length > 220 ? display.slice(0, 220) + "…" : display);
+   }
+  }
+ }
+ return count ? { count, paths } : undefined;
+}
 type Manifest={schema:'ponderosa.package-export-ticket.v1';token:string;filename:string;bytes:number;sha256:string;createdAt:number;expiresAt:number;device:string;inode:string;requestKey?:string;selectionHash?:string};
 type Ticket={pathname:string;filename:string;bytes:number;expiresAt:number;device:string;inode:string;mtimeNs:string;ctimeNs:string;sha256:string;readers:number;removing?:boolean;manifest?:string;manifestIdentity?:{device:string;inode:string};requestKey?:string;selectionHash?:string;timer:ReturnType<typeof setTimeout>};
 export interface PackageExportService {
  prepare(key:unknown,identity:unknown,reply:FastifyReply,work:()=>Promise<unknown>):Promise<unknown>;
- send(value:unknown,filename:string,reply:FastifyReply,download?:boolean,attachment?:boolean):Promise<unknown>;
+ send(value:unknown,filename:string,reply:FastifyReply,download?:boolean,attachment?:boolean,omissions?:WorkingFolderOmissions):Promise<unknown>;
 }
 const services=new WeakMap<FastifyInstance,PackageExportService>();
 type PortableStagingLease={authority:Promise<DataDirectoryAuthority>;refs:number};
@@ -151,7 +169,11 @@ export class PackageExportDownloads{
    if(existing.phase==='completed'&&ticket&&ticket.expiresAt>Date.now())return reply.header('cache-control','private, no-store').send(this.descriptor(existing.token!,ticket));
    throw Object.assign(Error('Original export preparation is unconfirmed or expired. Its bytes are held; retry cannot capture a replacement.'),{statusCode:409});
   }
-  if(this.closed||this.pending+this.tickets.size+this.held>=16)throw this.capacityError();
+  if(this.closed)throw this.capacityError();
+  if(this.pending+this.tickets.size+this.held>=16){
+   reply.header("x-ponderosa-export-staging", "unavailable-before-capture");
+   throw this.capacityError();
+  }
   const record:ExportRequest={key,selectionHash,createdAt:Date.now(),phase:'preparing'};this.requests.set(key,record);this.held++;
   if(this.dataDir){
    const payload=Buffer.from(JSON.stringify({schema:'ponderosa.package-export-request.v1',key,selectionHash,createdAt:record.createdAt}));this.reserveBytes(payload.length);
@@ -321,7 +343,7 @@ export class PackageExportDownloads{
    return reply.header('cache-control','private, no-store').header('content-length',ticket.bytes).type('application/json; charset=utf-8').send(stream);
   }catch(error){ticket.readers--;await handle?.close();throw error;}
  }
- async send(value:unknown,filename:string,reply:FastifyReply,download=false,attachment=false):Promise<unknown>{
+ async send(value:unknown,filename:string,reply:FastifyReply,download=false,attachment=false,omissions?:WorkingFolderOmissions):Promise<unknown>{
   const request=this.activeRequests.get(reply);
   if(!download){
    if(this.closed)throw Object.assign(Error('Package export service is closed'),{statusCode:503});
@@ -358,7 +380,7 @@ export class PackageExportDownloads{
     try{const stat=await file.stat({bigint:true});manifestIdentity={device:stat.dev.toString(),inode:stat.ino.toString()};await file.writeFile(manifestBytes);await file.sync();}finally{await file.close();}await this.syncDirectory();ticket.manifest=manifestPath;ticket.manifestIdentity=manifestIdentity;
    }
    await this.assertDirectory();this.schedule(token,ticket);this.tickets.set(token,ticket);if(request){request.phase='completed';request.token=token;this.held--;}pathname=undefined;manifestPath=undefined;charged=0;
-   return reply.header('cache-control','private, no-store').send(this.descriptor(token,ticket));
+   return reply.header('cache-control','private, no-store').send({...this.descriptor(token,ticket),...(omissions?{workingFolderOmissions:omissions}:{})});
   }catch(error){
    // Every allocated or uncertain name remains charged and untouched. A
    // concurrent writer may swap it after any pathname identity observation.
@@ -371,7 +393,7 @@ export class PackageExportDownloads{
 export function packageExportDownloads(app:FastifyInstance,dataDir?:string,sqlite?:Database.Database,pool?:ExportPool,acquireAdmission?:()=>StateAdmission):PackageExportService{
  let service=services.get(app);
  if(!service){
-  const selected=pool??(sqlite&&dataDir&&acquireAdmission?lazyPackageExportPool(dataDir,sqlite,acquireAdmission):undefined);
+  const selected=pool??(process.platform==='linux'&&sqlite&&dataDir&&acquireAdmission?lazyPackageExportPool(dataDir,sqlite,acquireAdmission):undefined);
   const legacy=new PackageExportDownloads(app,dataDir,!(sqlite&&selected));
   service=sqlite&&selected?new SqlitePackageExportDownloads(app,sqlite,legacy,selected):legacy;
   services.set(app,service);

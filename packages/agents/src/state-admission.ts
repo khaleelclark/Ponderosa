@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync,
-  mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, opendirSync,
-  rmSync, writeFileSync, writeSync,
+  closeSync, constants, fstatSync, fsyncSync, lstatSync,
+  mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, opendirSync, renameSync,
+  rmSync, rmdirSync, writeFileSync, writeSync,
 } from "@ponderosa/native-host/fs";
 import type { BigIntStats } from "@ponderosa/native-host/fs";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ import { StateReadBudget, stateReadBudget, bindStateReadBudget, withStateReadInv
 
 export const STATE_SCHEMA_CONTRACT = "ponderosa.state.current-single-db";
 export const STATE_MARKER = ".ponderosa-layout-version";
+const BOOTSTRAP_STAGE = ".ponderosa-bootstrap";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const generationDdl = `CREATE TABLE _state_generation (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -109,14 +110,14 @@ function expectedContract(budget = new StateReadBudget()): string {
 // Only exact published additive predecessors may upgrade online. Reconstruct
 // each from its ordered DDL prefix, so later extensions cannot contaminate it.
 const predecessorVersions = [
-  "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
+  "0024_asset_browser_metadata.sql", "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
   "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql", "0044_memory_scope_provisioning.sql", "0045_agent_import_submission_intents.sql", "0046_retained_coordination_cut_sources.sql", "0047_memory_exposure_receipts.sql",
+  "0048_lifecycle_run_lookup.sql", "0050_coordination_retry_and_deadlines.sql",
 ] as const;
-// ui096 published 0027 before the native task-stop table was later added to
-// the launch baseline. Both signatures are exact finite schema shapes; no
-// existing database is altered while reconstructing either contract.
+// Pine Production 0024 and ui096 0027 predate native task stops in the
+// launch baseline. Reconstruct their exact layouts only in memory.
 const predecessorContracts = new Map<string, readonly string[]>();
 function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
   for (const version of predecessorVersions) {
@@ -128,11 +129,9 @@ function isPredecessorContract(actual: string, budget: StateReadBudget): boolean
         bindStateReadBudget(sqlite, budget);
         sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
         initializePredecessorSchema(sqlite, version); declareGeneration(sqlite);
-        const exact = [schemaSignature(sqlite)];
-        if (version === "0027_schedule_work_lookup.sql") {
-          // Only the audited ui096 0027 shape lacked this later table. Drop it
-          // solely from our private in-memory schema reconstruction; 0041 adds
-          // the table normally when a genuine predecessor is upgraded.
+        const exact = version === "0024_asset_browser_metadata.sql" ? [] : [schemaSignature(sqlite)];
+        if (version === "0024_asset_browser_metadata.sql" || version === "0027_schedule_work_lookup.sql") {
+          // Migration 0041 creates this table when the real database upgrades.
           const sql = "DROP TABLE native_task_stops";
           budget.statement(sql, []); budget.reserve(1); sqlite.exec(sql);
           exact.push(schemaSignature(sqlite));
@@ -179,9 +178,13 @@ function databaseNames(primary: string): string[] {
  * lease excludes cooperating writers; each source file remains identity-bound
  * through final verification and closes before live SQLite opens. This is not
  * custody against a hostile host. */
-function snapshot(root: string, names: readonly string[], budget: StateReadBudget) {
+function snapshot(root: string, names: readonly string[], budget: StateReadBudget, ownedStage?: string) {
   budget.allocate(16384);
-  const directory = mkdtempSync(join(tmpdir(), "ponderosa-state-"));
+  const directory = ownedStage ?? mkdtempSync(join(tmpdir(), "ponderosa-state-"));
+  if (ownedStage) {
+    removeOwnedStage(ownedStage, cohortNames(names));
+    mkdirSync(ownedStage, { mode: 0o700 });
+  }
   const entries: Array<{ path: string; fd: number; before: BigIntStats; hash: string }> = [];
   const present = () => names.flatMap(name => ["", "-wal", "-shm", "-journal"]
     .filter(suffix => regular(join(root, name + suffix)))
@@ -248,14 +251,15 @@ function snapshot(root: string, names: readonly string[], budget: StateReadBudge
   } catch (error) { dispose(); throw error; }
 }
 
-function verifyRootWithin(root: string, names: string[], marker: StateIdentity, budget: StateReadBudget, allowHistoryUpgrade = false) {
+function verifyRootWithin(root: string, names: string[], marker: StateIdentity, budget: StateReadBudget,
+  allowHistoryUpgrade = false, markerRoot = root, ownedStage?: string) {
   const rootIdentity = physicalDirectoryIdentity(root);
   // No unknown top-level SQLite authority is accepted as a current companion.
-  const allowed = new Set(names.flatMap(name => ["", "-wal", "-shm", "-journal"].map(suffix => name + suffix)));
+  const allowed = new Set(cohortNames(names));
   for (const name of directoryNames(root, budget)) {
     if (/\.(?:db|sqlite)(?:-(?:wal|shm|journal))?$/u.test(name) && !allowed.has(name)) refuse();
   }
-  const copied = snapshot(root, names, budget);
+  const copied = snapshot(root, names, budget, ownedStage);
   try {
     budget.scaleRowsToBytes(copied.bytes);
     const contract = expectedContract(budget);
@@ -274,39 +278,84 @@ function verifyRootWithin(root: string, names: string[], marker: StateIdentity, 
       } finally { sqlite.close(); }
     }
     copied.verify();
-    if (JSON.stringify(readMarker(root, budget)) !== JSON.stringify(marker) ||
+    if (JSON.stringify(readMarker(markerRoot, budget)) !== JSON.stringify(marker) ||
         physicalDirectoryIdentity(root) !== rootIdentity) refuse();
     return { ...copied, upgrade };
   } catch (error) { copied.dispose(); throw error; }
 }
 
-function verifyRoot(root: string, names: string[], marker: StateIdentity, allowHistoryUpgrade = false) {
+function verifyRoot(root: string, names: string[], marker: StateIdentity, allowHistoryUpgrade = false,
+  markerRoot = root, ownedStage?: string) {
   const budget = new StateReadBudget();
-  return withStateReadInvocation(budget, () => verifyRootWithin(root, names, marker, budget, allowHistoryUpgrade));
+  return withStateReadInvocation(budget, () => verifyRootWithin(root, names, marker, budget, allowHistoryUpgrade, markerRoot, ownedStage));
+}
+
+function cohortNames(names: readonly string[]): string[] {
+  return names.flatMap(name => ["", "-wal", "-shm", "-journal"].map(suffix => name + suffix));
+}
+
+/** Called under the physical root lease. Only the known staging layout is disposable. */
+function removeOwnedStage(directory: string, allowed: readonly string[]): void {
+  const stat = lstatSync(directory, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (!stat.isDirectory() || (process.platform !== "win32" && (stat.mode & 0o077))) refuse(basename(directory), "unrecognized staging directory");
+  const names = [...directoryNames(directory, new StateReadBudget())];
+  for (const name of names) {
+    if (!allowed.includes(name) || !regular(join(directory, name))) refuse(basename(directory), "unrecognized staging entry");
+  }
+  for (const name of names) rmSync(join(directory, name));
+  rmdirSync(directory);
 }
 
 function bootstrap(root: string, names: string[]): StateIdentity {
-  if (readdirSync(root).length !== 0) refuse();
-  const marker: StateIdentity = { layoutVersion: 2, stateEpoch: 2, generationId: randomUUID() };
-  for (const name of names) {
-    const path = join(root, name);
-    closeSync(openSync(path, "wx", 0o600));
-    const sqlite = new Database(storageDatabaseFilename(path), { fileMustExist: true });
-    try { initializeCurrentDatabase(sqlite); declareGeneration(sqlite); mintGeneration(sqlite, marker.generationId);
-      // Only the fresh, empty canonical bootstrap can prove memory has never
-      // been configured for this data generation.
-      sqlite.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'never_configured',NULL,NULL,NULL)").run(marker.generationId);
-      verifyDatabase(sqlite, marker.generationId); }
-    finally { sqlite.close(); }
-    for (const suffix of ["", "-wal", "-shm", "-journal"]) if (regular(path + suffix)) fsyncPath(path + suffix);
+  const stage = join(root, BOOTSTRAP_STAGE);
+  const entries = [...directoryNames(root, new StateReadBudget())].filter(name =>
+    !(name === "lost+found" && lstatSync(join(root, name)).isDirectory()) &&
+    !(name === ".DS_Store" && lstatSync(join(root, name)).isFile()));
+  const primary = names[0]!;
+  if (entries.length === 2 && entries.includes(BOOTSTRAP_STAGE) && entries.includes(primary)) {
+    // The database was installed before interruption. Verify its exact
+    // generation and integrity against the durable intended marker.
+    const stat = lstatSync(stage);
+    if (!stat.isDirectory() || (process.platform !== "win32" && (stat.mode & 0o077)) ||
+        readdirSync(stage).join() !== STATE_MARKER) refuse();
+    const marker = readMarker(stage);
+    const admitted = verifyRoot(root, names, marker, false, stage);
+    try { admitted.verify(); } finally { admitted.dispose(); }
+    renameSync(join(stage, STATE_MARKER), join(root, STATE_MARKER));
+    fsyncPath(root);
+    removeOwnedStage(stage, []);
+    fsyncPath(root);
+    return marker;
   }
+  if (entries.some(name => name !== BOOTSTRAP_STAGE)) refuse();
+  removeOwnedStage(stage, [...cohortNames(names), STATE_MARKER]);
+  mkdirSync(stage, { mode: 0o700 });
   fsyncPath(root);
-  const temporary = join(root, `${STATE_MARKER}.${randomUUID()}.tmp`);
-  const fd = openSync(temporary, "wx", 0o600);
+  const marker: StateIdentity = { layoutVersion: 2, stateEpoch: 2, generationId: randomUUID() };
+  const path = join(stage, primary);
+  closeSync(openSync(path, "wx", 0o600));
+  const sqlite = new Database(storageDatabaseFilename(path), { fileMustExist: true });
+  try {
+    initializeCurrentDatabase(sqlite);
+    declareGeneration(sqlite);
+    mintGeneration(sqlite, marker.generationId);
+    // Fresh bootstrap proves memory has never been configured for this generation.
+    sqlite.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'never_configured',NULL,NULL,NULL)").run(marker.generationId);
+    verifyDatabase(sqlite, marker.generationId);
+  } finally { sqlite.close(); }
+  if (readdirSync(stage).join() !== primary) refuse(BOOTSTRAP_STAGE, "SQLite cohort did not settle");
+  fsyncPath(path);
+  const intendedMarker = join(stage, STATE_MARKER);
+  const fd = openSync(intendedMarker, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(marker) + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
-  // No replace: a partial bootstrap is retained and refused on the next open.
-  linkSync(temporary, join(root, STATE_MARKER)); fsyncPath(root);
-  rmSync(temporary); fsyncPath(root);
+  fsyncPath(stage);
+  renameSync(path, join(root, primary));
+  fsyncPath(root); fsyncPath(stage);
+  renameSync(intendedMarker, join(root, STATE_MARKER));
+  fsyncPath(root); fsyncPath(stage);
+  removeOwnedStage(stage, []);
+  fsyncPath(root);
   return marker;
 }
 
@@ -368,7 +417,8 @@ export class StateAdmission {
     if (this.#closed || !state?.exported || physicalDirectoryIdentity(DataDirectoryAuthority.ownedRoot(state.authority)) !== state.physicalIdentity) refuse();
     const marker = readMarker(state.root);
     if (marker.generationId !== state.marker.generationId) refuse();
-    const inspected = verifyRoot(state.root, databaseNames(state.primary), marker);
+    const stage = join(state.root, `.ponderosa-admission-${marker.generationId}`);
+    const inspected = verifyRoot(state.root, databaseNames(state.primary), marker, false, state.root, stage);
     inspected.dispose();
   }
   /** The parent remains leased, but closes SQLite before the child can snapshot.
@@ -436,15 +486,18 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
   try {
     const root = authority.rootPath;
     const names = databaseNames(primary);
-    const empty = readdirSync(root).length === 0;
-    if (empty && expected) refuse();
-    const marker = empty ? bootstrap(root, names) : readMarker(root);
-    const admittedSnapshot = verifyRoot(root, names, marker, true);
+    const markerPresent = lstatSync(join(root, STATE_MARKER), { throwIfNoEntry: false });
+    if (!markerPresent && expected) refuse();
+    const marker = markerPresent ? readMarker(root) : bootstrap(root, names);
+    const stage = join(root, `.ponderosa-admission-${marker.generationId}`);
+    const admittedSnapshot = verifyRoot(root, names, marker, true, root, stage);
     try {
       if (expected && (marker.generationId !== expected.generationId ||
           expected.physicalIdentity !== undefined && physicalDirectoryIdentity(root) !== expected.physicalIdentity)) refuse();
       admittedSnapshot.verify();
     } finally { admittedSnapshot.dispose(); }
+    // A newly bootstrapped root may have lost power after the marker rename.
+    removeOwnedStage(join(root, BOOTSTRAP_STAGE), []);
     // Closing another descriptor for a live SQLite file can drop its POSIX
     // locks. Close the source cohort first; keep the directory lease throughout.
     sqlite = new Database(storageDatabaseFilename(join(root, primary)), { fileMustExist: true });

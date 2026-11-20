@@ -1,7 +1,7 @@
 import type { AgentDto, ConversationMessageDto, MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { Alert, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
@@ -17,8 +17,8 @@ export function providerFailureHeadline(failure: NonNullable<MessageDeliveryRece
     : failure.category === "capacity" ? `${provider} is temporarily at capacity` : `${provider} limited this request`;
 }
 
-export function ProviderFailureBanner({ messages, agents, projectId, hasMore, onOpenAgent, onOpenError, children }: {
-  messages: ConversationMessageDto[]; agents: AgentDto[]; projectId: string; hasMore?: boolean; onOpenAgent?(agentId: string): void; onOpenError?(agentId: string, runId: string, activityId?: string): void; children?: ReactNode;
+export function ProviderFailureBanner({ messages, agents, projectId, hasMore, onOpenAgent, onOpenError }: {
+  messages: ConversationMessageDto[]; agents: AgentDto[]; projectId: string; hasMore?: boolean; onOpenAgent?(agentId: string): void; onOpenError?(agentId: string, runId: string, activityId?: string): void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [checking, setChecking] = useState<string>();
@@ -54,7 +54,7 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
     } catch (cause) { setNotice(cause instanceof Error && cause.message ? cause.message : "Could not recheck the provider. The recorded work and recovery state are unchanged."); }
     finally { setChecking(undefined); }
   };
-  if (!rows.length) return <>{status}{children}</>;
+  if (!rows.length) return status;
   return <>
     <Box sx={{ containerType: "inline-size" }}>
       <ChatLiveBanner singleLine>

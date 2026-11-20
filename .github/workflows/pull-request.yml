@@ -1,0 +1,46 @@
+name: Pull request checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.10.0
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+      - run: node tests/shared/run-tests.mjs --list
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm -r typecheck
+      - name: Run prerequisite-free provider and memory checks
+        run: >-
+          node --import ./tests/shared/workspace-resolution.mjs --test
+          tests/providers/claude-model-fidelity.test.mjs
+          tests/providers/terminal-tool-result.test.mjs
+          tests/memory/startup-config.test.mjs
+          tests/memory/explicit-reconciliation.test.mjs
+      - name: Verify provider exit and workspace compaction recovery
+        run: >-
+          node --import ./tests/shared/workspace-resolution.mjs --test
+          --test-name-pattern='two-phase root exit|workspace pulse compaction'
+          tests/providers/provider-access.test.mjs
+          tests/workspace-navigation/folder-directory.test.mjs
+      - name: Verify Chat archive and storage custody
+        run: |
+          node --import ./tests/shared/workspace-resolution.mjs --test tests/chats/creation.test.mjs tests/providers/native-control-routes.test.mjs
+          node --import ./tests/shared/workspace-resolution.mjs --test \
+            --test-name-pattern='scopes Chat counts and user-published files' tests/branches/product-scope.test.mjs

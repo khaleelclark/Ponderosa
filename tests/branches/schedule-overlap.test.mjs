@@ -116,5 +116,20 @@ for(const engine of ['codex','claude'])test(`scheduled updates use the existing 
  assert.deepEqual(f.ok(await f.api('GET',`/api/branches/${branch.id}/lifecycle`)).runCounts,{running:1,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0});
  loseAcknowledgement=true;const second=tick('Check after acknowledgement loss');await until(()=>branches.triggers.getTriggerOccurrence(second.occurrenceId).schedule.delivery==='unconfirmed','durable unconfirmed steering',10000);const actions=f.ok(await f.api('GET',`/api/branch-executions/${run.id}/actions`));assert.equal(actions.items[0].kind,'schedule_update');const intent={commandKey:randomUUID(),expectedRevision:branches.execution(run.id).revision,action:'resolve_schedule_update',occurrenceId:second.occurrenceId,externalEffectsReconciled:true,updateApplied:true,reason:'Controlled fixture confirms this scheduled input was applied once'};f.ok(await f.api('POST',`/api/branch-executions/${run.id}/intervene`,intent));f.ok(await f.api('POST',`/api/branch-executions/${run.id}/intervene`,intent));loseAcknowledgement=false;
  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_steering_recoveries').get().n,0);assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions WHERE branch_id=?').get(branch.id).n,1);
- const third=tick('Next distinct scheduled check');await until(()=>branches.triggers.getTriggerOccurrence(third.occurrenceId).state==='activated','steering resumes after explicit reconciliation',10000);assert.equal(f.steers.length,3);assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,1);passed=true;
+ const third=tick('Next distinct scheduled check');await until(()=>branches.triggers.getTriggerOccurrence(third.occurrenceId).state==='activated','steering resumes after explicit reconciliation',10000);assert.equal(f.steers.length,3);assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,1);
+ if(engine==='codex'){
+  const authority=store.sqlite.prepare('SELECT lease_owner,fencing_token FROM scheduler_runs WHERE id=?').get(originalRun);
+  const coordination=new CoordinationV3Store(store.sqlite);
+  assert.equal(coordination.failRun({runId:originalRun,fencingToken:authority.fencing_token,workerId:authority.lease_owner,
+   sameRunResumable:false,error:'Controlled accepted Run with no final outcome'}),'outcome_unknown');
+  const dedupeKey='branch:schedule-held:'+run.id;
+  const find=async()=>f.ok(await f.api('GET','/api/branches/engine/notifications')).items.find(n=>n.dedupeKey===dedupeKey&&n.status==='open');
+  const notice=await until(find,'scheduled workflow hold notice',10000);
+  assert.equal(notice.title,`Scheduled ${engine} review schedule held`);
+  assert.equal(notice.branchExecutionId,run.id);
+  branches.triggers.updateTriggerDefinition(branch.triggerId,{enabled:false});
+  await until(async()=>!(await find()),'schedule hold resolved after disabling trigger',10000);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM coordination_requests WHERE recipient_agent_id=? AND state='outcome_unknown'").get(agent.id));
+ }
+ passed=true;
 });

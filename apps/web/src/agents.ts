@@ -164,6 +164,7 @@ export function agentStatusPresentation(
   const displayStatus = agentDisplayStatus(health);
   const blocker = health && "admissionBlocker" in health ? health.admissionBlocker : undefined;
   const coarseLabel = health.reason==='context_recovery_required'?'Cannot Respond Yet'
+    : health.reason === 'waiting_on_background_tasks' && status === 'waiting' ? 'Waiting on background tasks'
     : ['context_recovery_cleanup','context_recovery_running'].includes(health.reason??'')?'Connecting':AGENT_DISPLAY_STATUS_LABELS[displayStatus];
   const coarse = {
     status: displayStatus,

@@ -300,7 +300,7 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     if (!(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) return undefined;
     const port = Number(target.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
-    target.hostname = "127.0.0.1";
+    if (hostname === "localhost") target.hostname = "127.0.0.1";
     target.hash = "";
     return target;
   };
@@ -406,6 +406,11 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     reply.code(upstream.status);
     const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
     reply.type(contentType);
+    if (request.headers.origin === "null") {
+      // Module requests from the sandbox's opaque origin use CORS.
+      reply.header("access-control-allow-origin", "null");
+    }
+    reply.header("vary", "origin");
     reply.header("cache-control", "no-store");
     if (!upstream.body) {
       releaseHttp();

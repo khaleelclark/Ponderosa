@@ -413,6 +413,7 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let nativeHistoryMethod: ((...args: unknown[]) => unknown) | undefined;
   let rewindFilesMethod: ((...args: unknown[]) => unknown) | undefined;
   let listNativeTasksMethod: ((...args: unknown[]) => unknown) | undefined;
+  let backgroundTasksObservedAtMethod: ((...args: unknown[]) => unknown) | undefined;
   let stopNativeTaskMethod: ((...args: unknown[]) => unknown) | undefined;
   let invokeCommandMethod: ((...args: unknown[]) => unknown) | undefined;
   try {
@@ -437,6 +438,7 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     nativeHistoryMethod = method(raw,"nativeHistory",false);
     rewindFilesMethod = method(raw,"rewindFiles",false);
     listNativeTasksMethod = method(raw, "listNativeTasks", false);
+    backgroundTasksObservedAtMethod = method(raw, "backgroundTasksObservedAt", false);
     stopNativeTaskMethod = method(raw, "stopNativeTask", false);
   } catch (error) {
     throw boundaryError("project provider session", error);
@@ -515,6 +517,13 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     } : {}),
     ...(nativeHistoryMethod ? { nativeHistory: async () => { if(nativeMutationActive)throw new Error("Native operation is active");return projectNativeHistory(await providerRuntimeOperation("read native history", () => Reflect.apply(nativeHistoryMethod!,raw,[]))); } } : {}),
     ...(rewindFilesMethod ? { rewindFiles: async (messageId:string,dryRun:boolean) => projectNativeRewind(await nativeMutation("rewind native files", () => Reflect.apply(rewindFilesMethod!,raw,[messageId,dryRun]))) } : {}),
+    ...(backgroundTasksObservedAtMethod ? {
+      backgroundTasksObservedAt: () => providerRuntimeValue("read background task observation", () => {
+        const observedAt = Reflect.apply(backgroundTasksObservedAtMethod!, raw, []);
+        if (observedAt === undefined || (typeof observedAt === "number" && Number.isSafeInteger(observedAt))) return observedAt;
+        throw new Error(INVALID_PROVIDER_STRUCTURE);
+      }),
+    } : {}),
     ...(listNativeTasksMethod ? {
       listNativeTasks: async () => {
         const value = await providerRuntimeOperation("list native tasks", () => Reflect.apply(listNativeTasksMethod!, raw, []));

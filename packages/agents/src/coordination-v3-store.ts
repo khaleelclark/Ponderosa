@@ -1564,8 +1564,8 @@ export class CoordinationV3Store {
   retryWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.retryWorkingCopyTransition(id); }
   recordWorkingCopyTransitionCopy(input:Parameters<CoordinationV3ContextRolloverAuthority['recordWorkingCopyTransitionCopy']>[0]) { return this.contextRolloverAuthority.recordWorkingCopyTransitionCopy(input); }
   updateWorkingCopyTransition(...args:Parameters<CoordinationV3ContextRolloverAuthority['updateWorkingCopyTransition']>) { return this.contextRolloverAuthority.updateWorkingCopyTransition(...args); }
-  canKeepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.canKeepWorkingCopyTransition(id); }
-  keepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.keepWorkingCopyTransition(id); }
+  canKeepWorkingCopyTransition(id:string,freshContext=false) { return this.contextRolloverAuthority.canKeepWorkingCopyTransition(id,freshContext); }
+  keepWorkingCopyTransition(id:string,freshContext=false) { return this.contextRolloverAuthority.keepWorkingCopyTransition(id,freshContext); }
 
 
 

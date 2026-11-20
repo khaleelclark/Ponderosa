@@ -3,6 +3,8 @@ import {portablePathChoice,sourcePathChoice} from './portablePathChoices';
 /** Bounded, display-only native data summary. The server validates original bytes and authority. */
 export interface NativeDataPreview {
  git:boolean;harness:boolean;
+ activationItems?:string[];
+ moreActivationItems?:boolean;
  sourceRoots:Array<{rootRef:string;sourcePath:string}>;
  metadata?:{sourceQualifier:string;rootRefs:string[];principals:Array<{kind:'user'|'group';sourceId:string}>;fifoCount:number;unsupportedNodes:number};
  warning?:string;
@@ -19,6 +21,14 @@ async function artifactText(artifact:Record<string,unknown>):Promise<string> {
 }
 export async function nativeDataPreview(nodes:unknown[]):Promise<NativeDataPreview> {
  const result:NativeDataPreview={git:false,harness:false,sourceRoots:[]};
+ const addActivationItem=(value:unknown)=>{
+  if(typeof value!=='string')return;
+  const item=value.slice(0,240);
+  const items=result.activationItems??=[];
+  if(items.includes(item))return;
+  if(items.length>=30){result.moreActivationItems=true;return;}
+  items.push(item);
+ };
  const roots=new Set<string>(),principals=new Map<string,{kind:'user'|'group';sourceId:string}>(),sources=new Set<string>();
  let fifoCount=0,unsupportedNodes=0;
  const principal=(kind:'user'|'group',sourceId:string)=>{if(!/^(?:0|[1-9][0-9]*)$/.test(sourceId))throw Error('Invalid native owner identity');principals.set(kind+':'+sourceId,{kind,sourceId});};
@@ -33,6 +43,8 @@ export async function nativeDataPreview(nodes:unknown[]):Promise<NativeDataPrevi
    result.git ||= manifest.selection?.git===true&&Boolean(manifest.git);
    const harnessPath=(entry:{path?:unknown})=>typeof entry.path==='string'&&(entry.path==='.mcp.json'||entry.path==='.claude'||entry.path.startsWith('.claude/')||entry.path==='.codex'||entry.path.startsWith('.codex/'));
    result.harness ||= manifest.selection?.harness===true&&Boolean(manifest.providerFiles?.some(harnessPath)||manifest.providerDirectories?.some(harnessPath));
+   for(const setting of manifest.git?.configurationReview??[])addActivationItem(typeof setting.key==='string'?'Git: '+setting.key:undefined);
+   for(const file of manifest.providerFiles??[])addActivationItem(file.path);
    for(const binding of manifest.associationReview??[])for(const source of binding.capture?.roots??[]){
     if(typeof source.rootRef==='string'&&typeof source.sourcePath==='string'&&!result.sourceRoots.some(item=>item.rootRef===source.rootRef&&item.sourcePath===source.sourcePath))result.sourceRoots.push({rootRef:source.rootRef,sourcePath:source.sourcePath});
    }

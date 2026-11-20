@@ -3,10 +3,10 @@ import path from "node:path";
 import type { ResourceAdmissionDto } from "@ponderosa/core";
 
 const MiB = 1024 * 1024;
-export const RESOURCE_ADMISSION_DEFAULTS = { enabled: true, reserveBytes: 2048 * MiB, startupBytes: 256 * MiB,
+export const RESOURCE_ADMISSION_DEFAULTS = { enabled: true, strictDiskPressure: false, reserveBytes: 2048 * MiB, startupBytes: 256 * MiB,
   sampleMs: 2000, maxAgeMs: 10_000, deadlineMs: 500, recoverySamples: 2 } as const;
 export interface ResourceSample { availableBytes: number; memoryFullPercent: number; ioFullPercent: number; source: "linux_host_and_cgroup" | "linux_host" }
-export type ResourceAdmissionOptions = Partial<{ enabled: boolean; reserveBytes: number; startupBytes: number }>;
+export type ResourceAdmissionOptions = Partial<{ enabled: boolean; strictDiskPressure: boolean; reserveBytes: number; startupBytes: number }>;
 
 /** Read small kernel counters only, never start a diagnostic process. */
 async function boundedRead(filename: string): Promise<string> {
@@ -66,7 +66,7 @@ export class ResourceAdmission {
   private sample?: ResourceSample;
   private sampledAt?: number;
   private value: ResourceAdmissionDto;
-  readonly config: { enabled: boolean; reserveBytes: number; startupBytes: number; sampleMs: number; maxAgeMs: number; deadlineMs: number; recoverySamples: number };
+  readonly config: { enabled: boolean; strictDiskPressure: boolean; reserveBytes: number; startupBytes: number; sampleMs: number; maxAgeMs: number; deadlineMs: number; recoverySamples: number };
   constructor(options: ResourceAdmissionOptions = {}, private readonly load = sampleLinuxResources,
     private readonly now = Date.now, private readonly platform = process.platform,
     private readonly changed: () => void = () => {}) {
@@ -105,15 +105,18 @@ export class ResourceAdmission {
         }
         this.sample = sample; this.sampledAt = sampleStartedAt;
         const minimum = this.config.reserveBytes + this.config.startupBytes;
-        const pressured = sample.availableBytes < minimum || sample.memoryFullPercent >= 5 || sample.ioFullPercent >= 10;
-        const recovered = sample.availableBytes >= minimum * 1.25 && sample.memoryFullPercent <= 1 && sample.ioFullPercent <= 2;
+        const diskPressure = sample.ioFullPercent >= 10;
+        const pressured = sample.availableBytes < minimum || sample.memoryFullPercent >= 5 || (this.config.strictDiskPressure && diskPressure);
+        const recovered = sample.availableBytes >= minimum * 1.25 && sample.memoryFullPercent <= 1 &&
+          (!this.config.strictDiskPressure || sample.ioFullPercent <= 2);
         if (pressured) { this.held = true; this.recovery = 0; }
         else if (this.held) { this.recovery = recovered ? this.recovery + 1 : 0; if (this.recovery >= this.config.recoverySamples) this.held = false; }
-        const old = this.value.state;
-        this.value = { state: this.held ? "held" : "ready", protected: true, reason: this.held ? "host_resource_pressure" : "within_budget",
+        const old = this.value;
+        this.value = { state: this.held ? "held" : "ready", protected: true,
+          reason: this.held ? "host_resource_pressure" : diskPressure ? "disk_pressure_advisory" : "within_budget",
           observedAt: new Date(this.sampledAt).toISOString(), source: sample.source, availableBytes: sample.availableBytes,
           reserveBytes: this.config.reserveBytes, startupBytes: this.config.startupBytes, memoryFullPercent: sample.memoryFullPercent, ioFullPercent: sample.ioFullPercent };
-        if (old !== this.value.state || previousCapacity !== this.capacity()) this.changed();
+        if (old.state !== this.value.state || old.reason !== this.value.reason || previousCapacity !== this.capacity()) this.changed();
       }).catch(() => { const old = this.value.state; this.sample = undefined; this.held = false; this.recovery = 0;
         this.value = { state: "unavailable", protected: false, reason: "measurement_unavailable" }; if (old !== this.value.state) this.changed();
       }).finally(() => { if (this.pending === operation) this.pending = undefined; });

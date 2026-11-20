@@ -44,8 +44,9 @@ function shell(f,route){
   '@mui/material/styles':{useTheme:()=>({breakpoints:{down:()=>''}})},
   '@mui/material/utils':{useEventCallback:fn=>fn},
   '@tanstack/react-query':{useQueryClient:()=>f.client,useQuery:()=>({data:[]})},
-  '../hooks/queries':{useConversations:id=>result(queryKeys.conversations.project(id)),useAgents:id=>result(queryKeys.agents.project(id)),useAgentHealth:()=>({data:{agents:[]}}),useAgent:()=>({})},
+  '../hooks/queries':{useConversations:id=>result(queryKeys.conversations.project(id)),useAgents:id=>result(queryKeys.agents.project(id)),useAgentHealth:()=>({data:{agents:[]}}),useAgent:()=>({}),useConversation:id=>id?result(queryKeys.conversations.detail(id,100)):{}},
   '../hooks/useEngineModelCatalogs':{useEngineModelCatalogs:()=>({catalogs:[]})},
+  '../api/types':module(source('api/types.ts')),
   '../agents':{mergeAgentStatuses:()=>new Map()},
   '../conversationEngine':{enginesWithModelCatalog:engines=>engines},
   '../retainedData':retained,'../routeRegistry':registry,'../queryKeys':{queryKeys},
@@ -90,19 +91,21 @@ test('warm results and failures stay in their exact canonical keys across a rout
   assert.equal(f.client.getQueryState(queryKeys.conversations.project('project-a')).error.message,'Exact membership read refused');
  }finally{f.close();}
 });
-test('actual ProjectShell keeps pending, failed, foreign and deleted membership gates despite a warmed tail',async()=>{
+test('actual ProjectShell admits archived Chats only within their owning Project',async()=>{
  const route={kind:'conversation',projectId:'project-a',conversationId:'chat-a'};
- for(const kind of ['pending','failure','foreign','deleted','valid']){
+ for(const kind of ['pending','failure','foreign','deleted','valid','archived','archived-foreign']){
   const f=fixture();try{
-   const warming=f.warm(f.client,'chat-a','project-a');f.resolve('tail',{conversation:{id:'chat-a'},messages:['exact']});f.resolve('agents',[]);await turn();
+   const warming=f.warm(f.client,'chat-a','project-a');
+   const archive=kind.startsWith('archived')?{archivedAt:'2026-11-19T00:00:00Z',projectId:kind==='archived'?'project-a':'project-b'}:{};
+   f.resolve('tail',{conversation:{id:'chat-a',...archive},messages:['exact']});f.resolve('agents',[]);await turn();
    if(kind==='failure')f.pending.find(p=>p.kind==='conversations').reject(Error('Membership read unavailable'));
    else if(kind!=='pending')f.resolve('conversations',kind==='valid'?[{id:'chat-a'}]:kind==='foreign'?[{id:'different-project-chat'}]:[]);
    if(kind!=='pending')await warming;else await turn();
    const tree=shell(f,route);
-   assert.equal(contains(tree,'ConversationView'),kind==='valid','Only verified membership may render the Chat: '+kind);
+   assert.equal(contains(tree,'ConversationView'),(kind==='valid'||kind==='archived'),'Only verified membership may render the Chat: '+kind);
    if(kind==='pending')assert(contains(tree,'LinearProgress'));
    if(kind==='failure')assert.equal(tree.props.initial,true);
-   if(kind==='foreign'||kind==='deleted')assert.match(text(tree),/unavailable in this Project/);
+   if(kind==='foreign'||kind==='deleted'||kind==='archived-foreign')assert.match(text(tree),/unavailable in this Project/);
   }finally{f.close();}
  }
 });

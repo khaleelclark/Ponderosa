@@ -36,8 +36,8 @@ interface OlderCollaborationHistory {
 export function useConversationHistory(
   conversationId: string,
   activeView: ConversationActiveView,
+  detailQuery: ReturnType<typeof useConversation>,
 ) {
-  const detailQuery = useConversation(conversationId);
   // Team Chat is a comparatively expensive operational projection. Keep it
   // dormant while ordinary Chat is visible; React Query fetches the latest page
   // when the user actually switches views.
@@ -59,9 +59,9 @@ export function useConversationHistory(
     () =>
       mergeConversationMessages(
         olderMain?.messages ?? [],
-        compactDefined(detailQuery.data?.messages ?? []),
+        olderMain?.historical ? [] : compactDefined(detailQuery.data?.messages ?? []),
       ),
-    [detailQuery.data?.messages, olderMain?.messages],
+    [detailQuery.data?.messages, olderMain?.messages, olderMain?.historical],
   );
   const messages = useMessageDeliveryReceipts(retainedMessages, conversationId, activeView === "main");
   const agents = useMemo(
@@ -72,9 +72,9 @@ export function useConversationHistory(
     () =>
       mergeDecisionEvents(
         olderMain?.decisionEvents ?? [],
-        detailQuery.data?.decisionEvents ?? [],
+        olderMain?.historical ? [] : detailQuery.data?.decisionEvents ?? [],
       ),
-    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents],
+    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents, olderMain?.historical],
   );
   const mainTimeline = useMemo<MainTimelineEntry[]>(() => {
     const entries: MainTimelineEntry[] = [
@@ -163,7 +163,10 @@ export function useConversationHistory(
             100,
             mainHistory.cursor,
           );
-          setOlderMain(current => mergeMainHistoryPage(page, current, detailQuery.data));
+          setOlderMain(current => {
+            if (mainHistory.historical && current?.cursor !== mainHistory.cursor) return current;
+            return mergeMainHistoryPage(page, current, detailQuery.data);
+          });
         } else {
           const loadMessages =
             collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);
@@ -215,7 +218,6 @@ export function useConversationHistory(
     collaborationLayoutKey,
     collaborationMessages,
     collaborationQuery,
-    detailQuery,
     loadOlderHistory,
     loadingOlder,
     olderError,

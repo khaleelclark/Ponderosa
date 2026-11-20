@@ -29,6 +29,7 @@ export function ChatSurface({
   renderedRowCount,
   canonicalCommunicationIds,
   initialTranscript,
+  latestAction,
 }: {
   layoutKey: string;
   follow?: ChatFollowLatest;
@@ -47,6 +48,7 @@ export function ChatSurface({
   canonicalCommunicationIds?: readonly (string | undefined)[];
   /** Only the first cold transcript render is scheduled; fetched data is unchanged. */
   initialTranscript?: { rowIds: readonly string[]; reveal?: boolean };
+  latestAction?: { historical: boolean; onClick(): void };
 }): JSX.Element {
   const assistantChrome = useContext(ConversationChromeContext);
   const composerLane = layout === "project" || layout === "agent" || Boolean(assistantChrome);
@@ -212,7 +214,14 @@ export function ChatSurface({
       </Stack>
       {transcriptLoading ? <span role="status" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)" }}>Loading Chat messages…</span> : null}
       {overlay}
-      <ScrollToLatestButton visible={scroll.showScrollToLatest} onClick={scroll.scrollToLatest} />
+      <ScrollToLatestButton
+        visible={Boolean(latestAction?.historical) || scroll.showScrollToLatest}
+        label={latestAction?.historical ? "Return to Latest" : undefined}
+        onClick={() => {
+          latestAction?.onClick();
+          scroll.scrollToLatest();
+        }}
+      />
       </Box>
       {bottomPanel}
     </Box>

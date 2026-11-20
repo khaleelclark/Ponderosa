@@ -27,7 +27,7 @@ for(const scenario of ['confirmed_source_changed','capturing','failed_other','mi
   const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Synthetic',rootRef:agent.id,agents:[{ref:agent.id,title:'Source',engine:'codex',sourceChat:{ref:chat.id,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
   await assert.rejects(()=>custody.capture(before.snapshotSource,'controlled-boundary',async()=>pkg,()=>{throw new SourceCaptureChangedError()}),/source changed/i);
   const status=await custody.inspect(before.snapshotSource);assert.equal(status.state,'failed');assert.equal(status.reason,'source_changed');
-  stagedNames=readdirSync(directory).sort();assert.ok(stagedNames.some(x=>x.endsWith('.pending.json')));assert.ok(stagedNames.some(x=>x.endsWith('.payload')));
+  stagedNames=readdirSync(directory).sort();assert.ok(stagedNames.some(x=>x.endsWith('.pending.json')));assert.ok(!stagedNames.some(x=>x.endsWith('.payload')));
   retainedBytes=new Map(stagedNames.map(name=>[name,readFileSync(path.join(directory,name))]));
  }
  const service=new BranchResourceService(branches,store,async()=>{},async()=>{throw Error('Chat creation must not run')},async()=>{});

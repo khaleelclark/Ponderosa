@@ -23,7 +23,7 @@ test('guidance preserves physical lineage, explicit destinations and host-only p
   assert.match(tool('save').description, /global for installation-wide memory/);
   assert.match(tool('save').description, /private.*unsupported for global/);
   assert.match(tool('update').description, /new physical version/);
-  assert.match(tool('forget').description, /not a hard delete/);
+  assert.match(tool('forget').description, /Permanent deletion is an operator action/);
   for (const item of localMemoryTools) {
     assert.match(item.description, /Ponderosa's Chat\/global memory store, separate from other memory services/);
     assert.match(item.description, /Host stamps actor\/Run\/source provenance/);

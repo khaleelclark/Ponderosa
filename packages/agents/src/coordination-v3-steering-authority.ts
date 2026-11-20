@@ -1,3 +1,4 @@
+import { chatArchiveActivationSql } from "./chat-archive.js";
 import { settingsTransitionActivationHoldSql } from "./coordination-v3-settings-transition-hold.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import { branchScheduleTarget, branchScheduleActivationEligible, type BranchScheduleUpdateTarget } from "./coordination-v3-branch-schedule.js";
@@ -168,6 +169,7 @@ export class CoordinationV3SteeringAuthority {
           ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key
           AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT ${chatArchiveActivationSql('a')}
           ${installationFence}
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
@@ -228,6 +230,7 @@ export class CoordinationV3SteeringAuthority {
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND NOT ${chatArchiveActivationSql('agent_activations')}
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('agent_activations')}
           AND NOT ${this.settingsConfirmationRun('?')}
@@ -412,17 +415,17 @@ export class CoordinationV3SteeringAuthority {
     now?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
-    const availableAt = new Date(
-      Date.parse(now) + (input.retryDelayMs ?? 0),
-    ).toISOString();
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);
       const injection = this.sqlite.prepare(`
-        SELECT activation_ids_json FROM scheduler_prompt_injections
+        SELECT activation_ids_json,
+          state='pending' AND submitted_at IS NULL AND acknowledged_at IS NULL AND provider_turn_id IS NULL AS unsubmitted
+        FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ?
           AND state IN ('pending', 'submitted')
       `).get(input.injectionId, input.runId) as {
         activation_ids_json: string;
+        unsubmitted: number;
       } | undefined;
       if (!injection) throw new Error("pending steering injection not found");
       const activationIds = JSON.parse(
@@ -430,39 +433,54 @@ export class CoordinationV3SteeringAuthority {
       ) as string[];
       if (activationIds.length) {
         const placeholders = activationIds.map(() => "?").join(", ");
-        this.sqlite.prepare(`
+        const update = this.sqlite.prepare(`
           UPDATE agent_activations
-          SET state = 'retry_pending',
-            dispatch_policy = CASE
-              WHEN EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update') THEN 'next_run'
-              WHEN ? = 'provider_unsupported' AND (kind IN ('coordination_request','ordinary_message')
-                OR (kind = 'urgent_message' AND prompt_class <> 'human')) THEN 'next_run'
-              WHEN ? = 1 THEN dispatch_policy
-              ELSE 'next_run'
-            END,
-            available_at = ?, updated_at = ?, steering_wait_reason = ?
-          WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(input.waitReason ?? null, input.preserveSteering ? 1 : 0, availableAt, now,
-          input.preserveSteering ? input.waitReason ?? null : null, ...activationIds);
-        // The provider explicitly refused before accepting input. Keep its
-        // cancelled injection as audit evidence, but do not let the old Run
-        // claim the queued peer work or settle it as an uncertain outcome.
-        if (input.waitReason === "provider_unsupported") {
-          this.sqlite.prepare(`
-            DELETE FROM scheduler_run_activations WHERE run_id = ?
-              AND activation_id IN (${placeholders})
-              AND EXISTS (SELECT 1 FROM agent_activations activation
-                WHERE activation.id = scheduler_run_activations.activation_id
-                  AND (activation.kind IN ('coordination_request','ordinary_message')
-                    OR (activation.kind = 'urgent_message' AND activation.prompt_class <> 'human'))
-                  AND activation.state = 'retry_pending'
-                  AND activation.steering_wait_reason = 'provider_unsupported')
+          SET state = 'retry_pending', dispatch_policy = CASE WHEN ? THEN dispatch_policy ELSE 'next_run' END,
+            available_at = ?, updated_at = ?, steering_wait_reason = ?, steering_deferrals = steering_deferrals + 1
+          WHERE id = ? AND state = 'attached'
+        `);
+        const active = this.sqlite.prepare(`
+          SELECT id, kind, prompt_class, steering_deferrals,
+            EXISTS (SELECT 1 FROM activation_sources WHERE activation_id=agent_activations.id
+              AND source_kind='branch_schedule_update') AS scheduled
+          FROM agent_activations WHERE id IN (${placeholders}) AND state='attached'
+        `).all(...activationIds) as Array<{ id: string; kind: string; prompt_class: string; steering_deferrals: number; scheduled: number }>;
+        for (const activation of active) {
+          const unsupportedPeer = input.waitReason === "provider_unsupported" &&
+            (activation.kind === "coordination_request" || activation.kind === "ordinary_message" ||
+              (activation.kind === "urgent_message" && activation.prompt_class !== "human"));
+          const exhausted = activation.steering_deferrals >= 5;
+          const keepSteering = !activation.scheduled && !unsupportedPeer && !exhausted && input.preserveSteering === true;
+          const delay = keepSteering
+            ? Math.min(30_000, Math.max(500, input.retryDelayMs ?? 0) * 2 ** activation.steering_deferrals)
+            : input.retryDelayMs ?? 0;
+          update.run(keepSteering ? 1 : 0, new Date(Date.parse(now) + delay).toISOString(), now,
+            input.waitReason ?? null, activation.id);
+          // A steer deliberately queued before submission can return to
+          // pending admission. Keep its cancelled injection as exact audit evidence.
+          if (injection.unsubmitted && !input.preserveSteering) {
+            const detached = this.sqlite.prepare(`
+              DELETE FROM scheduler_run_activations WHERE run_id = ? AND activation_id = ? AND consumed_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections prior,
+                  json_each(prior.activation_ids_json) member WHERE member.value = scheduler_run_activations.activation_id
+                  AND prior.id <> ? AND (prior.state <> 'cancelled' OR prior.submitted_at IS NOT NULL
+                    OR prior.acknowledged_at IS NOT NULL OR prior.provider_turn_id IS NOT NULL))
+            `).run(input.runId, activation.id, input.injectionId);
+            if (detached.changes) this.sqlite.prepare(`
+              UPDATE agent_activations SET state='pending' WHERE id=? AND state='retry_pending'
+                AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations WHERE activation_id=?)
+            `).run(activation.id, activation.id);
+          }
+          // This no-write refusal cannot settle the queued input when the old Run
+          // ends. Its refused injection remains in the audit trail.
+          if (unsupportedPeer || exhausted) this.sqlite.prepare(`
+            DELETE FROM scheduler_run_activations WHERE run_id = ? AND activation_id = ? AND consumed_at IS NULL
               AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections prior,
                 json_each(prior.activation_ids_json) member
                 WHERE prior.run_id = scheduler_run_activations.run_id
                   AND prior.id <> ? AND member.value = scheduler_run_activations.activation_id
                   AND prior.state IN ('pending', 'submitted', 'acknowledged', 'outcome_unknown'))
-          `).run(input.runId, ...activationIds, input.injectionId);
+          `).run(input.runId, activation.id, input.injectionId);
         }
       }
       this.sqlite.prepare(`

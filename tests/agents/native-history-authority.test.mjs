@@ -6,7 +6,7 @@ import { NativeHistoryAuthority } from '../../apps/server/dist/native-history-au
 const boundary={agentId:'a',projectId:'p',conversationId:'c',engine:'claude',sessionId:'s',runId:'r',fence:7,toolContractHash:'h',rootPath:'/owned'};
 function fixture(t){
   const sqlite=new Database(':memory:');t.after(()=>sqlite.close());
-  sqlite.exec(`CREATE TABLE coordination_idempotency(project_id TEXT,actor_scope TEXT,operation TEXT,idempotency_key TEXT,payload_hash TEXT,result_json TEXT,created_at TEXT,PRIMARY KEY(actor_scope,operation,idempotency_key))`);
+  sqlite.exec(`CREATE TABLE coordination_idempotency(project_id TEXT,actor_scope TEXT,operation TEXT,idempotency_key TEXT,payload_hash TEXT,result_json TEXT,created_at TEXT,PRIMARY KEY(actor_scope,operation,idempotency_key)); CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT)`);
   return new NativeHistoryAuthority({sqlite,getAgent:id=>({id,projectId:"p",activeEngine:"claude"})});
 }
 test('native mutation reservation persists exact key replay and blocks another key',t=>{
@@ -18,6 +18,8 @@ test('native mutation reservation persists exact key replay and blocks another k
   assert.throws(()=>a.reserve(boundary,'once','rewind',{checkpointId:'different'}));
   assert.throws(()=>a.cancel('a','once'));
   assert.equal(a.read('a','once').state,'started');
+  assert.equal(a.cancel('a','once',true).state,'abandoned');
+  assert.equal(a.held('a'),false);
 });
 test('only unstarted fork can release preparation; opened result cannot replay fork',t=>{
   const a=fixture(t);

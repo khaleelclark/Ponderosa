@@ -32,6 +32,7 @@ for(const concurrentChange of ['access','prompt'])test(`memory-enabled voice pre
   assert.equal(response.result.success,true);
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
   store.sqlite.prepare('UPDATE scheduler_agent_fences SET next_fencing_token=20 WHERE agent_id=?').run(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the original objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const transition=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'settings handoff requested',20000);
   assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'requested automatic handoff is quiet');
@@ -91,23 +92,25 @@ for(const concurrentChange of ['access','prompt'])test(`memory-enabled voice pre
   const notices=f.ok(await f.api('GET','/api/notifications'));
   assert.equal(notices.items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'owned automatic handoff never interrupts the user');
   const beforeRevocation=(await native.requests()).filter(x=>x.method==='turn/start').length;
-  const memory=localMemoryFor(f.app),validate=memory.validateTransitionReads;
-  const retainedOrigin=store.acceptedProviderSessionInput(agent.id).executionId;
-  let reached=false,release;const paused=new Promise(resolve=>release=resolve);
-  memory.validateTransitionReads=async function(...args){
-   if(args[2]===retainedOrigin&&!reached){reached=true;await paused;}
-   return validate.apply(this,args);
+  const memory=localMemoryFor(f.app),prepare=memory.prepareRetainedInputProof;
+  let checkedRun,release;const paused=new Promise(resolve=>release=resolve);
+  memory.prepareRetainedInputProof=async function(input){
+   const proof=await prepare.call(this,input);
+   if(input.agentId===agent.id&&!checkedRun){checkedRun=input.currentRunId;await paused;}
+   return proof;
   };
+  let racedVoice;
   try{
-   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Access changed; do not reuse old memory.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
-   await until(()=>reached,'retained generation read validation paused');
+   racedVoice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Access changed; do not reuse old memory.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
+   await until(()=>checkedRun,'retained generation proof paused before provider input');
    if(concurrentChange==='access')f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
    else f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Guidance changed while retained voice memory was being verified.'}));
-  }finally{release();memory.validateTransitionReads=validate;}
-  await until(()=>store.sqlite.prepare('SELECT 1 FROM context_rollovers WHERE agent_id=? AND id<>?').get(agent.id,transition.id),'changed access requires a new verified boundary',20000);
+  }finally{release();memory.prepareRetainedInputProof=prepare;}
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status IN ('failed','cancelled')").get(checkedRun),'stale retained input is refused',20000);
   const afterRevocation=(await native.requests()).filter(x=>x.method==='turn/start').slice(beforeRevocation);
   assert.ok(afterRevocation.every(turn=>!JSON.stringify(turn).includes('Access changed; do not reuse old memory.')),'changed access cannot reuse the old task context');
-  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' AND json_extract(payload_json,'$.dispatch.text')=?").get(agent.id,'Access changed; do not reuse old memory.'),'new work remains pending until its new boundary is verified');
+  const racedStatus=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${racedVoice.message.communicationEventId}/${agent.id}`));
+  assert.ok(!racedStatus.reply?.text,'no voice reply is published from the stale retained input');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,emitVoiceContextUsage:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -122,6 +125,7 @@ test('revoking memory during a managed handoff prevents the old summary from bei
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old-session handoff',20000);
@@ -148,6 +152,7 @@ test('revoking memory while replacement opens prevents the handoff from being su
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
   const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);assert.ok(rollover);
@@ -178,6 +183,7 @@ test('revoking memory while the managed voice reply streams invalidates publicat
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'handoff turn',20000);
   await native.sendAnswer('Original objective retained.');
@@ -208,6 +214,7 @@ test('interrupted managed handoff is not automatically replayed after restart',{
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
@@ -232,6 +239,7 @@ test('interrupted transition exposes one retained-input incident after restart',
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
@@ -262,7 +270,7 @@ test('model change after a memory read transfers the objective before queued wor
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Continue work using the selected model.');
   const turns=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old handoff',20000);
   assert.equal(turns[1].params.threadId,turns[0].params.threadId);
@@ -296,6 +304,7 @@ test('forgetting a previously read source during handoff prevents stale summary 
   const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory read');
   assert.ok(JSON.stringify(response).includes('Synthetic coral lighthouse source.'));
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated standing guidance requires a managed session transition.'}));
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
@@ -317,7 +326,7 @@ test('peer Request waits for the new model handoff and retains its exact assignm
   await f.send(agent.id,'Keep the original worker objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first worker turn');
   await native.sendTool('ponderosa_message',{text:'Initial research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next',role:'Updated standing instructions.'}));
   const coordination=new CoordinationV3Store(store.sqlite),request=coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,
    requesterAgentId:peer.id,actorScope:'user:local-operator',idempotencyKey:randomUUID(),
    requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'Peer assignment: compare the two synthetic results.'}}]}).requestIds[0];
@@ -388,7 +397,7 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
   await native.sendTool('ponderosa_message',{text:'First work complete.'});await f.settled(agent.id);
   const accepted=store.resumeSessionState(agent.id);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next',role:'Updated standing instructions.'}));
   await f.send(agent.id,'Continue the same objective using the new model.');
   const held=await until(()=>store.sqlite.prepare(`SELECT a.id FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
    WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'durable exact hold',20000);
@@ -946,7 +955,7 @@ test('working-folder mutation refusal retains context and retries the same commi
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
-test('restart during a working-folder handoff retains the exact choice and refuses replay or fresh fallback',{timeout:90000},async t=>{
+test('restart during a working-folder handoff can keep the verified original folder without replay',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Interrupted folder Save'),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
@@ -956,15 +965,47 @@ test('restart during a working-folder handoff retains the exact choice and refus
   await f.reopen();
   const held=await until(async()=>{const x=await folderStatus(f,agent.id);return x.workingCopyChange?.phase==='held'?x:undefined;},'interrupted Save retained',20000);
   assert.equal(held.workingCopy.id,before.workingCopy.id);assert.equal(held.workingCopyChange.rolloverId,saved.workingCopyChange.rolloverId);
-  assert.equal(held.workingCopyChange.canKeepCurrent,false,'uncertain handoff cannot be cancelled as unchanged');
-  assert.equal((await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{})).status,409);
-  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
-  await f.send(agent.id,'Do not replay the uncertain handoff.');
-  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+  assert.equal(held.workingCopyChange.canKeepCurrent,true,'the original folder is still verified');
+  const kept=f.ok(await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{}));
+  assert.equal(kept.workingCopyChange.phase,'kept_current');
+  assert.equal(kept.workingCopy.id,before.workingCopy.id);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2,'the old handoff is not replayed by recovery');
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_handoff'").get(agent.id).n,1);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
+
+test('a verified applied folder can be kept after the confirmation Run stops',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Stopped folder confirmation'),agent=await f.createIdleAgent(chat,'Worker');
+  await prepareFolderGit(f,store,chat);
+  const turns=async()=>(await native.requests()).filter(item=>item.method==='turn/start');
+  await f.send(agent.id,'Record completed context.');
+  await until(async()=>(await turns()).length===1,'initial turn');
+  await native.sendTool('ponderosa_message',{text:'Research recorded.'});await f.settled(agent.id);
+  const original=store.resumeSessionId(agent.id);
+  const saved=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  await until(async()=>(await turns()).length===2,'working-folder handoff');
+  await native.sendAnswer('The earlier research is complete.');
+  await until(async()=>(await turns()).length===3,'replacement confirmation');
+  const run=await until(()=>new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id),'confirmation Run');
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:run.id,idempotencyKey:randomUUID()}));
+  const status=await until(async()=>{
+   const current=await folderStatus(f,agent.id);
+   return current.workingCopyChange?.canUseFreshContext ? current : undefined;
+  },'new folder and cleanup verified');
+  assert.equal(status.workingCopy.mode,'separate_git');
+  const kept=f.ok(await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{freshContext:true}));
+  assert.equal(kept.workingCopyChange.freshContext,true);
+  assert.equal(kept.workingCopy.rootPath,status.workingCopy.rootPath);
+  assert.equal(store.resumeSessionId(agent.id),undefined);
+  await f.send(agent.id,'Start new work here.');
+  const next=await until(async()=>(await turns())[3],'new independent Run');
+  assert.notEqual(next.params.threadId,original);assert.match(JSON.stringify(next),/Start new work here/);
+  await native.sendTool('ponderosa_message',{text:'New work complete.'});
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
 
 test('dirty working-folder refusal can explicitly keep the unchanged folder and native context',{timeout:90000},async t=>{
  let store,native;await withFixture(t,async f=>{
@@ -1119,7 +1160,7 @@ test('message startup separates cold, warm and resumed acknowledgement phases',{
  t.diagnostic(JSON.stringify({controlledNative:true,realProvider:false,rows}));
 });
 
-for(const damage of ['tools','version','hash'])test(`incomplete retained ${damage} stays quiet and rechecks repaired exact evidence`,{timeout:60000},async t=>{
+for(const damage of ['tools','version','hash'])test(`incomplete retained ${damage} stays visible and rechecks repaired exact evidence`,{timeout:60000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Incomplete saved evidence'),agent=await f.createIdleAgent(chat,'Worker');await f.send(agent.id,'Original completed research.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first input');await native.sendTool('ponderosa_message',{text:'Research completed.'});await f.settled(agent.id);
@@ -1129,6 +1170,9 @@ for(const damage of ['tools','version','hash'])test(`incomplete retained ${damag
   f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'New controlled instructions.'}));await f.send(agent.id,'The exact remaining objective.');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id WHERE a.agent_id=? AND s.source_kind='settings_transition_reservation_wait'").get(agent.id),'safe internal reservation');
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'No unverified old-session submission');assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.agentId===agent.id&&['attention','urgent'].includes(item.severity)),false,'Incomplete evidence is not a user-repairable attention incident');
+  const notice = f.ok(await f.api('GET','/api/notifications')).items.find(item=>
+    item.agentId===agent.id&&item.workContext?.state==='contract_evidence_pending');
+  assert.equal(notice?.action?.kind,'open_agent','the evidence hold is visible with a way to inspect it');
   store.sqlite.prepare('UPDATE provider_inputs SET source_manifest_json=? WHERE execution_id=?').run(saved,packet.executionId);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'Changed exact evidence releases reservation for verified admission',15000);await native.sendAnswer('Research is complete; the remaining objective is open.');await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===3,'replacement confirmation');await native.sendAnswer('Continuity context received.');await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===4,'original task admitted once');await native.sendTool('ponderosa_message',{text:'Remaining objective completed.'});await f.settled(agent.id);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4,'No replay or duplicate task');

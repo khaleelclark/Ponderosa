@@ -106,6 +106,74 @@ test('passive next-Run communication uses the same acknowledged prompt authority
 });
 
 
+test('known steering refusals back off and eventually queue without consuming the message', t => {
+  const f = fixture(t);
+  f.injection();
+  const start = Date.now();
+  const now = offset => new Date(start+offset).toISOString();
+  const activationId = f.store.enqueueMessageActivation({
+    projectId:f.projectId, agentId:f.agentId, scopeKey:f.scopeKey, messageId:randomUUID(),
+    kind:'human', dispatchPolicy:'steer_or_run', payload:{text:'Retain exact input'}, now:now(0),
+  });
+  const state = () => f.sqlite.prepare('SELECT dispatch_policy,available_at,steering_deferrals,state FROM agent_activations WHERE id=?').get(activationId);
+  let elapsed = 0;
+  for (let attempt=0; attempt<6; attempt++) {
+    const lease = f.store.leaseNextSteering({workerId:'fixture',now:now(elapsed)});
+    assert.ok(lease);
+    f.store.preparePromptInjection({...lease,prompt:'Retain exact input',now:now(elapsed)});
+    f.store.deferSteering({...lease,retryDelayMs:500,preserveSteering:true,waitReason:'provider_not_ready',now:now(elapsed)});
+    assert.equal(state().steering_deferrals, attempt+1);
+    assert.equal(state().state, 'retry_pending');
+    assert.equal(state().available_at, now(elapsed+(attempt===5?500:500*2**attempt)));
+    elapsed = Date.parse(state().available_at)-start;
+  }
+  assert.equal(state().dispatch_policy, 'next_run');
+  assert.equal(f.store.leaseNextSteering({workerId:'fixture',now:now(elapsed)}), undefined);
+  assert.equal(f.sqlite.prepare("SELECT count(*) AS n FROM scheduler_prompt_injections WHERE kind='steer' AND state='cancelled'").get().n,6);
+  f.sqlite.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)").run(f.agentId);
+  f.store.completeRun(f.authorization.runId,f.authorization.fencingToken,now(elapsed));
+  assert.equal(state().state,'retry_pending');
+  const proof = {activationId, projectId:f.projectId, agentId:f.agentId, scopeKey:f.scopeKey};
+  assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true);
+  const prior = f.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE kind='steer' ORDER BY sequence LIMIT 1").get();
+  const rollback = Error('Restore the controlled refusal history');
+  assert.throws(() => f.sqlite.transaction(() => {
+    f.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='outcome_unknown' WHERE id=?").run(prior.id);
+    assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), false);
+    throw rollback;
+  })(), error => error === rollback);
+  assert.equal(f.store.steerPendingActivation({...proof, idempotencyKey:randomUUID(), now:now(elapsed)}).steered, true);
+  assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true, 'Steer from the queue preserves refusal evidence');
+  assert.ok(f.store.leaseNextRun({workerId:'fixture',now:now(elapsed)}).activationIds.includes(activationId));
+});
+
+test('offset deadlines and next-Run expiry compare as UTC without changing exact replay', t => {
+  const f = fixture(t);
+  const created = '2026-10-30T11:00:00.000Z', offset = '2026-10-30T10:00:00-08:00';
+  const input = {projectId:f.projectId,conversationId:f.conversationId,requesterAgentId:f.agentId,
+    actorScope:'user:local-operator',idempotencyKey:randomUUID(),now:created,
+    requests:[{recipientAgentId:f.otherAgentId,lifetime:{kind:'deadline',at:offset},payload:{text:'A timed request'}}],
+    join:{mode:'all',deadlineAt:offset}};
+  const {requestIds:[requestId],joinId} = f.store.coordinate(input,created);
+  assert.equal(f.store.coordinate(input,created).replayed,true);
+  const note = {projectId:f.projectId,conversationId:f.conversationId,publisherAgentId:f.agentId,
+    sourceRunId:f.authorization.runId,runAuthorization:f.authorization,steeringInjectionId:f.injection(),
+    idempotencyKey:randomUUID(),now:created,expiresAt:offset,recipientAgentIds:[f.otherAgentId],text:'A timed fact'};
+  assert.equal(f.store.publishAgentNextRunDelivery(note).delivery.expiresAt,'2026-10-30T18:00:00.000Z');
+  assert.equal(f.store.publishAgentNextRunDelivery(note).replayed,true);
+  const recipientState = () => f.sqlite.prepare('SELECT state FROM communication_v4_next_run_recipients').get().state;
+  f.store.maintainCommunicationV4NextRunDeliveries('2026-10-30T17:59:59.000Z');
+  assert.equal(recipientState(), 'pending');
+  f.store.expireDue('2026-10-30T17:59:59.000Z');
+  assert.notEqual(f.store.getRequest(requestId).state,'expired');
+  assert.equal(f.store.getJoin(joinId).state,'open');
+  f.store.expireDue('2026-10-30T18:00:00.000Z');
+  f.store.maintainCommunicationV4NextRunDeliveries('2026-10-30T18:00:00.000Z');
+  assert.equal(recipientState(), 'expired');
+  assert.equal(f.store.getRequest(requestId).state,'expired');
+  assert.notEqual(f.store.getJoin(joinId).state,'open');
+});
+
 test('current prompt identity does not relax operator-final delivery or communication scope requirements', t => {
   const f=fixture(t), turn=f.injection();
   assert.throws(()=>f.publish(turn,{taskDelivery:'final',payload:{text:'Unowned final',taskDelivery:'final'}}),/task delivery requires/);

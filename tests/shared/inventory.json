@@ -2569,6 +2569,13 @@
       "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
     },
     {
+      "path": "tests/providers/claude-model-fidelity.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; controlled Claude fixture"
+    },
+    {
       "path": "tests/providers/claude-native-compaction.test.mjs",
       "feature": "providers",
       "lane": "server",
@@ -2595,6 +2602,13 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built workspaces; controlled adapters, no provider or network"
+    },
+    {
+      "path": "tests/providers/terminal-tool-result.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; controlled provider events"
     },
     {
       "path": "tests/providers/typed-session-wiring.test.mjs",

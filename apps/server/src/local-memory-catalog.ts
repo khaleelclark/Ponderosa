@@ -2,7 +2,7 @@ const str={type:'string',minLength:1};const destination={type:'string',enum:['ch
 const guidance = {
  save: 'Store a fact in the explicit destination: chat for this Chat, global for installation-wide memory. Chat visibility defaults to team; private is same-Agent only and unsupported for global. A temporary agent copy may explicitly save a concise finding to its original Agent with recipient original, destination chat and private visibility; this does not start the original Agent.',
  update: 'Create a new physical version using a returned chunk_id and its destination. Existing-source read authority is required; retain the returned lineage.',
- forget: 'Forget a returned chunk_id in its destination. Existing-source read authority is required; this is not a hard delete.',
+ forget: 'Retire a returned chunk_id in its destination. The entry is excluded from recall, search, and new exports. Existing-source read authority is required. Permanent deletion is an operator action.',
  get: 'Fetch a returned physical chunk_id. Omit source to resolve across both authorized Chat and global memory; use source only to deliberately narrow the lookup.',
  search: 'Start with one search with source omitted: it searches both authorized Chat and global memory together. A missing or revoked global-read grant leaves Chat-only results; it does not prove global memory is empty. Do not issue separate Chat/global searches by default. Use returned scope and chunk_id for attribution and follow-up; do not infer provenance from result text.',
  history: 'Retrieve version lineage for a returned chunk_id. Omit source for both authorized scopes; use source only to deliberately narrow the lookup.',

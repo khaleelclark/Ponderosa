@@ -128,7 +128,10 @@ Use a private evidence directory (mode 0700). The successful command above
 removes only its own temporary decrypted/rehearsal tree. A failed run retains
 its private tree and incomplete archive for diagnosis; do not classify either
 as an expired restore point. Receipts and checksums are small and stay with the
-operations evidence. Historical archives without these receipts require a new
+operations evidence. For disposable full-backup attempts whose owner explicitly
+declines to retain partial bytes, pass `--discard-incomplete` to `data-directory
+backup`. It removes only the unpublished staging tree created by that invocation.
+Historical archives without these receipts require a new
 verified restore before they count as recovery points.
 
 For routine encrypted restore points, retain the newest three successfully
