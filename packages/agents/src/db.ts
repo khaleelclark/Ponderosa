@@ -1122,7 +1122,7 @@ export function initializeCurrentDatabase(sqlite: Database.Database): void {
 export function initializePredecessorSchema(sqlite: Database.Database, through: string): void {
   if (sqlite.name !== ":memory:" || hasApplicationSchema(sqlite) ||
       !schemaExtensions.includes(through as typeof schemaExtensions[number]) ||
-      through < "0027_schedule_work_lookup.sql") throw new Error("Invalid predecessor schema reconstruction");
+      through < "0024_asset_browser_metadata.sql") throw new Error("Invalid predecessor schema reconstruction");
   initializeDatabaseSchema(sqlite, through);
 }
 

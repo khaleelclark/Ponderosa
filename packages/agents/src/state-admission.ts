@@ -110,15 +110,14 @@ function expectedContract(budget = new StateReadBudget()): string {
 // Only exact published additive predecessors may upgrade online. Reconstruct
 // each from its ordered DDL prefix, so later extensions cannot contaminate it.
 const predecessorVersions = [
-  "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
+  "0024_asset_browser_metadata.sql", "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
   "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql", "0044_memory_scope_provisioning.sql", "0045_agent_import_submission_intents.sql", "0046_retained_coordination_cut_sources.sql", "0047_memory_exposure_receipts.sql",
   "0048_lifecycle_run_lookup.sql", "0050_coordination_retry_and_deadlines.sql",
 ] as const;
-// ui096 published 0027 before the native task-stop table was later added to
-// the launch baseline. Both signatures are exact finite schema shapes; no
-// existing database is altered while reconstructing either contract.
+// Pine Production 0024 and ui096 0027 predate native task stops in the
+// launch baseline. Reconstruct their exact layouts only in memory.
 const predecessorContracts = new Map<string, readonly string[]>();
 function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
   for (const version of predecessorVersions) {
@@ -130,11 +129,9 @@ function isPredecessorContract(actual: string, budget: StateReadBudget): boolean
         bindStateReadBudget(sqlite, budget);
         sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
         initializePredecessorSchema(sqlite, version); declareGeneration(sqlite);
-        const exact = [schemaSignature(sqlite)];
-        if (version === "0027_schedule_work_lookup.sql") {
-          // Only the audited ui096 0027 shape lacked this later table. Drop it
-          // solely from our private in-memory schema reconstruction; 0041 adds
-          // the table normally when a genuine predecessor is upgraded.
+        const exact = version === "0024_asset_browser_metadata.sql" ? [] : [schemaSignature(sqlite)];
+        if (version === "0024_asset_browser_metadata.sql" || version === "0027_schedule_work_lookup.sql") {
+          // Migration 0041 creates this table when the real database upgrades.
           const sql = "DROP TABLE native_task_stops";
           budget.statement(sql, []); budget.reserve(1); sqlite.exec(sql);
           exact.push(schemaSignature(sqlite));
