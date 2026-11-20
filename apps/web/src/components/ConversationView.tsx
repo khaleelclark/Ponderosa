@@ -950,14 +950,14 @@ export function ConversationView({
           }}
         >
           <ChatSurface
-            bottomPanel={!auditOnly && <Box>
-              <Stack spacing={0.5}>
-                <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId} />
-                <ChatWorkingAgents conversationId={conversationId} agents={identityAgents} healthByAgentId={healthByAgentId} />
-              </Stack>
-              <ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
-                focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />
-            </Box>}
+            overlay={!auditOnly && <Stack spacing={0.5} sx={{
+              position: "absolute", insetInline: 0, bottom: 2, zIndex: 2, pointerEvents: "none",
+            }}>
+              <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId} />
+              <ChatWorkingAgents conversationId={conversationId} agents={identityAgents} healthByAgentId={healthByAgentId} />
+            </Stack>}
+            bottomPanel={!auditOnly && <ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
+              focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />}
             latestAction={mainHistory.historical || focusMessageId && !focusMessageId.startsWith("decision:") ? {
               historical: Boolean(mainHistory.historical),
               onClick: () => {

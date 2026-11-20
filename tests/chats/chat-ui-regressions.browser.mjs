@@ -19,6 +19,7 @@ try {
   const live = await f.createChat('Working Agents fixture');
   const lead = await f.createIdleAgent(live, 'Lead');
   const worker = await f.createIdleAgent(live, 'Reviewer');
+  const longWorker = await f.createIdleAgent(live, 'A Reviewer With A Longer Display Name');
   const history = await f.createChat(longTitle);
   const seed = seedQualificationHistory(store, history, 225);
   browser = await chromium.launch({
@@ -59,7 +60,14 @@ try {
 
   f.plans.set(worker.id, [{ hold: true }]);
   await f.tool(f.sessions.get(lead.id), 'ponderosa_coordinate', { recipientAgentId: worker.id, text: 'Review the fixture' });
-  await desktop.getByRole('button', { name: '2 agents are working', exact: true }).waitFor();
+  await desktop.getByRole('button', { name: /^(?:Lead, Reviewer|Reviewer, Lead) are working$/ }).waitFor();
+  f.plans.set(longWorker.id, [{ hold: true }]);
+  await f.tool(f.sessions.get(lead.id), 'ponderosa_coordinate', { recipientAgentId: longWorker.id, text: 'Review the fixture too' });
+  const allNames = desktop.getByRole('button', { name: /^(?=.*Lead)(?=.*Reviewer)(?=.*Longer Display Name).* are working$/ });
+  await allNames.waitFor();
+  const transcript = await desktop.getByRole('region', { name: 'Chat Messages' }).boundingBox();
+  const pill = await allNames.boundingBox();
+  assert.ok(pill.y + pill.height <= transcript.y + transcript.height, 'The pill overlays the transcript instead of reserving a row');
 
   const sample = (await detail()).messages.find(message => message.deliveryReceipts?.length);
   await phone.route(url => url.pathname === endpoint(live), async route => {
@@ -77,11 +85,18 @@ try {
   });
   await go(phone, chatPath(live));
   await phone.getByRole('button', { name: 'Codex is temporarily unavailable. Details' }).waitFor();
-  const phoneWorking = phone.getByRole('button', { name: '2 agents are working', exact: true });
+  const phoneWorking = phone.getByRole('button', { name: /^(?:Lead, Reviewer|Reviewer, Lead) \+1 are working$/ });
+  await phoneWorking.waitFor();
+  assert.ok(await phoneWorking.locator(':scope > span').first().evaluate(label => label.scrollWidth <= label.clientWidth));
   await phoneWorking.tap();
   const tooltip = phone.getByRole('tooltip');
   await tooltip.getByText(/Reviewer — Working/).waitFor();
   await tooltip.getByText(/Lead — Working/).waitFor();
+  await tooltip.getByText(/Longer Display Name — Working/).waitFor();
+  await desktop.setViewportSize({ width: 390, height: 900 });
+  await desktop.getByRole('button', { name: /\+1 are working$/ }).waitFor();
+  await desktop.setViewportSize({ width: 1328, height: 900 });
+  await allNames.waitFor();
 
   const old = seed.messageIds[44];
   const oldLink = chatPath(history) + '?message=' + encodeURIComponent(old);
@@ -89,7 +104,7 @@ try {
   const latest = desktop.locator('#master-message-' + seed.lastId);
   const historyWindowButton = desktop.getByRole('button', { name: 'Return to Latest', exact: true });
   await historyWindowButton.waitFor();
-  assert.equal(await desktop.getByRole('button', { name: '2 agents are working', exact: true }).count(), 0);
+  assert.equal(await allNames.count(), 0);
   assert.equal(await latest.count(), 0);
   assert.equal(await desktop.getByRole('button', { name: 'Jump To Latest Message', exact: true }).count(), 0);
   await historyWindowButton.click();

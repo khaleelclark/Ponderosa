@@ -78,7 +78,7 @@ function load(relative, imports = {}, globals = {}) {
 function hooks() {
   const state = []; let index = 0;
   const useState = initial => { const i = index++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value; }]; };
-  return { react: { ...React, useState, useRef: value => useState(() => ({ current: value }))[0], useEffect() {}, useMemo: fn => fn() }, render(fn) { index = 0; return fn(); } };
+  return { react: { ...React, useState, useRef: value => useState(() => ({ current: value }))[0], useEffect() {}, useLayoutEffect() {}, useMemo: fn => fn() }, render(fn) { index = 0; return fn(); } };
 }
 function* walk(node) {
   if (!React.isValidElement(node)) return;
