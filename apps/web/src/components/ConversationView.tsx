@@ -897,6 +897,8 @@ export function ConversationView({
         minWidth: 0,
         display: "grid",
         gridTemplateRows: "auto minmax(0, 1fr) auto",
+        "& > [data-workspace-header] h1.MuiTypography-h6": { fontSize: "1.25rem" },
+        "& > [data-workspace-header] h1.MuiTypography-body2": { fontSize: "0.8125rem" },
       }}
     >
       <ConversationHeader
