@@ -56,6 +56,15 @@ interface RuntimeEventAuthorityContext {
   coordinationV3LeaseMs: number;
 }
 
+export function backgroundTasksPending(run: ActiveRun, now: number): boolean {
+  try {
+    const observedAt = run.runtimeSession?.backgroundTasksObservedAt?.();
+    return observedAt !== undefined && observedAt <= now && now - observedAt < 15_000;
+  } catch {
+    return false;
+  }
+}
+
 export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContext) {
   const {
     opts,
@@ -273,8 +282,14 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       let alive = false;
       try { alive = run.runtimeSession?.isAlive() === true; } catch { /* failed liveness checks do not renew */ }
       if (!alive) return;
-      if (run.ownershipState === "running" &&
-          executionLeaseNow() - Date.parse(run.lastEventReceivedAt ?? run.startedAt) >= executionLeaseMs) {
+      const now = executionLeaseNow();
+      if (backgroundTasksPending(run, now)) {
+        if (run.ownershipState === "stalled") {
+          transitionRun(agentId, run, "running");
+          resolveSilenceNotice(run);
+        }
+      } else if (run.ownershipState === "running" &&
+          now - Date.parse(run.lastEventReceivedAt ?? run.startedAt) >= executionLeaseMs) {
         try {
           const agent = store.getAgent(agentId);
           context.createOperationalNotification({

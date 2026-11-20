@@ -23,6 +23,7 @@ import type {
 import { createHash } from "node:crypto";
 import { communicationMentionBindings } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
+import { backgroundTasksPending } from "./runtime-event-authority.js";
 import { independentProviderSwitchInput, interruptedProviderSwitch } from "./context-transition-admission.js";
 import { sqliteCollectionPage } from "./collection-page.js";
 import { withDecisionRecipient } from "./decision-presentation.js";
@@ -750,7 +751,7 @@ export function createServerReadModels(context: ReadModelContext) {
       if (run.ownershipState !== "running" || !run.lastEventReceivedAt) continue;
       const received = Date.parse(run.lastEventReceivedAt);
       const persisted = run.lastEventPersistedAt ? Date.parse(run.lastEventPersistedAt) : 0;
-      if (received > persisted && now - received >= runtimeStallAfterMs) transitionRun(agentId, run, "stalled");
+      if (received > persisted && now - received >= runtimeStallAfterMs && !backgroundTasksPending(run, now)) transitionRun(agentId, run, "stalled");
     }
   }
 
@@ -771,6 +772,7 @@ export function createServerReadModels(context: ReadModelContext) {
         schedulerRunId: run.v3SchedulerRunId,
         leaseExpiresAt: run.leaseExpiresAt,
         ownershipState: run.ownershipState,
+        backgroundTasksPending: backgroundTasksPending(run, Date.now()),
       }]),
     );
     for (const agent of agents) {

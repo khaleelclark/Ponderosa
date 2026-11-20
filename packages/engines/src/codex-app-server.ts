@@ -527,6 +527,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private nativeTaskReceiptSeen = false;
   private readonly nativeTaskItems = new Map<string,string>();
   private nativeTaskHold = false;
+  private terminalCheckAt?: number;
   private closingNativeTasks = false;
   private activeTurnId?: string;
   private observedTurnStarts = 0;
@@ -1214,11 +1215,16 @@ export class CodexAppServerSession implements RuntimeSession {
     this.contextUsageGate.observe();
   }
 
+  backgroundTasksObservedAt(): number | undefined {
+    return this.nativeTaskHold && !this.closingNativeTasks ? this.terminalCheckAt : undefined;
+  }
+
   private async *retainBackgroundTasks(): AsyncIterable<AgentEvent> {
     this.nativeTaskHold = true;
     const observed = new Map<string, string>();
     while (!this.closingNativeTasks && this.isAlive()) {
       const tasks = await this.listNativeTasks();
+      this.terminalCheckAt = tasks.length ? Date.now() : undefined;
       const current = new Set(tasks.map(task => task.taskKey));
       // The JSON task key is not a valid AgentEvent identifier; its hash is.
       const workItemId = (key: string) => `native:${createHash("sha256").update(key).digest("hex")}`;
@@ -1408,6 +1414,7 @@ export class CodexAppServerSession implements RuntimeSession {
         if (event.type === "turn_done" && this.nativeTaskReceiptSeen) {
           try { yield* this.retainBackgroundTasks(); }
           catch {
+            this.terminalCheckAt = undefined;
             const closing = this.close();
             void closing.catch(() => undefined);
             yield { type: "error", terminalStatus: "unknown", message: "Native terminal inventory could not establish completion; source outcome held without replay" };

@@ -40,6 +40,7 @@ export interface ProviderBlockedWorkDto {
 
 export type AgentOperationalReason =
   | AgentLifecycleReason
+  | "waiting_on_background_tasks"
   | "pending_user_decision"
   | "run_preparing"
   | "provider_capacity_unavailable"

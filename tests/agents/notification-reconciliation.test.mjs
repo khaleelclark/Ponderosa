@@ -406,6 +406,7 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  const run={startedAt:agent.updatedAt,executionId:'execution',v3SchedulerRunId:'scheduler',ownershipState:'running',leaseExpiresAt:new Date(now+3600000).toISOString()};
  const activeRuns=new Map([[agent.id,run]]),persisted=[],published=[];
  const authority=createRuntimeEventAuthority({opts:{},activeRuns,store:{appendEvent:(id,event)=>{persisted.push({id,event});return {...event,ts:new Date().toISOString()}}},
+  resolveOperationalNotification:()=>{},
   ownsActiveRunForAuditDrain:(id,current)=>activeRuns.get(id)===current,publish:(id,event)=>published.push({id,event})});
  const models=createServerReadModels({activeRuns,scheduledSessionRollovers:new Map(),runtimeStallAfterMs:30000,
   workspace:{listDecisions:()=>[]},store:{latestHealthObservation:()=>undefined,getRunHealthSummaries:()=>[],activeExecutionPhase:()=>undefined,uncertainProviderContextRecoveryBoundary:()=>undefined},
@@ -414,18 +415,53 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  const health=()=>models.agentHealth({type:'project',id:'project'},[agent]).agents[0];
  assert.equal(authority.receiveRuntimeEvent(agent.id,run),true);
  t.mock.timers.setTime(now+29999);assert.equal(health().status,'running');
- t.mock.timers.setTime(now+30000);const stalled=health();
+ t.mock.timers.setTime(now+30000);
+ const observedAt=Date.now();
+ run.runtimeSession={backgroundTasksObservedAt:()=>observedAt};
+ assert.equal(health().status,'waiting');
+ assert.equal(health().reason,'waiting_on_background_tasks');
+ assert.equal(health().runtimeActivity,undefined);
+ assert.equal(run.ownershipState,'running');
+ t.mock.timers.setTime(now+45000);const stalled=health();
  assert.equal(stalled.status,'stalled');assert.equal(stalled.reason,'runtime_event_consumer_stalled');
  assert.equal(stalled.attention.reason,'runtime_event_consumer_stalled');assert.equal(stalled.executionId,'execution');
  assert.equal(run.ownershipState,'stalled');assert.equal(persisted.length,0,'health cannot invent provider output or finish the task');
  await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'Controlled input',executionId:'execution'});
  assert.equal(persisted.length,1);assert.equal(published.length,1);assert.equal(health().status,'running');
- assert.equal(run.ownershipState,'running');assert.equal(run.lastEventPersistedAt,new Date(now+30000).toISOString());
+ assert.equal(run.ownershipState,'running');assert.equal(run.lastEventPersistedAt,new Date(now+45000).toISOString());
  // Quiet native commands are not proof of a blocked event consumer.
  t.mock.timers.setTime(now+360000);assert.equal(health().status,'running');assert.equal(persisted.length,1);
  run.ownershipState='cancelling';assert.equal(authority.receiveRuntimeEvent(agent.id,run),false);
  assert.equal(await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'late',executionId:'execution'}),undefined);
  assert.equal(persisted.length,1);
+});
+
+test('provider liveness distinguishes confirmed background tasks from silence', t => {
+ const startedAt = Date.parse('2030-01-01T00:00:00Z');
+ t.mock.timers.enable({apis:['Date'],now:startedAt+360000});
+ let observedAt=Date.now(), heartbeat, silenceNotices=0;
+ const run={startedAt:new Date(startedAt).toISOString(),executionId:'execution',ownershipState:'running',
+  runtimeSession:{isAlive:()=>true,backgroundTasksObservedAt:()=>observedAt}};
+ const authority=createRuntimeEventAuthority({
+  activeRuns:new Map([['agent',run]]),store:{getAgent:()=>undefined},
+  ownsActiveRunForAuditDrain:()=>true,isClosed:()=>false,executionLeaseNow:Date.now,
+  executionHeartbeatMs:20000,executionLeaseMs:360000,leaseExpiry:()=>new Date(Date.now()+360000).toISOString(),
+  setExecutionLeaseTimer:(callback,delay)=>{if(delay===20000)heartbeat=callback;return {};},
+  clearExecutionLeaseTimer:()=>{},createOperationalNotification:()=>{silenceNotices++;},
+  resolveOperationalNotification:()=>{silenceNotices--;}
+ });
+ authority.scheduleRuntimeLivenessHeartbeat('agent',run);
+ heartbeat();
+ assert.equal(run.ownershipState,'running');
+ assert.equal(silenceNotices,0);
+ t.mock.timers.setTime(observedAt+20000);
+ heartbeat();
+ assert.equal(run.ownershipState,'stalled');
+ assert.equal(silenceNotices,1);
+ observedAt=Date.now();
+ heartbeat();
+ assert.equal(run.ownershipState,'running');
+ assert.equal(silenceNotices,0);
 });
 
 // Offline canonical stores and a fake sender; no provider or push service.

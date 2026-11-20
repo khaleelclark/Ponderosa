@@ -11,7 +11,7 @@ import type {
   AgentRunDto,
 } from "@ponderosa/core";
 
-export interface ActiveRunObservation { conversationId?: string; startedAt: string; lastActivityAt?: string; executionId?: string; schedulerRunId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
+export interface ActiveRunObservation { backgroundTasksPending?: boolean; conversationId?: string; startedAt: string; lastActivityAt?: string; executionId?: string; schedulerRunId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface PreparingRunObservation {
   runId: string;
   status: string;
@@ -94,6 +94,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (active?.leaseExpiresAt && active.leaseExpiresAt < generatedAt) {
       observation = { status: "blocked", statusTimestamp: active.leaseExpiresAt, reason: "execution_lease_expired" };
     }
+    else if (active?.ownershipState === "running" && active.backgroundTasksPending) observation = { status: "waiting", statusTimestamp: active.startedAt, reason: "waiting_on_background_tasks" };
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
     else if (preparing) observation = preparing.promptInjectionState === "injected" || preparing.status === "running"
@@ -133,7 +134,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
           ...(active.schedulerRunId ? { schedulerRunId: active.schedulerRunId } : {}),
         };
       }
-    } else if (observation.status === "waiting") {
+    } else if (observation.status === "waiting" && observation.reason !== "waiting_on_background_tasks") {
       phase = input.waitingPhase?.(agent.id);
     }
     return {
@@ -152,7 +153,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       } : active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),
       ...(active?.ownershipState && ["running", "stalled", "cancelling", "interrupted"].includes(active.ownershipState)
         ? { runtimeOwnership: active.ownershipState as "running" | "stalled" | "cancelling" | "interrupted" } : {}),
-      ...(active && (active.ownershipState === undefined || active.ownershipState === "running") && active.executionId
+      ...(active && observation.reason !== "waiting_on_background_tasks" && (active.ownershipState === undefined || active.ownershipState === "running") && active.executionId
         ? { runtimeActivity: { state: "responding" as const, executionId: active.executionId, startedAt: active.startedAt, ...(active.conversationId ? { conversationId: active.conversationId } : {}), ...(active.lastActivityAt ? { lastActivityAt: active.lastActivityAt } : {}) } }
         : {}),
       ...(providerBlocked ? { providerBlocked } : {}),
