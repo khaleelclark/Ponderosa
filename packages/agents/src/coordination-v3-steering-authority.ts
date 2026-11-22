@@ -411,6 +411,7 @@ export class CoordinationV3SteeringAuthority {
     fencingToken: number;
     retryDelayMs?: number;
     preserveSteering?: boolean;
+    activeTurnRefusedSteering?: boolean;
     waitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
     now?: string;
   }): void {
@@ -449,10 +450,12 @@ export class CoordinationV3SteeringAuthority {
           const unsupportedPeer = input.waitReason === "provider_unsupported" &&
             (activation.kind === "coordination_request" || activation.kind === "ordinary_message" ||
               (activation.kind === "urgent_message" && activation.prompt_class !== "human"));
-          const exhausted = activation.steering_deferrals >= 5;
+          const retryActiveTurn = input.activeTurnRefusedSteering === true &&
+            activation.kind === "human_message" && activation.prompt_class === "human";
+          const exhausted = activation.steering_deferrals >= 5 && !retryActiveTurn;
           const keepSteering = !activation.scheduled && !unsupportedPeer && !exhausted && input.preserveSteering === true;
           const delay = keepSteering
-            ? Math.min(30_000, Math.max(500, input.retryDelayMs ?? 0) * 2 ** activation.steering_deferrals)
+            ? Math.min(30_000, Math.max(500, input.retryDelayMs ?? 0) * 2 ** Math.min(6, activation.steering_deferrals))
             : input.retryDelayMs ?? 0;
           update.run(keepSteering ? 1 : 0, new Date(Date.parse(now) + delay).toISOString(), now,
             input.waitReason ?? null, activation.id);

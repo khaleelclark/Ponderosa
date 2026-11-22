@@ -1175,6 +1175,7 @@ export class CoordinationV3Store {
   deferSteering(input: {
     injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number;
     preserveSteering?: boolean; now?: string;
+    activeTurnRefusedSteering?: boolean;
     waitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
   }): void {
     this.steeringAuthority.deferSteering(input);

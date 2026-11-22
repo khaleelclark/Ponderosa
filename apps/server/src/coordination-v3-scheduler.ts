@@ -6,6 +6,7 @@ export interface CoordinationV3DispatchResult {
   retryable?: boolean;
   /** Keep steer-or-run semantics instead of silently converting to Queue. */
   retrySteering?: boolean;
+  activeTurnRefusedSteering?: boolean;
   steeringWaitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
   terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
   outcomeUnknown?: boolean;
@@ -455,6 +456,7 @@ export class CoordinationV3Scheduler {
           fencingToken: steering.fencingToken,
           retryDelayMs: result.retryable === false ? 30_000 : 500,
           preserveSteering: result.retrySteering === true,
+          activeTurnRefusedSteering: result.activeTurnRefusedSteering,
           waitReason: result.steeringWaitReason,
         });
       } catch (error) {

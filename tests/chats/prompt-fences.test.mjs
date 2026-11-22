@@ -106,7 +106,11 @@ test('passive next-Run communication uses the same acknowledged prompt authority
 });
 
 
-test('known steering refusals back off and eventually queue without consuming the message', t => {
+for (const activeTurnRefusedSteering of [false, true]) test(
+  activeTurnRefusedSteering
+    ? 'an unsteerable active turn keeps human Steer eligible and ends its backoff on completion'
+    : 'known steering refusals back off and eventually queue without consuming the message',
+  t => {
   const f = fixture(t);
   f.injection();
   const start = Date.now();
@@ -117,22 +121,26 @@ test('known steering refusals back off and eventually queue without consuming th
   });
   const state = () => f.sqlite.prepare('SELECT dispatch_policy,available_at,steering_deferrals,state FROM agent_activations WHERE id=?').get(activationId);
   let elapsed = 0;
-  for (let attempt=0; attempt<6; attempt++) {
+  const attempts = activeTurnRefusedSteering ? 8 : 6;
+  for (let attempt=0; attempt<attempts; attempt++) {
     const lease = f.store.leaseNextSteering({workerId:'fixture',now:now(elapsed)});
     assert.ok(lease);
     f.store.preparePromptInjection({...lease,prompt:'Retain exact input',now:now(elapsed)});
-    f.store.deferSteering({...lease,retryDelayMs:500,preserveSteering:true,waitReason:'provider_not_ready',now:now(elapsed)});
+    f.store.deferSteering({...lease,retryDelayMs:500,preserveSteering:true,activeTurnRefusedSteering,waitReason:'provider_not_ready',now:now(elapsed)});
     assert.equal(state().steering_deferrals, attempt+1);
     assert.equal(state().state, 'retry_pending');
-    assert.equal(state().available_at, now(elapsed+(attempt===5?500:500*2**attempt)));
+    const delay = !activeTurnRefusedSteering && attempt===5 ? 500 : Math.min(30_000, 500*2**attempt);
+    assert.equal(state().available_at, now(elapsed+delay));
     elapsed = Date.parse(state().available_at)-start;
   }
-  assert.equal(state().dispatch_policy, 'next_run');
-  assert.equal(f.store.leaseNextSteering({workerId:'fixture',now:now(elapsed)}), undefined);
-  assert.equal(f.sqlite.prepare("SELECT count(*) AS n FROM scheduler_prompt_injections WHERE kind='steer' AND state='cancelled'").get().n,6);
+  assert.equal(state().dispatch_policy, activeTurnRefusedSteering ? 'steer_or_run' : 'next_run');
+  if (!activeTurnRefusedSteering) assert.equal(f.store.leaseNextSteering({workerId:'fixture',now:now(elapsed)}), undefined);
+  assert.equal(f.sqlite.prepare("SELECT count(*) AS n FROM scheduler_prompt_injections WHERE kind='steer' AND state='cancelled'").get().n,attempts);
   f.sqlite.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)").run(f.agentId);
+  if (activeTurnRefusedSteering) elapsed -= 29_999;
   f.store.completeRun(f.authorization.runId,f.authorization.fencingToken,now(elapsed));
   assert.equal(state().state,'retry_pending');
+  assert.equal(state().available_at,now(elapsed));
   const proof = {activationId, projectId:f.projectId, agentId:f.agentId, scopeKey:f.scopeKey};
   assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true);
   const prior = f.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE kind='steer' ORDER BY sequence LIMIT 1").get();
@@ -142,8 +150,10 @@ test('known steering refusals back off and eventually queue without consuming th
     assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), false);
     throw rollback;
   })(), error => error === rollback);
-  assert.equal(f.store.steerPendingActivation({...proof, idempotencyKey:randomUUID(), now:now(elapsed)}).steered, true);
-  assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true, 'Steer from the queue preserves refusal evidence');
+  if (!activeTurnRefusedSteering) {
+    assert.equal(f.store.steerPendingActivation({...proof, idempotencyKey:randomUUID(), now:now(elapsed)}).steered, true);
+    assert.equal(f.store.settingsTransitionUnsubmittedActivation(proof), true, 'Steer from the queue preserves refusal evidence');
+  }
   assert.ok(f.store.leaseNextRun({workerId:'fixture',now:now(elapsed)}).activationIds.includes(activationId));
 });
 

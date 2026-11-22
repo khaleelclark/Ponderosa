@@ -523,6 +523,7 @@ return new CoordinationV3Scheduler(
             accepted: false,
             retryable: true,
             retrySteering: true,
+            activeTurnRefusedSteering: result.status === "not_steerable",
             error: result.status,
             steeringWaitReason: result.status === "unsupported" ? "provider_unsupported" : "provider_not_ready",
           };

@@ -25,7 +25,7 @@ test('a proven pre-write refusal uses the existing scheduler queue', {timeout:15
  }});
 });
 
-test('a refused human Steer starts the same message once after the old Run completes', {timeout:15000}, async t => {
+for (const status of ['not_active', 'not_steerable']) test(`a human Steer refused as ${status} starts once after the old Run completes`, {timeout:15000}, async t => {
   let store;
   await withFixture(t, async f => {
     const chat = await f.createChat('Refused human Steer');
@@ -42,6 +42,20 @@ test('a refused human Steer starts the same message once after the old Run compl
       return receipt?.steeringWaitReason === 'provider_not_ready' && receipt;
     }, 'provider declined the steer');
     assert.equal(ref.providerAcknowledged, undefined);
+    if (status === 'not_steerable') {
+      const activation = () => store.sqlite.prepare(
+        "SELECT state, dispatch_policy, steering_deferrals FROM agent_activations WHERE id=?",
+      ).get(ref.activationId);
+      for (let attempts = 2; attempts <= 7; attempts++) {
+        store.sqlite.prepare("UPDATE agent_activations SET available_at=? WHERE id=?")
+          .run(new Date().toISOString(), ref.activationId);
+        const deferred = await until(() => {
+          const row = activation();
+          return row.state === 'retry_pending' && row.steering_deferrals >= attempts && row;
+        }, 'active turn declined another attempt');
+        assert.equal(deferred.dispatch_policy, 'steer_or_run');
+      }
+    }
     f.plans.set(agent.id, [{hold:true}]);
     oldSession.finish();
 
@@ -55,7 +69,7 @@ test('a refused human Steer starts the same message once after the old Run compl
     f.sessions.get(agent.id).finish();
   }, {
     storeFactory: dataDir => (store = new AgentStore(dataDir)),
-    steeringResponse: async () => ({status:'not_active'}),
+    steeringResponse: async () => ({status}),
   });
 });
 
