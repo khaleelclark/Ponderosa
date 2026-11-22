@@ -7,17 +7,18 @@ import '../shared/web-typescript-loader.mjs';
 const require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
 const ts=require('typescript'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
 const {branchScriptFailureSummary}=require('@ponderosa/core');
+const {createHash}=require('node:crypto');
 const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
 const {ChatMessageBody}=await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const presentation=await import('../../apps/web/src/components/branches/executionPresentation.ts');
-const {previewBranchExecutionActions}=await import('../../apps/server/src/branch-detail-preview.ts');
+const {previewBranchExecutionActions,previewBranchExecutionDetail}=await import('../../apps/server/dist/branch-detail-preview.js');
 const source=await readFile(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8');
 
 function fixture({actions=[],state='waiting',output='Result with the complete original wording.\nSecond line.',savedView,operationsState='waiting_human',executionPatch={}}={}){
  const execution={...executionPatch,id:'run-a',branchId:'branch-a',versionId:'saved-version',bindingRevisionId:'binding',occurrenceKey:'manual-intent',input:'Original input',inputHash:'input-hash',state,revision:7,createdAt:'2026-10-26T12:00:00Z',updatedAt:'2026-10-26T12:01:00Z',output,admissionSource:'manual'};
  const step={id:'recent-step',executionId:execution.id,stepId:'review',pathId:'recent-path',invocation:1,state:'completed',input:'Step input'};
  const detail={execution,steps:[step],attempts:[],gates:[],paths:[],resources:[],decisions:[],waits:[]};
- const operations={executionId:execution.id,state:operationsState,label:'Needs Your Review',observedAt:execution.updatedAt,counts:{completed:1,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0};
+ const operations={executionId:execution.id,revision:execution.revision,state:operationsState,label:'Needs Your Review',observedAt:execution.updatedAt,counts:{completed:1,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0};
  const actionPage={executionId:execution.id,revision:7,generation:'checkpoint-7',items:actions};
  const effects=[],slots=[],queries=new Map(),buttons=[],disclosures=[],fields=[],mutations=[],requests=[],focused=[],refetches=[],reviewChildren=[],viewStates=new Map(savedView?[[execution.id,savedView]]:[]),invalidations=[];
  let slot=0,transport=async()=>({}),queryPatch={};
@@ -27,7 +28,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='TextField')fields.push(props);
   if(name==='Box'&&props.component==='details')disclosures.push(props);
   const tag=props.component??(name==='Button'?'button':name==='Typography'?'span':'div');
-  return React.createElement(tag,{...(props.id?{id:props.id}:{}),...(props.role?{role:props.role}:{}),...(props['aria-label']?{'aria-label':props['aria-label']}:{}),...(tag==='details'?{open:props.open}:{}),...(props.disabled?{disabled:true}:{})},props.children,name==='Alert'?props.action:null);
+  return React.createElement(tag,{...(props.id?{id:props.id}:{}),...(props.href?{href:props.href}:{}),...(props.label?{'data-label':props.label}:{}),...(props.role?{role:props.role}:{}),...(props['aria-label']?{'aria-label':props['aria-label']}:{}),...(tag==='details'?{open:props.open}:{}),...(props.disabled?{disabled:true}:{})},props.children,name==='Alert'?props.action:null);
  };
  const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Button','Chip','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,primitive(name)]));
  const query=options=>{
@@ -44,6 +45,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name.startsWith('@mui/icons-material/'))return {default:()=>null};
   if(name==='../../clientId')return {createClientId:()=> 'same-command'};
   if(name==='../../branchesRouting')return {branchRoutePath:route=>'/branches?'+new URLSearchParams(Object.entries(route))};
+  if(name==='../../api/productScope')return {productApiPath:path=>path};
   if(name==='../../api/types')return {ApiRequestError};
   if(name==='../../api/real')return {requestJson:async(path,options)=>{requests.push({path,options});return transport(path,options)}};
   const reviews={'./BranchRuntimePackageReview':'BranchRuntimeOwnerReadback','./BranchHistoryReview':'BranchHistoryReview','./BranchDisclosureReview':'BranchDisclosureReview','./BranchGroupReview':'BranchGroupReview','./BranchResourceReview':'BranchResourceReview'};
@@ -97,10 +99,13 @@ test('UI030: an accepted Skip shows one Stopping status, no Cancel or step decis
 });
 const buttonOrUndefined=(f,label)=>{try{return f.button(label)}catch{return undefined}};
 test('Inspect Details opens and focuses the exact older invocation and enables its existing evidence query',()=>{
- const f=fixture({actions:[olderAttempt({unknown:true})]});f.render();f.button('Inspect Details').onClick();const html=f.render();
+ const f=fixture({actions:[olderAttempt({unknown:true})]});f.render();f.button('Inspect Details').onClick({currentTarget:{focus(){}}});
+ const panel=f.render();
+ assert.match(panel,/aria-label="Step details"/);assert.equal(f.disclosures[0].open,false);
+ f.button('Inspect Technical Details').onClick();const html=f.render();
  assert.equal(f.disclosures[0].open,true);assert.match(html,/Pinned Run Graph And Accessible Outline/);assert.match(html,/Load Older Evidence/);assert.match(html,/Run ID: run-a/);assert.match(html,/branch-step-older-step/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,true);assert.deepEqual(Array.from(f.queries.get('branch-step-evidence').queryKey),['branch-step-evidence','run-a','older-step']);
- assert.deepEqual(f.focused,['branch-step-older-step','focus:branch-step-older-step']);
+ assert.deepEqual(f.focused,['branch-summary-step','focus:branch-summary-step','branch-step-older-step','focus:branch-step-older-step']);
  f.disclosures[0].onToggle({currentTarget:{open:false}});f.render();assert.equal(f.queries.get('branch-step-evidence').enabled,false);
 });
 
@@ -124,7 +129,7 @@ test('required action and status loading never become an empty or completed asse
 });
 
 test('budget and provider controls use canonical run ownership without changing or starting work',()=>{
- const f=fixture({operationsState:'provider_unavailable'});f.operations.label='Provider Unavailable';f.execution.budgetWait={kind:'execution_budget',branchId:'called-branch'};
+ const f=fixture({operationsState:'provider_attention'});f.operations.label='Provider needs attention';f.execution.budgetWait={kind:'execution_budget',branchId:'called-branch'};
  const html=f.render();assert.match(html,/Waiting For Budget/);assert.ok(f.button('Open Provider Settings'));f.button('Budget Settings').onClick();assert.deepEqual(f.focused,['budget:called-branch']);assert.equal(f.requests.length,0);assert.equal(f.disclosures[0].open,false);
 });
 
@@ -168,7 +173,7 @@ test('exceptionally large joined results reuse shared progressive expansion whil
 
 test('opening diagnostics preserves raw Script evidence, receipts, resolved decisions and existing full evidence route',()=>{
  const action=olderAttempt({unknown:true}),f=fixture({actions:[action]});f.detail.resources=[{stepExecutionId:'older-step',agentIds:['agent-a'],state:'cleanup_pending',error:'Cleanup must finish'}];f.detail.gates=[{id:'resolved',state:'resolved',prompt:'Recorded approval',resolution:{decision:'approve',output:'Accepted exact result'}}];
- f.render();f.button('Inspect Details').onClick();f.setQuery('branch-step-evidence',{data:{stepExecutionId:'older-step',input:'Exact input Ω',attempts:[{...action.attempt,scriptEvidence:{runtime:'Node.js',code:7,stderr:'Exact stderr Ω',stdout:'Exact stdout 🙂',cwd:'/owned-fixture',finishedAt:f.execution.updatedAt}}],sealedResult:{id:'seal',terminalAttemptId:'old-attempt',contentHash:'sealed-hash'}},isPending:false});
+ f.render();f.button('Inspect Details').onClick({currentTarget:{focus(){}}});f.render();f.button('Inspect Technical Details').onClick();f.setQuery('branch-step-evidence',{data:{stepExecutionId:'older-step',input:'Exact input Ω',attempts:[{...action.attempt,scriptEvidence:{runtime:'Node.js',code:7,stderr:'Exact stderr Ω',stdout:'Exact stdout 🙂',cwd:'/owned-fixture',finishedAt:f.execution.updatedAt}}],sealedResult:{id:'seal',terminalAttemptId:'old-attempt',contentHash:'sealed-hash'}},isPending:false});
  const html=f.render();for(const value of ['Exact input Ω','Exact stderr Ω','Exact stdout 🙂','Exit code: 7','Accepted exact result','Cleanup must finish','Published version: saved-version'])assert.ok(html.includes(value),value);
  const resourceReview=f.reviewChildren.find(child=>child.name==='BranchResourceReview');
  assert.ok(resourceReview);assert.equal(resourceReview.props.branchId,'branch-a');assert.equal(resourceReview.props.executionId,'run-a');assert.equal(resourceReview.props.stepId,'older-step');assert.equal(resourceReview.props.enabled,true);
@@ -189,7 +194,7 @@ test('operational status refuses another run and background refresh errors prese
 
 test('a changed Run revision refetches its stable actions owner without clearing mounted decision forms',()=>{
  const f=fixture({actions:[olderAttempt()]});f.execution.revision=8;
- f.render();f.flushEffects();assert.equal(f.invalidations.length,1);assert.deepEqual(Array.from(f.invalidations[0].queryKey),['branch-execution-actions','run-a']);assert.equal(f.invalidations[0].exact,true);assert.equal(f.disclosures[0].open,false);assert.equal(f.execution.output,'Result with the complete original wording.\nSecond line.');assert.equal(f.requests.length,0);
+ f.render();f.flushEffects();assert.deepEqual(f.invalidations.map(entry=>Array.from(entry.queryKey)),[['branch-execution-operations','run-a'],['branch-execution-actions','run-a']]);assert.ok(f.invalidations.every(entry=>entry.exact));assert.equal(f.disclosures[0].open,false);assert.equal(f.execution.output,'Result with the complete original wording.\nSecond line.');assert.equal(f.requests.length,0);
  const unavailable=fixture();unavailable.setQuery('branch-execution-actions',{error:new ApiRequestError(503,'Unavailable')});unavailable.render();unavailable.flushEffects();assert.equal(unavailable.invalidations.length,0,'Ordinary failures remain visible without a blind reset loop');
 });
 
@@ -349,7 +354,7 @@ test('loaded live-output history merges exact current revision targets and exclu
  const declaration=module.statements.find(statement=>ts.isFunctionDeclaration(statement)&&statement.name?.text==='mergeHistory');
  assert.ok(declaration,'The product history merger must be present');
  const body=declaration.getText(module);
- const scope={};vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText+';globalThis.merge=mergeHistory',scope);
+ const scope={isOlderExecutionObservation:presentation.isOlderExecutionObservation};vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText+';globalThis.merge=mergeHistory',scope);
  const page=(revision,liveOutputs,id='run-a')=>({execution:{id,revision},liveOutputs,steps:[],attempts:[],gates:[],paths:[],resources:[]});
  const a={attemptId:'a',runId:'scheduler-a'},b={attemptId:'b',runId:'scheduler-b'};
  assert.deepEqual(JSON.parse(JSON.stringify(scope.merge([page(2,[a]),page(2,[b,a]),page(1,[{attemptId:'stale',runId:'old'}]),page(2,[{attemptId:'foreign',runId:'foreign'}],'other')]).liveOutputs)),[b,a]);
@@ -440,4 +445,66 @@ test('real expanded tool activity labels its existing input and output without c
  const {QueryClient,QueryClientProvider}=await activityQueryModule();
  const input=Object.freeze({agentId:'owned-agent'}),output='{"name":"Synthetic Agent","status":"running"}',entry={id:'tool-call',seq:1,createdAt:'2026-11-08T00:00:00Z',kind:'tool',name:'ponderosa_team_directory',input,result:{activityId:'tool-result',agentId:'owned-agent',seq:2,completedAt:'2026-11-08T00:00:01Z',output,isError:false}};
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ActionGroupRow,{entries:[entry],focusId:entry.id})));assert.ok(html.includes('Input:'));assert.ok(html.includes('Output:'));assert.ok(html.includes('owned-agent'));assert.ok(html.includes('&quot;name&quot;: &quot;Synthetic Agent&quot;'));assert.equal(entry.input,input);assert.equal(entry.result.output,output);}finally{client.clear();}
+});
+
+test('results show one stable publication, report reuse, and keep earlier output visible while a downstream step waits',()=>{
+ const packet={id:'synthetic-packet',recommendations:'Example result'};
+ const sha256=createHash('sha256').update(JSON.stringify(packet,null,2)+'\n').digest('hex');
+ const url='/api/branches/branch-a/results/'+sha256;
+ for(const saved of ['created','reused']){
+  const f=fixture({output:''});
+  delete f.execution.output;
+  Object.assign(f.detail.steps[0],{stepId:'older',sealedResultId:'sealed',result:{failed:false,output:JSON.stringify({id:packet.id,saved,sha256,packet})}});
+  f.detail.steps.push({id:'browser-step',executionId:f.execution.id,stepId:'review',state:'waiting',input:'Private request',invocation:1});
+  f.detail.waits.push({kind:'agent',message:'Waiting for browser',stepId:'review',stepExecutionId:'browser-step',requestId:'waiting'});
+  f.operations.state='retrying';f.operations.label='Checking provider sign-in';
+  f.operations.agentWaits.push({requestId:'waiting',stepId:'review',stepExecutionId:'browser-step',state:'retry_pending',label:'Checking provider sign-in',reason:'The check is pending',nextRetryAt:'2026-10-26T12:03:00Z'});
+  f.props.detail=previewBranchExecutionDetail(f.detail);
+  const html=f.render();
+  assert.equal(f.button('Packet').href,url);
+  assert.equal(html.split(url).length-1,1);
+  assert.equal(html.includes('data-label="Reused"'),saved==='reused');
+  assert.match(html,/Review Document · Checking provider sign-in/);
+  assert.match(html,/Retry eligible/);assert.match(html,/No action needed\./);
+  assert.match(html,/Earlier Important Step<\/span><span data-status="completed">Completed/);
+  assert.doesNotMatch(html,/signed out|Provider Settings|Private request/);
+  assert.equal(f.disclosures[0].open,false);
+ }
+});
+
+test('only a current confirmed provider hold needs attention, and terminal failure replaces the wait',()=>{
+ const f=fixture({output:''});
+ f.detail.steps[0].state='waiting';
+ f.detail.waits=[{kind:'agent',message:'Browser check queued',stepId:'review',stepExecutionId:'recent-step',requestId:'retry'}];
+ f.operations.state='provider_attention';
+ f.operations.label='Provider sign-in required';
+ f.operations.agentWaits=[{requestId:'retry',stepId:'review',stepExecutionId:'recent-step',state:'provider_attention',label:f.operations.label,reason:'Sign in from Provider Settings. The step can resume when sign-in is verified.'}];
+ let html=f.render();
+ assert.match(html,/data-status="needs_attention">Needs Attention/);
+ assert.match(html,/No output produced yet/);
+ assert.match(html,/sign-in is verified/);assert.ok(f.button('Open Provider Settings'));
+ assert.doesNotMatch(html,/No action needed/);
+
+ f.execution.state='failed';
+ f.execution.revision++;
+ f.actionPage.revision=f.execution.revision;
+ f.detail.steps[0].state='failed';
+ f.actionPage.items=[{kind:'attempt',current:true,step:f.detail.steps[0],attempt:{id:'retry',state:'failed',error:'Provider retry timed out'}}];
+ html=f.render();
+ assert.match(html,/data-status="failed">Failed/);assert.match(html,/Provider retry timed out/);
+ assert.doesNotMatch(html,/Provider sign-in required|Browser check queued|No action needed/);
+});
+
+test('late same-revision evidence cannot replace a completed step or its output',async()=>{
+ const source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const module=ts.createSourceFile('BranchesView.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const body=module.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='mergeHistory').getText(module);
+ const scope={isOlderExecutionObservation:presentation.isOlderExecutionObservation};
+ vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText+';globalThis.merge=mergeHistory',scope);
+ const f=fixture(),base=f.detail.steps[0],fresh={...f.detail,observedAt:'2026-11-22T12:01:00Z',steps:[{...base,result:{failed:false,output:'Saved result'}}]};
+ const old={...f.detail,observedAt:'2026-11-22T12:00:00Z',steps:[{...base,state:'running'}]};
+ assert.equal(scope.merge([fresh,old]).steps[0].state,'completed');
+ assert.equal(scope.merge([old,fresh]).steps[0].result.output,'Saved result');
+ assert.equal(presentation.isOlderExecutionObservation(fresh,old),true);
+ assert.equal(presentation.isOlderExecutionObservation(fresh,{...old,execution:{...old.execution,revision:8}}),false);
 });

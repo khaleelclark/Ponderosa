@@ -44,7 +44,7 @@ import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
 import {useCallback,useEffect,useRef,useState,type ComponentProps} from 'react';
-import {QueryObserver,useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
+import {QueryObserver,replaceEqualDeep,type InfiniteData,useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Dialog,DialogActions,DialogContent,DialogTitle,Paper,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
 import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
 import {ApiRequestError} from '../api/types';
@@ -53,6 +53,7 @@ import type {WorkflowEditor,WorkflowExecutionSettings} from './branches/Workflow
 import {RecoverableLazyRoute} from './RecoverableLazyRoute';
 import {emptyWorkflowHistory,moveWorkflowHistory,recordWorkflowEdit,type WorkflowDraftEdit} from './branches/workflow-history';
 import type {CanvasViewState} from './branches/WorkflowCanvas';
+import {isOlderExecutionObservation} from './branches/executionPresentation';
 import {ExecutionPanel,type ExecutionPanelViewState} from './branches/ExecutionPanel';
 import {BranchDirectoryStatus} from './branches/BranchDirectoryStatus';
 import {newDefinition,bindDefinitionDirectories,branchDraftRevision,isCurrentWorkflowResponse} from './branches/model';
@@ -80,7 +81,10 @@ function deploymentOperationLabel(operation:BranchDeploymentPreviewDto['operatio
 function download(value:unknown,name:string):void{const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function mergeHistory(pages:BranchExecutionDetailDto[]|undefined):BranchExecutionDetailDto|undefined{
  if(!pages?.length)return undefined;const first=pages[0]!;
- const merge=<T,>(select:(p:BranchExecutionDetailDto)=>T[],id:(row:T)=>string):T[]=>{const rows=new Map<string,T>();for(const page of [...pages].reverse())for(const row of select(page))rows.set(id(row),row);return [...rows.values()]};
+ const merge=<T,>(select:(p:BranchExecutionDetailDto)=>T[],id:(row:T)=>string):T[]=>{const rows=new Map<string,T>(),observations=new Map<string,BranchExecutionDetailDto>();for(const page of [...pages].reverse())for(const row of (page.execution.id===first.execution.id?select(page):[])){
+  const key=id(row),previous=observations.get(key);
+  if(!previous||!isOlderExecutionObservation(previous,page)){rows.set(key,row);observations.set(key,page);}
+ }return [...rows.values()]};
  return {...first,liveOutputs:merge(p=>p.execution.id===first.execution.id&&p.execution.revision===first.execution.revision?p.liveOutputs??[]:[],r=>r.attemptId+':'+r.runId),steps:merge(p=>p.steps,r=>r.id),attempts:merge(p=>p.attempts,r=>r.id),gates:merge(p=>p.gates,r=>r.id),paths:merge(p=>p.paths,r=>r.id),resources:merge(p=>p.resources,r=>r.stepExecutionId),decisions:merge(p=>p.decisions??[],r=>r.id),sealedResults:merge(p=>p.sealedResults??[],r=>r.id),maps:merge(p=>p.maps??[],r=>r.id),mapItems:merge(p=>p.mapItems??[],r=>r.id)};
 }
 const loadBranchGlobalSettings=()=>import('./branches/BranchGlobalSettings').then(module=>({default:module.BranchGlobalSettings}));
@@ -186,7 +190,12 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const agents=useQuery({queryKey:['branch-agents',draft.branchId],queryFn:()=>requestCollectionPage<import('@ponderosa/core').AgentDto>(`/api/branches/${draft.branchId}/agents?limit=100`),enabled:Boolean(draft.branchId),refetchInterval:5000});
  const histories=useInfiniteQuery({queryKey:['branch-executions',draft.branchId,route.executionFilter],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDto[]>(`/api/branches/${draft.branchId}/executions?${new URLSearchParams({...pageParam?{before:pageParam}:{},...route.executionFilter?{state:route.executionFilter}:{}})}`),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId),refetchInterval:3000});
  const executions=histories.data?.pages.flat()??[];
- const detailPages=useInfiniteQuery({queryKey:['branch-execution',executionId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDetailDto>(`/api/branch-executions/${executionId}${pageParam?'?cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.nextCursor,enabled:Boolean(executionId),refetchInterval:query=>['completed','canceled','skipped','merged'].includes(query.state.data?.pages[0]?.execution.state??'')?false:2000});
+ const detailPages=useInfiniteQuery({queryKey:['branch-execution',executionId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDetailDto>(`/api/branch-executions/${executionId}${pageParam?'?cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.nextCursor,enabled:Boolean(executionId),structuralSharing:(saved,next)=>{
+  const previous=(saved as InfiniteData<BranchExecutionDetailDto>|undefined)?.pages[0];
+  const incoming=(next as InfiniteData<BranchExecutionDetailDto>).pages[0];
+  if(previous&&incoming&&isOlderExecutionObservation(previous,incoming))return saved;
+  return replaceEqualDeep(saved,next);
+ },refetchInterval:query=>['completed','canceled','skipped','merged'].includes(query.state.data?.pages[0]?.execution.state??'')?false:2000});
  const [detailLoadTarget,setDetailLoadTarget]=useState(0);
  useEffect(()=>setDetailLoadTarget(0),[executionId]);
  useEffect(()=>{if(detailLoadTarget>(detailPages.data?.pages.length??0)&&detailPages.hasNextPage&&!detailPages.isFetchingNextPage&&!detailPages.isFetchNextPageError)void detailPages.fetchNextPage()},[detailLoadTarget,detailPages.data?.pages.length,detailPages.hasNextPage,detailPages.isFetchingNextPage,detailPages.isFetchNextPageError]);
@@ -417,7 +426,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
           {executionChats.data?.length?<Button onClick={()=>navigate({...route,tab:'chats',chatId:undefined,workspace:undefined})}>Open {executionChats.data.length} Temporary {executionChats.data.length===1?'Chat':'Chats'}</Button>:executionChats.isPending?<Typography variant="body2" color="text.secondary">Checking temporary Chats…</Typography>:!executionChats.error&&<Typography variant="body2" color="text.secondary">No temporary Chats for this Run.</Typography>}
           <WorkspaceQueryError read={workspaceRead(`execution:${executionId}`,"Temporary Chats",executionChats)}/>
           <Button onClick={()=>navigate({...route,tab:'chats',executionId:undefined,chatId:undefined,workspace:undefined})}>Manage Persistent Chats</Button>
-         </Stack>} evidenceControls={<>
+         </Stack>} onMoreResults={detailPages.hasNextPage?()=>void detailPages.fetchNextPage():undefined} loadingMoreResults={detailPages.isFetchingNextPage} evidenceControls={<>
           <WorkspaceQueryError read={workspaceRead(`execution:${executionId}`,"Run Graph",pinned)}/>{pinned.isPending?<Typography role="status">Loading the published Run Graph…</Typography>:null}
           {detailPages.isFetchNextPageError&&<Box component="details"><summary>Displayed Audit History Is Incomplete</summary><Button disabled={detailPages.isFetchingNextPage} onClick={()=>{setDetailLoadTarget(0);void detailPages.fetchNextPage()}}>Retry Older Details</Button></Box>}
           {detailPages.hasNextPage&&<Alert severity="info" action={<Stack direction="row" useFlexGap flexWrap="wrap"><Button onClick={()=>void detailPages.fetchNextPage()} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Older Details</Button><Button onClick={()=>setDetailLoadTarget((detailPages.data?.pages.length??0)+10)} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Next 10 Pages</Button></Stack>}><Stack spacing={0.5}><Typography>Loaded audit records only · search + filters</Typography><Typography>Full Run evidence · load older pages</Typography><Typography>Current required actions · retrieved separately</Typography></Stack></Alert>}

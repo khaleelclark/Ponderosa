@@ -1,5 +1,7 @@
 import type { BranchAttemptDto, BranchExecutionActionsDto, BranchExecutionDetailDto, BranchResult, BranchStepExecutionDto } from '@ponderosa/core';
 
+import { branchPublishedResult, branchResultFiles } from './branch-result-publication.js';
+
 const INLINE_CODE_POINTS = 128;
 const previewText=(value:string):string=>{const points=Array.from(value);return points.length>INLINE_CODE_POINTS?points.slice(0,INLINE_CODE_POINTS).join('')+'…':value};
 type TextPreview=(value:string)=>string;
@@ -35,17 +37,26 @@ export function previewBranchExecutionDetail(detail: BranchExecutionDetailDto): 
     previewResult(value,text);
   const executionOutputTruncated = detail.execution.output !== undefined && Array.from(detail.execution.output).length > INLINE_CODE_POINTS;
   const executionInputTruncated = Array.from(detail.execution.input).length > INLINE_CODE_POINTS;
+  const publication = branchPublishedResult(detail.execution.output)?.publication;
+  const publishedResult = publication && detail.steps.some(step =>
+    step.state==='completed' && step.sealedResultId && step.result?.output === detail.execution.output) ? publication : undefined;
   const projected: BranchExecutionDetailDto = {
     ...detail,
+    observedAt: new Date().toISOString(),
+    ...(publishedResult ? { publishedResult } : {}),
     execution: { ...detail.execution, ...(executionInputTruncated ? { input: text(detail.execution.input) } : {}), ...(executionOutputTruncated ? { output: text(detail.execution.output!) } : {}), ...(detail.execution.waitReason ? { waitReason: text(detail.execution.waitReason) } : {}) },
     ...(executionOutputTruncated ? { executionOutputTruncated: true } : {}),
     ...(executionInputTruncated ? { executionInputTruncated: true } : {}),
-    waits: detail.waits?.map(wait => ({ ...wait, message: text(wait.message) })),
+    waits: detail.waits?.map(wait => ({ ...wait, message: text(wait.message), ...(wait.reason ? {reason:text(wait.reason)} : {}) })),
     decisions: detail.decisions?.map(decision => ({ ...decision, message: text(decision.message) })),
     gates: detail.gates.map(gate => gate.state==='waiting' ? gate : { ...gate, prompt: text(gate.prompt), proposal: text(gate.proposal), ...(gate.resolution?.output!==undefined?{resolution:{...gate.resolution,output:text(gate.resolution.output)}}:{}) }),
     sealedResults: detail.sealedResults?.map(row => ({ ...row, result: result(row.result)! })),
     mapItems: detail.mapItems?.map(row => ({ ...row, input: text(row.input), ...(row.result ? { result: result(row.result) } : {}) })),
-    steps: detail.steps.map(row=>previewStep(row,text)),
+    steps: detail.steps.map(row=>{
+      if(row.state!=='completed'||!row.sealedResultId)return previewStep(row,text);
+      const publication=branchPublishedResult(row.result?.output)?.publication, files=branchResultFiles(row.result);
+      return {...previewStep(row,text),...(publication?{publishedResult:publication}:{}),...(files.length?{resultFiles:files}:{})};
+    }),
     attempts: detail.attempts.map(row=>previewAttempt(row,text)),
     paths: detail.paths.map(row => ({ ...row, input: text(row.input), ...(row.result ? { result: result(row.result) } : {}) })),
   };

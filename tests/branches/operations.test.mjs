@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readdirSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
@@ -22,7 +23,7 @@ function fixture(t,width=1){
  branches.configure(branch.id,{...branches.configuration(branch.id),limits:{...branches.configuration(branch.id).limits,maxTraversals:1000}},0);
  let passed=false;t.after(()=>{store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained operations fixture: ${root}`)});
  const execution=branches.accept(branch.id,'input',width===1?'Review':JSON.stringify(Array.from({length:120},(_,i)=>`Item ${i}`)));
- return {store,coordination,branches,project,chat,agent,other,execution,pass(){passed=true},summary:provider=>branchOperationalSummary(store.sqlite,branches.execution(execution.id),provider??(async()=>healthy))};
+ return {root,store,coordination,branches,project,chat,agent,other,execution,pass(){passed=true},summary:provider=>branchOperationalSummary(store.sqlite,branches.execution(execution.id),provider??(async()=>healthy))};
 }
 
 test('Branch status requires an exact unfenced live Run; a Request progress update or payload text alone cannot prove execution',async t=>{
@@ -88,7 +89,7 @@ test('Branch waits explain host pressure and pending checks without telling sign
  const held=await f.summary(async()=>({authentication:'checking',intakeReady:false,resourceAdmission:{state:'held'},availabilityDetail:'Waiting for host resources.'}));
  assert.equal(held.state,'provider_unavailable');assert.match(held.agentWaits[0].label,/host resources/i);assert.doesNotMatch(held.agentWaits[0].reason,/sign.in|configuration/i);
  const checking=await f.summary(async()=>({authentication:'checking',intakeReady:false}));
- assert.equal(checking.state,'waiting_agent');assert.match(checking.agentWaits[0].label,/sign.in check/i);assert.doesNotMatch(checking.agentWaits[0].reason,/sign.in and configuration/i);
+ assert.equal(checking.state,'waiting_agent');assert.match(checking.agentWaits[0].label,/checking provider sign.in/i);assert.doesNotMatch(checking.agentWaits[0].reason,/sign.in and configuration/i);
  const signedOut=await f.summary(async()=>({authentication:'unauthenticated',intakeReady:false}));
  assert.equal(signedOut.state,'provider_attention');assert.match(signedOut.agentWaits[0].reason,/sign.in/);f.pass();
 });
@@ -274,4 +275,77 @@ test('another parallel Script becoming uncertain changes the focused generation 
  assert.equal(after.revision,before.revision,'The operational Run state did not change');assert.notEqual(after.generation,before.generation,'Existing process fences must invalidate a newly uncertain action page');
  assert.equal(before.items.filter(item=>item.kind==='attempt').length,1);assert.equal(after.items.filter(item=>item.kind==='attempt').length,2);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);f.pass();
+});
+
+test('a saved document and its reuse share one download while the exact downstream step waits, needs sign-in, then fails',async t=>{
+ const f=fixture(t);
+ const packetSource=`
+  import {readFileSync, writeFileSync} from 'node:fs';
+  import {createHash} from 'node:crypto';
+  const report = {id:'document-1', summary:'A private workflow result'};
+  const bytes = JSON.stringify(report, null, 2) + '\\n';
+  let saved = 'created';
+  try { writeFileSync('result.json', bytes, {flag:'wx'}); }
+  catch (error) { if(error.code !== 'EEXIST') throw error; saved = 'reused'; }
+  const sha256 = createHash('sha256').update(readFileSync('result.json')).digest('hex');
+  process.stdout.write(JSON.stringify({id:report.id, saved, sha256, report}));
+ `;
+ const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'packet-projection',definition:{schema:'ponderosa.branch.v1',name:'Readable results',trigger:{kind:'manual'},entry:'save',controls:[],
+  steps:[{id:'save',kind:'script',label:'Save report',runtime:'node',source:packetSource,cwdRef:'workspace',timeoutMs:1000},
+   {id:'browser',kind:'agent',label:'Check in browser',target:{kind:'persistent_organization',ref:'worker'},instructions:'Check the private fixture'}],
+  edges:[{id:'next',from:'save',to:'browser',on:'success'}],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},
+  bindings:{agents:{worker:f.agent.id},directories:{workspace:f.root}}});
+ let provider={authentication:'checking',intakeReady:false};
+ const app=Fastify();
+ registerBranchRoutes(app,{store:f.store,workspace:{decisionsForRuns:()=>[],getDecision:()=>undefined},branches:f.branches,installations:{setPublisher(){}},sources:{},providerStatus:async()=>provider});
+ t.after(()=>app.close());
+ const summaries=[];
+ for(const key of ['first','second']){
+  const execution=f.branches.accept(branch.id,key,'input');
+  f.branches.advance();
+  const lease=f.branches.claimScript('result-projection-test');
+  assert.equal(lease.executionId,execution.id);
+  const output=execFileSync(process.execPath,['--input-type=module','-e',lease.source],{cwd:f.root,encoding:'utf8'});
+  f.branches.settleScript(lease,{failed:false,output});
+  f.branches.advance();
+  const route='/api/branch-executions/'+execution.id;
+  const detail=(await app.inject({url:route})).json();
+  const step=detail.steps.find(step=>step.stepId==='save');
+  const browser=detail.steps.find(step=>step.stepId==='browser');
+  assert.equal(step.state,'completed');
+  assert.equal(step.publishedResult.label,'Report');
+  assert.equal(step.publishedResult.reused,key==='second');
+  assert.equal(browser.state,'waiting');
+  assert.equal(browser.result,undefined);
+  assert.equal(detail.waits.find(wait=>wait.stepExecutionId===browser.id).stepId,'browser');
+  summaries.push({route,step,browser,request:detail.attempts.find(attempt=>attempt.stepExecutionId===browser.id).requestId});
+ }
+ assert.equal(readdirSync(f.root).filter(name=>name==='result.json').length,1);
+ const digest=summaries[0].step.publishedResult.sha256;
+ assert.equal(summaries[1].step.publishedResult.sha256,digest);
+ const download=await app.inject({url:'/api/branches/'+branch.id+'/results/'+digest});
+ assert.equal(download.statusCode,200,download.body);
+ assert.equal(download.json().summary,'A private workflow result');
+ assert.equal((await app.inject({url:'/api/branches/'+f.execution.branchId+'/results/'+digest})).statusCode,404);
+ assert.equal((await app.inject({url:'/api/branches/'+branch.id+'/results/'+'0'.repeat(64)})).statusCode,404);
+
+ const {route,request,browser}=summaries[1],due=new Date(Date.now()+60000).toISOString();
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending',available_at=? WHERE id IN(SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?)").run(due,request);
+ const checking=(await app.inject({url:route+'/operations'})).json();
+ const wait=checking.agentWaits.find(wait=>wait.requestId===request);
+ assert.equal(checking.state,'retrying');assert.equal(wait.stepExecutionId,browser.id);assert.equal(wait.nextRetryAt,due);
+ assert.match(wait.label,/Checking provider sign-in/);
+ provider={authentication:'unauthenticated',intakeReady:false};
+ const attention=(await app.inject({url:route+'/operations'})).json();
+ assert.equal(attention.state,'provider_attention');assert.match(attention.agentWaits[0].reason,/The step can resume/);
+
+ f.coordination.updateRequest({requestId:request,updateId:'failure-after-retry',kind:'failed',actor:{kind:'agent',id:f.agent.id},payload:{reason:'Provider retry timed out'}});
+ f.branches.advance();
+ const terminal=(await app.inject({url:route})).json();
+ assert.equal(terminal.execution.state,'failed');
+ assert.equal(terminal.waits.length,0);
+ assert.equal(terminal.steps.find(step=>step.stepId==='save').publishedResult.sha256,digest);
+ const failed=(await app.inject({url:route+'/actions'})).json();
+ assert.equal(failed.items.find(item=>item.kind==='attempt').attempt.error,'Provider retry timed out');
+ f.pass();
 });

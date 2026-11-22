@@ -5,6 +5,7 @@ import type { BranchExecutionDto, BranchOperationalSummaryDto } from "@ponderosa
 type Row = Record<string, any>;
 export interface ProviderIntakeStatus {
   enabled?: boolean;
+  installed?: boolean;
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
   intakeReady: boolean;
   reachability?: "unverified" | "checking" | "reachable" | "degraded";
@@ -17,11 +18,12 @@ type ProviderStatus = (engineId: string) => Promise<ProviderIntakeStatus | undef
 /** A bounded operator projection of canonical Branch, Request, Run, and provider intake state. */
 export async function branchOperationalSummary(
   db: Database.Database,
-  execution: Pick<BranchExecutionDto, "id" | "state" | "budgetWait">,
+  execution: Pick<BranchExecutionDto, "id" | "state" | "budgetWait"> & Partial<Pick<BranchExecutionDto, "revision">>,
   providerStatus?: ProviderStatus,
   includeAgentWaits = true,
 ): Promise<BranchOperationalSummaryDto> {
   const now = new Date().toISOString();
+  const running = readBranchWorkingStepCount(db,execution.id,now);
   // Aggregate in SQLite; materialize only the visible page and provider/state groups.
   const steps = db.prepare(`SELECT
     SUM(state='completed') completed,
@@ -40,7 +42,7 @@ export async function branchOperationalSummary(
     JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'`).get(execution.id) as Row).count as number;
   const activeExecution = ['queued','running','waiting'].includes(execution.state);
   const waitCte = `${BRANCH_LIVE_REQUEST_LINEAGE_CTE}, waits AS (
-    SELECT a.id,a.updated_at,r.id request_id,r.state request_state,r.created_at request_created_at,
+    SELECT a.id,a.updated_at,s.id step_execution_id,s.step_id,r.id request_id,r.state request_state,r.created_at request_created_at,
       r.recipient_agent_id agent_id,ag.title agent_title,ag.active_engine engine_id,
       ${branchStartedRequestRunSql('r')} attached_run,
       EXISTS(SELECT 1 FROM scheduler_runs sr WHERE sr.agent_id=r.recipient_agent_id
@@ -60,6 +62,7 @@ export async function branchOperationalSummary(
     FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
     JOIN coordination_requests r ON r.id=a.request_id LEFT JOIN agents ag ON ag.id=r.recipient_agent_id
     WHERE s.execution_id=:executionId AND :activeExecution=1 AND a.state='waiting'
+      AND s.state NOT IN ('completed','failed','canceled')
       AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)
   ), evidence AS (
     SELECT waits.*,retry.available_at retry_at,retry.provider_failure_category,
@@ -69,15 +72,15 @@ export async function branchOperationalSummary(
         WHEN attached_run THEN 'agent_running' WHEN active_run THEN 'agent_busy'
         ELSE 'waiting_agent' END base_state
     -- A held unknown outcome is never a scheduled retry, whatever stale activation remains.
-    FROM waits LEFT JOIN agent_activations retry ON retry.id=waits.retry_id AND waits.request_state IN ('open','in_progress') AND retry.available_at>:now
+    FROM waits LEFT JOIN agent_activations retry ON retry.id=waits.retry_id AND waits.request_state IN ('open','in_progress')
   )`;
   const bindings={executionId:execution.id,activeExecution:Number(activeExecution),now};
   const waitingAttempts = includeAgentWaits
     ? db.prepare(`${waitCte} SELECT * FROM evidence ORDER BY request_created_at,request_id LIMIT 100`).all(bindings) as Row[]
     : [];
   const groups = db.prepare(`${waitCte} SELECT engine_id,base_state,COUNT(*) total,
-    retry_id IS NOT NULL retry_pending,provider_failure_category FROM evidence
-    GROUP BY engine_id,base_state,retry_id IS NOT NULL,provider_failure_category`).all(bindings) as Row[];
+    retry_at IS NOT NULL retry_pending,provider_failure_category FROM evidence
+    GROUP BY engine_id,base_state,retry_at IS NOT NULL,provider_failure_category`).all(bindings) as Row[];
   const engineIds=[...new Set(groups.map(row=>row.engine_id).filter((id):id is string=>typeof id==='string'))];
   const engines=new Map(await Promise.all(engineIds.map(async id=>{
     try{return [id,await providerStatus?.(id)] as const;}
@@ -88,13 +91,18 @@ export async function branchOperationalSummary(
     let state:BranchOperationalSummaryDto['agentWaits'][number]['state']=a.base_state;
     let label=state==='needs_reconciliation'?'Agent result unknown':state==='waiting_human'?'Agent needs an answer':state==='waiting_dependency'?'Agent waiting on another task':state==='agent_running'?'Agent work in progress':state==='agent_busy'?'Agent busy - queued':'Waiting for Agent';
     let reason:string|undefined=state==='agent_busy'?'Another Run is active for this Agent.':undefined;
+    const retryScheduled=Boolean(a.retry_at||a.retry_pending);
     let nextRetryAt:string|undefined;
     if(state==='waiting_agent'){
       if(provider?.enabled===false){state='provider_attention';label='Provider paused';reason='Provider intake is disabled in settings.';}
       else if(provider?.resourceAdmission?.state==='held'){state='provider_unavailable';label='Waiting for host resources';reason=provider.availabilityDetail||'Accepted work remains queued until host resources recover.';}
-      else if(provider?.authentication==='checking'){label='Waiting for provider sign-in check';reason='The check is pending; accepted work remains queued.';}
-      else if(provider&&provider.authentication!=='authenticated'){state='provider_attention';label='Provider needs attention';reason='Check provider sign-in and configuration in Settings.';}
-      else if(a.retry_id||a.retry_pending){
+      else if(provider?.installed===false){state='provider_attention';label='Provider installation required';reason='Install the provider CLI on the Ponderosa host, then select Recheck Sign-In in Provider Settings.';}
+      else if(provider?.authentication==='unauthenticated'){state='provider_attention';label='Provider sign-in required';reason='Sign in on the Ponderosa host, then select Recheck Sign-In in Provider Settings. The step can resume when sign-in is verified.';}
+      else if(provider?.authentication==='checking'){
+        if(retryScheduled){state='retry_pending';nextRetryAt=a.retry_at;}
+        label='Checking provider sign-in';reason='The check is pending; accepted work remains queued.';
+      }
+      else if(retryScheduled){
         state=['rate_limit','capacity'].includes(a.provider_failure_category)?'provider_retry':'retry_pending';
         label=state==='provider_retry'?'Provider retry scheduled':'Retry scheduled';nextRetryAt=a.retry_at;
         reason=a.provider_failure_category==='rate_limit'?'Provider quota is unavailable; the Request remains queued for retry.':a.provider_failure_category==='capacity'?'Provider capacity is unavailable; the Request remains queued for retry.':'This Request remains queued for retry.';
@@ -103,12 +111,12 @@ export async function branchOperationalSummary(
     return {state,label,...(reason?{reason}:{}),...(nextRetryAt?{nextRetryAt}:{})};
   };
   const classifiedWaits=waitingAttempts.map(a=>({requestId:a.request_id as string,agentId:a.agent_id as string,
-    agentName:a.agent_title||'Agent',engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...classify(a)}));
+    stepId:a.step_id as string,stepExecutionId:a.step_execution_id as string,agentName:a.agent_title||'Agent',engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...classify(a)}));
   const classifications=groups.map(group=>({...classify(group),total:Number(group.total)}));
   const unknown=Number(attempts.unknown??0)+classifications.filter(row=>row.state==='needs_reconciliation').reduce((n,row)=>n+row.total,0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
   const humanRequests=classifications.filter(row=>row.state==='waiting_human').reduce((n,row)=>n+row.total,0);
   const totalWaits=classifications.reduce((n,row)=>n+row.total,0);
-  const counts={completed:Number(steps.completed??0),running:readBranchWorkingStepCount(db,execution.id,now),retrying,failed:Number(steps.failed??0),
+  const counts={completed:Number(steps.completed??0),running,retrying,failed:Number(steps.failed??0),
     waitingAgent:totalWaits,waitingHuman:pendingGates+humanRequests,needsReconciliation:unknown,
     mapItems:Number(mapPaths.total),mapSettled:Number(mapPaths.settled??0)};
   let state: BranchOperationalSummaryDto["state"];
@@ -129,5 +137,5 @@ export async function branchOperationalSummary(
   else if (execution.state === "queued") { state = "queued"; label = execution.budgetWait ? "Waiting for automatic execution budget" : "Queued"; }
   else { state = "blocked"; label = "Waiting for other work"; }
   const agentWaits = classifiedWaits.slice(0, 100);
-  return { executionId: execution.id, state, label, observedAt: now, counts, agentWaits, additionalAgentWaits: Math.max(0, totalWaits - agentWaits.length) };
+  return { executionId: execution.id, revision: execution.revision ?? 0, state, label, observedAt: now, counts, agentWaits, additionalAgentWaits: Math.max(0, totalWaits - agentWaits.length) };
 }

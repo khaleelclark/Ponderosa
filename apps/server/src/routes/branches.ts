@@ -18,6 +18,7 @@ import { branchDeletionErrorResourceId, readBranchRunCounts, workspaceRecencyCte
 import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
+import {readPublishedBranchResult} from '../branch-result-publication.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
 import {activeChatProductSql,activeAgentProductSql} from '@ponderosa/agents';
 import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPage,applyCollectionPageHeaders,sendCollectionPageError,type CollectionQuery} from '../collection-page.js';
@@ -710,6 +711,13 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
     try { return branches.listExecutions(request.params.id, request.query.before, request.query.state,request.query.mergeFor); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid history cursor' }); }
+  });
+  app.get<{ Params: { id: string; digest: string } }>('/api/branches/:id/results/:digest', (request, reply) => {
+    const {id,digest}=request.params;
+    const content=readPublishedBranchResult(store.sqlite,id,digest);
+    if(content===undefined)return reply.code(404).send({error:'Published result not found'});
+    return reply.type('application/json').header('Cache-Control','private, no-store')
+      .header('Content-Disposition',`attachment; filename="result-${digest.slice(0,12)}.json"`).send(content);
   });
   app.get<{ Params: { id: string } }>("/api/branch-executions/:id/operations", async (request, reply) => {
     const execution=branches.execution(request.params.id);

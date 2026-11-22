@@ -11,7 +11,7 @@ const countKeys=[['running','Running'],['queued','Queued'],['waiting','Waiting']
 
 /** A Run's displayed status: the server classification while active, its stored outcome once terminal. */
 export function branchExecutionStatus(run:BranchExecutionDto):{status:SemanticStatusKind;label:string} {
- const value=run.effectiveStatus??run.state;
+ const value=['queued','running','waiting'].includes(run.state)?run.effectiveStatus??run.state:run.state;
  return {status:value==='needs_attention'?'needs_attention':value==='running'?'running':['queued','waiting','retrying','stopping'].includes(value)?'waiting':semanticAgentStatus(value),label:label.get(value)??value};
 }
 
