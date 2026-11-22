@@ -1,7 +1,8 @@
 /** Exact queued work can be resumed after pre-injection failures only if
  * every historical attachment belongs to a terminal unstarted Run. This
  * contains the scheduler's canRetryUninjectedRun checks and additionally
- * rejects contradictory submission evidence and cross-scope Run bindings. */
+ * rejects contradictory submission evidence and cross-scope Run bindings.
+ * A definite steering refusal can also leave the exact input unsubmitted. */
 export function transitionUnsubmittedActivationSql(activation:string):string {
   return `((${activation}.state='pending' AND NOT EXISTS (
       SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=${activation}.id))
@@ -21,6 +22,34 @@ export function transitionUnsubmittedActivationSql(activation:string):string {
               OR injection.acknowledged_at IS NOT NULL OR injection.provider_turn_id IS NOT NULL))
         )
       ))
+    OR (CASE WHEN ${activation}.state='retry_pending'
+      AND ${activation}.kind='human_message' AND ${activation}.prompt_class='human'
+      AND ${activation}.steering_wait_reason IN ('provider_not_ready','provider_unsupported','preparation_retry')
+      THEN (
+        -- Steer can leave attachments to a completed Run even though none
+        -- of the attempts were accepted. Every attempt must agree.
+        WITH attempts AS (
+          SELECT injection.run_id, CASE WHEN
+            injection.kind='steer' AND injection.state='cancelled'
+            AND injection.terminal_at IS NOT NULL AND injection.acknowledged_at IS NULL
+            AND injection.provider_turn_id IS NULL AND source.status='completed'
+            AND source.terminal_at IS NOT NULL AND source.prompt_injection_state='injected'
+            AND source.project_id=${activation}.project_id AND source.agent_id=${activation}.agent_id
+            AND source.scope_key=${activation}.scope_key
+            THEN 1 ELSE 0 END AS refused
+          FROM scheduler_prompt_injections injection
+          LEFT JOIN scheduler_runs source ON source.id=injection.run_id,
+            json_each(injection.activation_ids_json) member
+          WHERE member.value=${activation}.id
+        )
+        SELECT coalesce(min(refused),0)=1 AND NOT EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          WHERE attached.activation_id=${activation}.id
+            AND attached.run_id NOT IN (SELECT run_id FROM attempts)
+        )
+        FROM attempts
+      )
+      ELSE 0 END)
     OR (CASE WHEN ${activation}.state='retry_pending' AND ${activation}.dispatch_policy='next_run'
       AND ${activation}.steering_wait_reason='provider_unsupported'
       AND (${activation}.kind IN ('coordination_request','ordinary_message')

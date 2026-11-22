@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 export interface WindowsInvocation {
@@ -38,6 +39,21 @@ export function containedWindowsInvocation(
   const extension = path.win32.extname(bin).toLowerCase();
   if (extension !== ".cmd" && extension !== ".bat") {
     return { bin, args: [...args], env: environment };
+  }
+  // The supported npm providers have known entry points beside their shims.
+  // Invoke those directly so provider arguments never pass through cmd.exe.
+  const provider = path.win32.basename(bin, extension).toLowerCase();
+  const modules = path.win32.join(path.win32.dirname(bin), "node_modules");
+  if (extension === ".cmd" && provider === "codex") {
+    const script = path.win32.join(modules, "@openai", "codex", "bin", "codex.js");
+    if (existsSync(script)) return { bin: process.execPath, args: [script, ...args], env: environment };
+  }
+  if (extension === ".cmd" && provider === "claude") {
+    const packageRoot = path.win32.join(modules, "@anthropic-ai", "claude-code");
+    const executable = path.win32.join(packageRoot, "bin", "claude.exe");
+    if (existsSync(executable)) return { bin: executable, args: [...args], env: environment };
+    const script = path.win32.join(packageRoot, "cli.js");
+    if (existsSync(script)) return { bin: process.execPath, args: [script, ...args], env: environment };
   }
   if (args.length > MAX_SHIM_ARGUMENTS) {
     throw new Error(`Windows command shim exceeds the ${MAX_SHIM_ARGUMENTS}-argument transport limit`);

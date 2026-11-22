@@ -14,7 +14,7 @@ let model=idx('--model')>=0?process.argv[idx('--model')+1]:'sonnet';
 // Like the real CLI, aliases are reported as the resolved model ID.
 const resolved=()=>/^(?:fable|opus|sonnet|haiku)$/.test(model)?'claude-'+model+'-5-5':model;
 const record=x=>fs.appendFileSync(process.env.TEST_CLAUDE_LOG,JSON.stringify(x)+'\\n'),emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
-let current,heldEcho,heldInitialize;record({kind:'open',session,resume,model,pid:process.pid});
+let current,heldEcho,heldInitialize;record({kind:'open',session,resume,model,pid:process.pid,autoMemoryDisabled:process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY==='1'});
 if(resume){try{record({kind:'restored-native-context',session,...JSON.parse(fs.readFileSync(process.env.TEST_CLAUDE_COMMAND+'.session-'+session,'utf8'))});}catch{}}
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const frame=JSON.parse(line);record({kind:'input',frame,session});

@@ -17,7 +17,6 @@ interface CommunicationJournalContext {
   webPushDelivery?: WebPushDeliveryManager;
   publishWorkspaceSince(cursor: number): void;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
-  isClosed(): boolean;
 }
 
 export function createCommunicationJournal(context: CommunicationJournalContext) {
@@ -28,10 +27,8 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     webPushDelivery,
     publishWorkspaceSince,
     appendWorkspace,
-    isClosed,
   } = context;
 
-  let communicationReconciliationTimer: NodeJS.Timeout | undefined;
   const communicationReconciliation = new Map<string,
     { state: "pending" } | { state: "verified"; report: CommunicationReconciliationReport }>();
   const dirtyCommunicationProjects = new Set<string>();
@@ -49,13 +46,6 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
   const scheduleCommunicationReconciliation = (projectId: string): void => {
     communicationReconciliation.set(projectId, { state: "pending" });
     dirtyCommunicationProjects.add(projectId);
-    if (communicationReconciliationTimer) return;
-    communicationReconciliationTimer = setTimeout(() => {
-      communicationReconciliationTimer = undefined;
-      if (isClosed()) return;
-      for (const dirtyProjectId of [...dirtyCommunicationProjects]) refreshCommunicationReconciliation(dirtyProjectId);
-    }, 250);
-    communicationReconciliationTimer.unref();
   };
   const withSendTimeIdentity = (event: CommunicationEvent): CommunicationEvent => {
     const recipientAgentIds: string[] = event.intent === "collaboration"
@@ -170,11 +160,6 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     return { title: updated.title, generated: updated.title !== latest.title };
   };
 
-  const stopCommunicationReconciliation = (): void => {
-    if (communicationReconciliationTimer) clearTimeout(communicationReconciliationTimer);
-    communicationReconciliationTimer = undefined;
-  };
-
   return {
     communicationReconciliation,
     dirtyCommunicationProjects,
@@ -182,6 +167,5 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     recordCommunication,
     refreshCommunicationReconciliation,
     scheduleCommunicationReconciliation,
-    stopCommunicationReconciliation,
   };
 }

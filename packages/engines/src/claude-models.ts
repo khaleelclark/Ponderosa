@@ -185,6 +185,7 @@ export function claudeProviderErrorCode(rawCode: unknown, detail = ""): Provider
 
 function validationErrorCode(code: ProviderErrorCode | undefined): EngineModelValidationError {
   if (code === "authentication_failed") return "authentication";
+  if (code === "provider_ack_deadline") return "network";
   return code ?? "provider_error";
 }
 

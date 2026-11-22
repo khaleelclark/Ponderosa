@@ -59,11 +59,17 @@ export interface ContextRolloverTriggeredEvent {
   threshold: number;
 }
 
+export interface ProviderSessionResetEvent {
+  type: "session_reset";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" |
+    "tool_contract_changed" | "provider_root_exit" | "agent_cancelled";
+}
+
 export type AgentActivityEvent = Extract<AgentEvent, {
   type: "native_plan" | "native_diff" | "native_review" | "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
     "browser_session" | "browser_action" | "browser_console" | "browser_screenshot" |
     "context_rollover_seed_overflow" | "context_rollover_completed";
-}> | ContextRolloverTriggeredEvent;
+}> | ContextRolloverTriggeredEvent | ProviderSessionResetEvent;
 
 /** Canonical, refresh-safe execution activity projected from the agent event log. */
 export interface AgentActivityDto {

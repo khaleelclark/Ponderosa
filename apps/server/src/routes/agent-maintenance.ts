@@ -35,6 +35,7 @@ interface AgentMaintenanceRoutesContext {
   deletingAgentIds: Set<string>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   workingCopies: AgentWorkingCopyService;
+  drainRuntime?(agentId: string, projectId: string): Promise<void>;
   clearAgentResumeSession(agentId: string, reason: string): void;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   teardownPersistentRuntime(
@@ -111,9 +112,9 @@ export function registerAgentMaintenanceRoutes(
     },
   );
 
-  app.post<{Params:{id:string;rolloverId:string}}>("/api/agents/:id/working-folder-change/:rolloverId/keep",async(request,reply)=>{
+  app.post<{Params:{id:string;rolloverId:string};Body:{freshContext?:boolean}}>("/api/agents/:id/working-folder-change/:rolloverId/keep",async(request,reply)=>{
     const agent=store.getAgent(request.params.id);if(!agent)return reply.code(404).send({error:"agent not found"});
-    try{const result=await keepCurrentWorkingCopy({...context,memory:localMemoryFor(app)},agent,request.params.rolloverId);notifyScheduler();return result;}
+    try{const result=await keepCurrentWorkingCopy({...context,memory:localMemoryFor(app)},agent,request.params.rolloverId,request.body?.freshContext===true);notifyScheduler();return result;}
     catch(error){return reply.code(409).send({error:workingCopyDiagnostic(error)});}
   });
 

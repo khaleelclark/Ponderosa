@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentStore } from '@ponderosa/agents';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, symlinkSync, realpathSync, readlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, cpSync, symlinkSync, realpathSync, readlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -233,4 +233,14 @@ test('scoped web snapshot retains canonical state and managed artifacts while bi
   mkdirSync(path.join(data, 'workspaces', 'unowned'));
   assert.throws(() => createOfflineWebDeploymentBackup(data, path.join(root, 'unknown'), artifacts), /web-deployment backup refused/);
   assert.equal(existsSync(path.join(root, 'unknown')), false);
+});
+
+test('discarding an incomplete backup removes only its owned unpublished stage', {skip:process.platform==='win32'}, t => {
+  const f = fixture(t), retained = path.join(f.root, 'backup.partial-retained');
+  mkdirSync(retained);
+  symlinkSync(f.external, path.join(f.data, 'invalid-link'));
+  assert.throws(() => createOfflineDataDirectoryBackup(f.data, f.backup, { discardIncomplete: true }), /owned incomplete stage was removed/);
+  assert.deepEqual(readdirSync(f.root).filter(name => name.startsWith('backup.partial-')), ['backup.partial-retained']);
+  assert.equal(existsSync(f.backup), false);
+  assert.equal(existsSync(path.join(f.data, 'invalid-link')), true);
 });

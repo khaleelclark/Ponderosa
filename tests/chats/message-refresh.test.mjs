@@ -62,3 +62,16 @@ test('main history page merge keeps live precedence and page pagination for focu
   assert.deepEqual(mergeMainHistoryPage({messages:[]},undefined,undefined),{messages:[],decisionEvents:[],cursor:undefined,hasMore:false});
   assert.equal(page.messages[1].text,'page');assert.equal(current.messages[0].text,'retained');
 });
+
+test('detached focus shows only the historical page and keeps older pagination detached', async () => {
+  const {mergeMainHistoryPage}=await import('../../apps/web/src/components/ConversationView.helpers.ts');
+  const message=id=>({id,createdAt:'2026-01-01',canonicalOrderKey:id});
+  const live={messages:[message('latest')],decisionEvents:[{id:'live',createdAt:'2026-01-01'}]};
+  const focused=mergeMainHistoryPage({messages:[message('focused')],history:{cursor:'older',hasMore:true}},undefined,live,true);
+  assert.equal(focused.historical,true);
+  assert.deepEqual(focused.messages.map(item=>item.id),['focused']);
+  assert.deepEqual(focused.decisionEvents,[]);
+  const next=mergeMainHistoryPage({messages:[message('earlier')]},focused,live);
+  assert.equal(next.historical,true);
+  assert.deepEqual(next.messages.map(item=>item.id),['earlier','focused']);
+});

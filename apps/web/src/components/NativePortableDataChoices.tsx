@@ -32,8 +32,13 @@ export function NativePortableImportChoices({summary,value,onChange,disabled,des
   {nativeImportChoiceError(value,summary)&&<Alert severity="warning">{nativeImportChoiceError(value,summary)}</Alert>}
   {summary.warning&&<Alert severity="warning">Native data review: {summary.warning}</Alert>}
   {(summary.git||summary.harness||metadata)&&<Typography variant="subtitle1">Restore Native Settings</Typography>}
-  {summary.git&&<FormControlLabel control={<Checkbox disabled={disabled} checked={native?.git??false} onChange={event=>updateNative({git:event.target.checked})}/>} label="Activate Imported Git Repository And Hooks"/>}
-  {summary.harness&&<FormControlLabel control={<Checkbox disabled={disabled} checked={native?.harness??false} onChange={event=>updateNative({harness:event.target.checked})}/>} label="Activate imported Claude and Codex settings"/>}
+  {(summary.git||summary.harness)&&<Alert severity="warning">Git hooks, Git configuration, and Claude or Codex project settings from a package can run commands on this host. Enable these options only for an author and package you trust. Leave them off to keep the originals available for review without activating them.</Alert>}
+  {Boolean(summary.activationItems?.length)&&<ul>
+   {summary.activationItems?.map(item=><li key={item}><Typography variant="body2">{item}</Typography></li>)}
+   {summary.moreActivationItems&&<li>Additional entries are in the package’s retained review files.</li>}
+  </ul>}
+  {summary.git&&<FormControlLabel control={<Checkbox disabled={disabled} checked={native?.git??false} onChange={event=>updateNative({git:event.target.checked})}/>} label="Trust and Activate Imported Git Configuration and Hooks"/>}
+  {summary.harness&&<FormControlLabel control={<Checkbox disabled={disabled} checked={native?.harness??false} onChange={event=>updateNative({harness:event.target.checked})}/>} label="Trust and Activate Imported Claude and Codex Settings"/>}
   {native?.git&&<Stack spacing={1}>
    <Typography variant="caption">Map referenced settings paths to included destination folders or files.</Typography>
    {mappings.map((mapping,index)=><Stack key={index} direction={{xs:'column',sm:'row'}} spacing={1}><TextField disabled={disabled} label="Old Folder Or File" value={mapping.source} onChange={event=>{const next=mappings.map((item,i)=>i===index?{...item,source:sourcePathInput(event.target.value)}:item);updateNative({gitPathMappings:next} as Partial<ReviewedUserDataActivation>);}} onBlur={event=>{const name=sourcePathInput(event.target.value),source=(portablePathChoice(name)??portablePathChoice(name.replace(/\/+$/,'')))?.path;if(source){const next=mappings.map((item,i)=>i===index?{...item,source}:item);updateNative({gitPathMappings:next} as Partial<ReviewedUserDataActivation>);}}}/><TextField disabled={disabled} label="Included Destination Folder Or File" value={mapping.destination} onChange={event=>{const next=mappings.map((item,i)=>i===index?{...item,destination:event.target.value}:item);updateNative({gitPathMappings:next} as Partial<ReviewedUserDataActivation>);}}/><Button disabled={disabled} onClick={()=>{const next=mappings.filter((_,i)=>i!==index);const {gitPathMappings:_,...base}=native as ReviewedUserDataActivation&{gitPathMappings?:unknown};onChange({...value,reviewedUserDataActivation:{...base,...(next.length?{gitPathMappings:next}:{})}});}}>Remove Mapping</Button></Stack>)}
@@ -50,6 +55,5 @@ export function NativePortableImportChoices({summary,value,onChange,disabled,des
     {metadata.fifoCount>0&&<FormControlLabel control={<Checkbox disabled={disabled} checked={activation.fifo} onChange={event=>onChange({...value,reviewedMetadataActivation:{...activation,fifo:event.target.checked}})}/>} label="Recreate The Included Named Pipes"/>}
    </>}
   </>}
-  {(native?.git||native?.harness)&&<Alert severity="warning">These choices activate imported settings and executable hooks in the new folders.</Alert>}
  </Stack>;
 }

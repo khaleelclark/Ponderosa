@@ -46,10 +46,11 @@ test('staging capacity refuses visibly before exposing a truncated download',asy
 });
 
 test('browser handoff validates exact origin-owned ticket paths and sends selections in the POST body',async()=>{
- const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['preparePackageExport','preparedPackageExportUrl','startPreparedPackageDownload','downloadPackageExport']);
+ const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['exportStagingUnavailable','readUnstagedPackage','preparePackageExport','preparedPackageExportUrl','startPreparedPackageDownload','downloadPackageExport']);
  const functions=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.has(node.name?.text)).map(node=>node.getText(ast).replace(/^export /,'')).join('\n');
  const requests=[],links=[],prepared={downloadUrl:'/api/package-exports/'+'a'.repeat(48),expiresAt:new Date(Date.now()+600000).toISOString(),byteLength:42};
  const scope={URL,Date,Number,Error,JSON,Promise,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'original-request-key',window:{location:{href:'https://local.example/branches',origin:'https://local.example'}},productApiPath:path=>path,requestJson:async(path,input)=>{requests.push({path,input});return prepared;},document:{createElement:()=>({dataset:{},style:{},click(){links.push({href:this.href,filename:this.download,handled:this.dataset.ponderosaDownloadFeedback});},remove(){}}),body:{append(){}}}};
+ scope.ApiRequestError??=class extends Error {};
  vm.createContext(scope);vm.runInContext(ts.transpile(functions,{target:ts.ScriptTarget.ES2022}),scope);
  const selections={a:{selectedWorkingFiles:['x'.repeat(20000)]}};
  await scope.downloadPackageExport('/api/branches/branch/package',{mode:'full',fileSelections:selections},'original.json');
@@ -57,6 +58,24 @@ test('browser handoff validates exact origin-owned ticket paths and sends select
  assert.throws(()=>scope.startPreparedPackageDownload({...prepared,downloadUrl:'https://outside.example/original'},'bad.json'),/invalid/);
  assert.throws(()=>scope.startPreparedPackageDownload({...prepared,downloadUrl:'/api/package-exports/../other'},'bad.json'),/invalid/);
  scope.startPreparedPackageDownload({...prepared,downloadUrl:'/api/branches/engine'+prepared.downloadUrl.slice(4)},'branch.json');
+
+ const selected={mode:'full',fileSelections:selections};
+ const fetches=[],blobs=[];
+ scope.ApiRequestError=class extends Error {
+  constructor(status,body){super('fixture staging response');this.status=status;this.body=body;}
+ };
+ scope.API_BASE='';scope.Blob=Blob;
+ scope.fetch=async(path,input)=>{fetches.push({path,input});return new Response('{"complete":true}');};
+ scope.readAgentPackageClipboard=response=>response.text();
+ scope.downloadBlob=(blob,name)=>blobs.push({blob,name});
+ scope.requestJson=async()=>{throw new scope.ApiRequestError(503,{code:'EXPORT_STAGING_UNAVAILABLE'});};
+ assert.equal(await scope.downloadPackageExport('/api/branches/branch/package',selected,'direct.json'),undefined);
+ assert.deepEqual(JSON.parse(fetches[0].input.body),{...selected,download:false});
+ assert.equal(fetches[0].input.headers['x-ponderosa-export-request'],undefined);
+ assert.equal(await blobs[0].blob.text(),'{"complete":true}');
+ scope.requestJson=async()=>{throw new scope.ApiRequestError(503,{code:'OUTCOME_UNKNOWN'});};
+ await assert.rejects(scope.downloadPackageExport('/api/branches/branch/package',selected,'unknown.json'),/fixture staging response/);
+ assert.equal(fetches.length,1,'An unknown preparation must never trigger the direct fallback');
 });
 
 
@@ -83,18 +102,19 @@ test('clipboard fallback keeps its first ticket after source removal and never c
  try{
   const clipboardSource=await readFile(new URL('../../apps/web/src/agent-package-clipboard.ts',import.meta.url),'utf8'),clipboardModule={exports:{}};
   vm.runInNewContext(ts.transpileModule(clipboardSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:clipboardModule,exports:clipboardModule.exports,Error,TextDecoder});
-  const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['preparePackageExport','requestAgentPackageText','preparedPackageExportUrl','startPreparedPackageDownload']);
+  const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['exportStagingUnavailable','readUnstagedPackage','preparePackageExport','requestAgentPackageText','preparedPackageExportUrl','startPreparedPackageDownload']);
   const functions=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.has(node.name?.text)).map(node=>node.getText(ast).replace(/^export /,'')).join('\n'),links=[];
   const scope={URL,Date,Number,Error,JSON,Promise,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'original-request-key',window:{location:{href:'https://local.example/',origin:'https://local.example'}},productApiPath:path=>path,AgentPackageDownloadRequired:clipboardModule.exports.AgentPackageDownloadRequired,
    readAgentPackageClipboard:response=>clipboardModule.exports.readAgentPackageClipboard(response,32),
    requestJson:async()=>{const result=await app.inject({method:'POST',url:'/prepare'});assert.equal(result.statusCode,200,result.body);await unlink(sourcePath);return result.json();},
    fetch:async url=>{const result=await app.inject(new URL(url).pathname);return new Response(result.rawPayload,{status:result.statusCode,headers:result.headers});},
    decodeHttpError:async()=>Error('Unexpected GET failure'),document:{createElement:()=>({dataset:{},style:{},click(){links.push(this.href);},remove(){}}),body:{append(){}}}};
+  scope.ApiRequestError??=class extends Error {};
   vm.createContext(scope);vm.runInContext(ts.transpile(functions,{target:ts.ScriptTarget.ES2022}),scope);
   let overflow;await assert.rejects(scope.requestAgentPackageText('/prepare',{mode:'full'}),error=>{overflow=error;return error instanceof clipboardModule.exports.AgentPackageDownloadRequired&&Boolean(error.preparedExport);});
   // Exercise the actual action: the fallback must use only the carried ticket.
   const actionSource=await readFile(new URL('../../apps/web/src/components/useAgentPackageActions.ts',import.meta.url),'utf8'),actionsModule={exports:{}},notices=[];
-  const imports={'../api/real':{startPreparedPackageDownload:scope.startPreparedPackageDownload},'../agent-package-clipboard':clipboardModule.exports,'../api':{api:{exportAgentText:()=>Promise.reject(overflow),downloadAgentPackage:()=>{throw Error('A second capture is forbidden');}}},'../clipboard':{copyDeferredText:pending=>pending},'./MutationNotifications':{useMutationNotification:()=>notice=>notices.push(notice)},'./AgentDetail.helpers':{portablePackageFileName:()=> 'original.json'}};
+  const imports={'../api/real':{startPreparedPackageDownload:scope.startPreparedPackageDownload},'../agent-package-clipboard':clipboardModule.exports,'../api':{api:{exportAgentText:()=>Promise.reject(overflow),downloadAgentPackage:()=>{throw Error('A second capture is forbidden');}}},'../clipboard':{copyDeferredText:pending=>pending},'./PackageExportDisclosure':{workingFolderOmissionNotice:()=>({})},'./MutationNotifications':{useMutationNotification:()=>notice=>notices.push(notice)},'./AgentDetail.helpers':{portablePackageFileName:()=> 'original.json'}};
   vm.runInNewContext(ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:actionsModule,exports:actionsModule.exports,Error,require:name=>imports[name]});
   await actionsModule.exports.useAgentPackageActions({agentId:'source'}).copyAgentPackage('full');
   assert.equal(captures,1);assert.equal(links.length,1);assert.equal(new URL(links[0]).pathname,overflow.preparedExport.downloadUrl);assert.match(notices[0].message,/original package download/);
@@ -127,14 +147,15 @@ test('a lost prepare response recovers the original request ticket after restart
  const original={schema:'ponderosa.branch-installation.v1',source:'First complete snapshot'};await writeFile(sourcePath,JSON.stringify(original));
  const openApp=async()=>{app=Fastify();const service=packageExportDownloads(app,directory);app.post('/prepare',async(request,reply)=>service.prepare(request.headers['x-ponderosa-export-request'],{kind:'branch',id:'source',input:request.body},reply,async()=>{captures++;return service.send(JSON.parse(await readFile(sourcePath,'utf8')),'original.json',reply,true);}));await app.ready();return service;};
  try{
-  await openApp();const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),node=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='preparePackageExport'),requests=[];
+  await openApp();const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),nodes=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&['preparePackageExport','exportStagingUnavailable'].includes(node.name?.text)),requests=[];
   const scope={Error,JSON,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'lost-original-request',requestJson:async(url,input)=>{
    requests.push({url,input});if(input?.method==='POST'){
     const result=await app.inject({method:'POST',url,headers:input.headers,payload:JSON.parse(input.body)});assert.equal(result.statusCode,200,result.body);
     await unlink(sourcePath);await app.close();await openApp();throw Error('Preparation POST response lost');
    }
    const result=await app.inject(url);assert.equal(result.statusCode,200,result.body);return result.json();
-  }};vm.createContext(scope);vm.runInContext(ts.transpile(node.getText(ast).replace(/^export /,''),{target:ts.ScriptTarget.ES2022}),scope);
+  }};scope.ApiRequestError??=class extends Error {};
+  vm.createContext(scope);vm.runInContext(ts.transpile(nodes.map(node=>node.getText(ast).replace(/^export /,'')).join('\n'),{target:ts.ScriptTarget.ES2022}),scope);
   const recovered=await scope.preparePackageExport('/prepare',{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}}});
   assert.equal(captures,1);assert.equal(requests.filter(request=>request.input?.method==='POST').length,1);assert.match(requests[1].url,/package-export-requests\/lost-original-request$/);
   assert.deepEqual((await app.inject(recovered.downloadUrl)).json(),original);

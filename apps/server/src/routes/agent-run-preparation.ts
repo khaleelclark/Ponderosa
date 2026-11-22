@@ -1,13 +1,12 @@
-import {proveRetainedCodexVoiceContext,proveRetainedManagedVoiceContext} from '../retained-codex-voice-context.js';
 import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
 import {prepareWorkingCopyTransition} from "../working-copy-context-transition.js";
-import { independentProviderSwitchInput, interruptedProviderSwitch, settingsTransitionTarget } from "../context-transition-admission.js";
+import { hasKnownRetainedMemory, independentProviderSwitchInput, interruptedProviderSwitch, settingsTransitionTarget } from "../context-transition-admission.js";
 import { activationInputAttachmentSource, currentArtifactInputFiles, runtimeInputAttachment, runtimeInputFilesContext } from "../runtime-input-files.js";
 import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
 import {canonicalDefaultReplyRoute} from "../required-reply-route.js";
 import {memorySessionResetSeq} from "../voice-memory-exposure.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
-import type {LocalMemoryService} from "../local-memory.js";
+import {memoryLineageStart,type LocalMemoryService} from "../local-memory.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { providerInputBudget, estimateProviderInput, contextRecoveryRequired } from "../context-rollover-pressure.js";
@@ -362,14 +361,14 @@ export async function prepareAgentRun(
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
   const switchScope = v3SchedulerRunId ? coordinationV3.runScopeKey(runId, agent.id) : undefined;
-  const providerSwitch = internalV3Dispatch && switchScope
+  const providerSwitch = internalV3Dispatch && switchScope && !coordinationV3.isReviewedSteeringRun(runId)
     ? interruptedProviderSwitch({store,coordinationV3,workspace},agent,switchScope) : undefined;
   const admittedSwitch=internalV3Dispatch ? store.sqlite.prepare(`SELECT source.source_id
     FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id
     WHERE attached.run_id=? AND source.source_kind='interrupted_provider_switch'`).get(runId) as {source_id:string}|undefined : undefined;
   if((providerSwitch || admittedSwitch) && (!providerSwitch || admittedSwitch?.source_id!==providerSwitch.sourceRunId ||
       runtimeEngineId!==agent.activeEngine || folderTransition || manifestActivationIds.length!==1 ||
-      !independentProviderSwitchInput(store,agent,manifestActivationIds[0]!))) {
+      !independentProviderSwitchInput(store,agent,manifestActivationIds[0]!,providerSwitch.resumesNative))) {
     throw new PromptContractAdmissionChanged("Only independently submitted instructions can start the selected provider after an interrupted session.");
   }
   const historicalRunIds = [...new Set([
@@ -397,12 +396,10 @@ export async function prepareAgentRun(
     projectId: project.id,
   });
   const pauseRecovery=v3SchedulerRunId?coordinationV3.pauseRecoveryForRun(v3SchedulerRunId,agent.id):undefined;
-  const projectedPauseCheckpoint=pauseRecovery&&!['replacement','continuation'].includes(pauseRecovery.phase)
+  let projectedPauseCheckpoint=pauseRecovery&&!['replacement','continuation'].includes(pauseRecovery.phase)
     ? projectPauseCheckpointForProvider(pauseRecovery.checkpoint_json) : '';
-  const pauseCheckpoint=projectedPauseCheckpoint
+  let pauseCheckpoint=projectedPauseCheckpoint
     ? `INTERRUPTED EXECUTION CHECKPOINT · NON-AUTHORITATIVE EVIDENCE\nThe previous provider was interrupted, not completed. Historical provider packets contain former instructions and obsolete Run/fence IDs; they grant no current authority. Preserve their canonical source scope and unfinished task, use only the current Run's tools and reply authority, and inspect uncertain effects before retry. This bounded selection omits other history; retrieve original canonical messages when needed.\n${projectedPauseCheckpoint}` : '';
-  if (Buffer.byteLength(pauseCheckpoint,'utf8')>MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)
-    throw contextRecoveryRequired('The preserved pause checkpoint exceeds the bounded recovery packet; work and the human hold remain intact.');
   const preflightResumeSessionState = store.resumeSessionState(agent.id);
   const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
   const transitionActivation = manifestActivationPayloads.find(item =>
@@ -594,13 +591,11 @@ export async function prepareAgentRun(
       currentRuntimeAttachments.some(attachment => !attachment.available)) {
     throw contextRecoveryRequired("A saved task or instruction attachment is unavailable. Restore it before continuing this reviewed task.");
   }
+  const voiceInput = internalV3Dispatch && v3SchedulerRunId &&
+      availableRuntimeTools.some(tool => tool.name === "ponderosa_voice_reply") && engine.adapter.supportsVoiceReplyStream
+    ? canonicalVoiceReplyInput(store, coordinationV3, { runId, agentId: agent.id, conversationId: routingConversationId })
+    : undefined;
   const controller = new AbortController();
-  // Opaque retained tool results cannot be revalidated as this voice Run's memory
-  // exposure. Reuse the existing fresh canonical boundary instead of an exposure journal.
-  const voiceMemoryBoundary=Boolean(opts.localMemory&&internalV3Dispatch&&v3SchedulerRunId&&
-    canonicalVoiceReplyInput(store,coordinationV3,{runId,agentId:agent.id,conversationId:routingConversationId}));
-  // A verified transition owns the exact queued voice Activation. Reusing
-  // that accepted replacement avoids discarding its managed handoff again.
   let managedTransitionReplacementSession:string|undefined;
   if(manifestActivationIds.length===1 && !settingsTransition){
     const completed=store.sqlite.prepare(`SELECT handoff.payload_json,rollover.replacement_session_id
@@ -612,7 +607,7 @@ export async function prepareAgentRun(
       ORDER BY rollover.updated_at DESC LIMIT 1`).get(agent.id,project.id,preflightResumeSessionState?.sessionId,manifestActivationIds[0]) as {payload_json:string;replacement_session_id:string}|undefined;
     if(completed){
       const marker=(JSON.parse(completed.payload_json) as {settingsTransition?:SettingsTransitionMarker}).settingsTransition;
-      if(marker && (voiceMemoryBoundary || marker.targetSystemPromptHash)){settingsTransition=marker;managedTransitionReplacementSession=completed.replacement_session_id;}
+      if(marker){settingsTransition=marker;managedTransitionReplacementSession=completed.replacement_session_id;}
     }
   }
   // A queued task may recover the completed transition marker only here.
@@ -622,9 +617,30 @@ export async function prepareAgentRun(
   if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
     throw new Error('Access changed during context transition; the original work remains queued.');
   const requestContextRollover = Boolean(
-    internalV3Dispatch && (v3FreshProviderSession||voiceMemoryBoundary),
+    internalV3Dispatch && v3FreshProviderSession && !pauseRecovery,
   );
-  let resumeSessionState = pauseRecovery ? undefined : store.resumeSessionState(agent.id);
+  const acceptedState = store.resumeSessionState(agent.id);
+  const nativeAdapter = [CodexAdapter.prototype, ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter)) &&
+    !Object.hasOwn(engine.adapter, 'openSession');
+  const pausedSession = pauseRecovery?.phase === 'source' && nativeAdapter && Boolean(
+    acceptedState && store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r JOIN scheduler_prompt_injections i
+      ON i.run_id=r.id AND i.kind='turn' AND i.state='acknowledged'
+      WHERE r.id=? AND r.agent_id=? AND r.project_id=? AND r.scope_key=? AND r.provider_session_id=?
+        AND r.side_effects_fenced_at IS NOT NULL`).get(pauseRecovery.run_id,agent.id,project.id,schedulerRunScopeKey,acceptedState.sessionId));
+  const pauseOrigin = pausedSession && acceptedState ? store.providerSessionOriginRunId(agent.id,acceptedState.sessionId) : undefined;
+  const nativePause = Boolean(pauseRecovery && pausedSession && pauseOrigin && acceptedState &&
+    acceptedState.toolContractHash === effectiveRuntimeSessionContractHash &&
+    !memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,pauseOrigin) &&
+    !hasKnownRetainedMemory(store,agent.id,pauseOrigin,pauseRecovery.run_id,acceptedState.sessionId));
+  if (pausedSession && !nativePause)
+    throw contextRecoveryRequired("The paused native session requires review because its settings or prior memory access cannot be verified.");
+  if (nativePause) {
+    projectedPauseCheckpoint = '';
+    pauseCheckpoint = '';
+  }
+  if (Buffer.byteLength(pauseCheckpoint,'utf8')>MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)
+    throw contextRecoveryRequired('The preserved pause checkpoint exceeds the bounded recovery packet; work and the human hold remain intact.');
+  let resumeSessionState = pauseRecovery && !nativePause ? undefined : acceptedState;
   const attachedActivationIds = preflightAttachedActivationIds;
   const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(
@@ -663,129 +679,24 @@ export async function prepareAgentRun(
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)
       ? genericHandoff : undefined);
-  // Continue only a proven first-generation Codex session that was never
-  // offered Ponderosa Local Memory tools. Voice may reuse an unchanged contract; ordinary
-  // turns may also change only the explicit model. Other cases keep their
-  // existing scope and voice boundaries.
-  let strictRetainedVoiceContext=false;
-  let retainedVerifiedContext=false,retainedMemoryProof:(()=>boolean)|undefined;
-  const managedVoiceSource=voiceMemoryBoundary&&memory&&resumeSessionState&&!settingsTransition&&!v3FreshProviderSession
-    ?store.sqlite.prepare(`SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=? AND status='completed'
-      AND prompt_injection_state='injected' AND fencing_token<(SELECT fencing_token FROM scheduler_runs WHERE id=?)
-      ORDER BY fencing_token DESC LIMIT 1`).get(agent.id,resumeSessionState.sessionId,runId) as {id:string}|undefined:undefined;
-  const managedVoiceProof=managedVoiceSource&&memory&&resumeSessionState&&
-    [CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))&&!Object.hasOwn(engine.adapter,'openSession')
-    ?await proveRetainedManagedVoiceContext({store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:resumeSessionState.sessionId,
-      sourceRunId:managedVoiceSource.id,currentRunId:runId,contractHash:effectiveRuntimeSessionContractHash,systemPromptHash}):undefined;
-  const canRetainVerifiedContext=(kind:'voice'|'model')=>{
-    if(kind==='voice'&&managedVoiceProof?.isCurrent()){retainedMemoryProof=managedVoiceProof.isCurrent;retainedVerifiedContext=true;strictRetainedVoiceContext=true;return true;}
-    if(runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
-       Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
-       !effectiveModel?.trim())return false;
-    if(kind==='voice'&&memory&&routingConversationId){
-      const runtime=reusableRuntime(agent.id);
-      if(runtime&&(!runtime.nativeCodexModelChange||!runtime.session.isAlive()||readProviderSessionIdentifier(runtime.session)!==resumeSessionState.sessionId))return false;
-      const latest=store.sqlite.prepare(`SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=?
-        AND status='completed' AND prompt_injection_state='injected' AND fencing_token<(SELECT fencing_token FROM scheduler_runs WHERE id=?)
-        ORDER BY fencing_token DESC LIMIT 1`).get(agent.id,resumeSessionState.sessionId,runId) as {id:string}|undefined;
-      const proof=latest&&proveRetainedCodexVoiceContext({store,memory,agentId:agent.id,chatId:routingConversationId,
-        sessionId:resumeSessionState.sessionId,sourceRunId:latest.id,currentRunId:runId,contractHash:effectiveRuntimeSessionContractHash,systemPromptHash});
-      if(proof?.isCurrent()){
-        retainedMemoryProof=proof.isCurrent;retainedVerifiedContext=true;strictRetainedVoiceContext=true;return true;
-      }
-    }
-    const runtime=reusableRuntime(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
-    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
-    // Only the Agent's first accepted generation is eligible. A later
-    // generation may inherit a compacted handoff; a user-authorized native
-    // fork can import opaque provider history from another Agent.
-    const origin=store.sqlite.prepare(`SELECT type,payload_json FROM events WHERE agent_id=?
-      AND type IN ('session_snapshot','context_rollover_session_accepted') ORDER BY seq LIMIT 1`).get(agent.id) as {type:string;payload_json:string}|undefined;
-    let originExecutionId:string|undefined,originContractHash:string|undefined;
-    try{const event=JSON.parse(origin?.payload_json??'null');if(origin?.type==='session_snapshot'&&
-      event?.sessionId===resumeSessionState.sessionId&&typeof event.executionId==='string'&&
-      typeof event.toolContractHash==='string'){originExecutionId=event.executionId;originContractHash=event.toolContractHash;}}catch{return false;}
-    const originRun=originExecutionId?store.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=?
-      AND provider_session_id=? AND prompt_injection_state='injected'`).get(originExecutionId,agent.id,resumeSessionState.sessionId):undefined;
-    const seed=originExecutionId&&originRun?store.getProviderInput(originExecutionId,true):undefined;
-    const seedManifest=seed?.sourceManifest.schemaVersion===3?seed.sourceManifest:undefined;
-    // Any native history receipt targeting this Agent, including a cancelled
-    // or malformed fork, makes the inherited provider history unqualified.
-    const fork=store.sqlite.prepare(`SELECT 1 FROM coordination_idempotency WHERE operation='native_history'
-      AND json_extract(result_json,'$.targetAgentId')=? LIMIT 1`).get(agent.id);
-    if(!seedManifest || seedManifest.providerSessionDisposition!=='fresh_task' ||
-       !seedManifest.normalRuntimeContract || seedManifest.normalRuntimeContract.contractHash!==originContractHash ||
-       !Array.isArray(seedManifest.sources) || !Array.isArray(seedManifest.normalRuntimeContract.dynamicTools) ||
-       seedManifest.sources.some(source=>source.kind==='continuation_handoff') || fork)return false;
-    const chatId=routingConversationId,sessionId=resumeSessionState.sessionId,originId=originExecutionId;
-    if(!chatId||!originId)return false;
-    // The first/current contracts alone do not exclude a memory-capable
-    // intervening Run. Inspect the entire accepted generation.
-    const priorMemoryToolState=():0|1|2=>{
-      try{
-        const db=store.sqlite,first=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originId,agent.id) as {fencing_token:number;scope_key:string}|undefined;
-        const current=db.prepare("SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=? AND status IN ('leased','running')").get(runId,agent.id) as {fencing_token:number;scope_key:string}|undefined;
-        if(!first||!current||first.fencing_token>=current.fencing_token||first.scope_key!==current.scope_key)return 0;
-        const outside=db.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND
-          ((fencing_token<? AND (prompt_injection_state<>'not_injected' OR provider_session_id IS NOT NULL OR status IN ('leased','running','outcome_unknown'))) OR
-           (provider_session_id=? AND (fencing_token<? OR fencing_token>=?))) LIMIT 1`).get(agent.id,runId,first.fencing_token,sessionId,first.fencing_token,current.fencing_token);
-        if(outside)return 0;
-        let count=0,offered=false;
-        const rows=db.prepare('SELECT id,scope_key,status,provider_session_id,prompt_injection_state FROM scheduler_runs WHERE agent_id=? AND fencing_token>=? AND fencing_token<? ORDER BY fencing_token,id').iterate(agent.id,first.fencing_token,current.fencing_token) as Iterable<{id:string;scope_key:string;status:string;provider_session_id:string|null;prompt_injection_state:string}>;
-        for(const row of rows){
-          if(count===0&&row.id!==originId)return 0;
-          const packet=store.getProviderInput(row.id,true),manifest=packet?.sourceManifest;
-          if(row.status!=='completed'||row.prompt_injection_state!=='injected'||row.provider_session_id!==sessionId||row.scope_key!==current.scope_key||
-            !packet||packet.schedulerRunId!==row.id||typeof packet.exactPrompt!=='string'||createHash('sha256').update(packet.exactPrompt).digest('hex')!==packet.promptHash||
-            manifest?.schemaVersion!==3||manifest.conversationId!==chatId||!Array.isArray(manifest.sources)||
-            !Array.isArray(manifest.memoryScopes)||manifest.memoryScopes.length!==0||
-            manifest.sources.some(source=>source.kind==='continuation_handoff'||source.kind==='pause_checkpoint'||(source as {kind:string}).kind==='memory')||
-            !Array.isArray(manifest.normalRuntimeContract?.dynamicTools)||
-            manifest.providerSessionDisposition!==(row.id===originId?'fresh_task':'continued_session'))return 0;
-          offered ||= manifest.normalRuntimeContract.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_'));
-          count++;
-        }
-        return count>0?(offered?2:1):0;
-      }catch{return 0;}
-    };
-    const priorTools=priorMemoryToolState();
-    if(priorTools===0)return false;
-    if(priorTools===2){
-      if(!memory)return false;
-      const proof=()=>priorMemoryToolState()===2&&memory.canRetainUnusedMemory(agent.id,chatId,sessionId,originId,runId);
-      if(!proof())return false;
-      retainedMemoryProof=proof;
-    }else retainedMemoryProof=()=>priorMemoryToolState()===1;
-    if((runtime && (!runtime.nativeCodexModelChange || !runtime.session.isAlive() ||
-       readProviderSessionIdentifier(runtime.session)!==resumeSessionState.sessionId)) ||
-       !packet || !contract || contract.version!==1 || contract.engineId!==runtimeEngineId ||
-       contract.workingCopyId!==workingCopy.id || contract.cwd!==workingCopy.rootPath ||
-       contract.contractHash!==resumeSessionState.toolContractHash ||
-       !contract.model?.trim() ||
-       packet.exactSystemPrompt===undefined ||
-       createHash('sha256').update(packet.exactSystemPrompt).digest('hex')!==systemPromptHash)return false;
-    if(kind==='voice'){
-      retainedVerifiedContext=resumeSessionState.toolContractHash===effectiveRuntimeSessionContractHash;
-      return retainedVerifiedContext;
-    }
-    if(contract.model.trim()===effectiveModel.trim())return false;
-    const previousSessionHash=providerSessionContractHash(runtimeEngineId,workingCopy.id,contract.model,effectiveEffort,providerToolHash);
-    const previousHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:previousSessionHash,
-      speed:effectiveSpeed,...(runtimeAuthentication.billingMode?{billingMode:runtimeAuthentication.billingMode}:{}),
-      systemPromptHash,scopeKey:schedulerRunScopeKey},resumeSessionState.toolContractHash);
-    retainedVerifiedContext=previousHash===resumeSessionState.toolContractHash;
-    return retainedVerifiedContext;
-  };
-  const canRetainManagedVoice=()=>{
-    if(!managedTransitionReplacementSession||!settingsTransition||!memory||!settingsTransition.authorizationSignatureHash||
-       !settingsTransition.authorizationOriginRunId||!['codex','claude'].includes(runtimeEngineId)||
-       ![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession')||
-       resumeSessionState?.sessionId!==managedTransitionReplacementSession||
-       resumeSessionState.toolContractHash!==effectiveRuntimeSessionContractHash)throw new Error('The verified voice transition cannot be resumed; its accepted context remains retained.');
-    const proof=()=>memory.transitionAuthorizationStillValid(agent.id,agent.conversationId,
-      settingsTransition!.authorizationOriginRunId!,settingsTransition!.sourceRunId,runId,settingsTransition!.authorizationSignatureHash!);
-    if(!proof())throw new Error('Memory access changed before the verified voice transition resumed.');
-    retainedMemoryProof=proof;retainedVerifiedContext=true;return true;
+  // Effort and speed can change within a verified native session for the same model.
+  let retainedVerifiedContext = false;
+  const canRetainRuntimeSettings = () => {
+    if (!resumeSessionState?.toolContractHash || !internalV3Dispatch || !schedulerRunScopeKey ||
+        ![CodexAdapter.prototype, ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter)) ||
+        Object.hasOwn(engine.adapter, 'openSession')) return false;
+    const packet = store.acceptedProviderSessionInput(agent.id);
+    const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
+    if (!contract || contract.contractHash !== resumeSessionState.toolContractHash ||
+        contract.engineId !== runtimeEngineId || contract.model !== effectiveModel || contract.cwd !== workingCopy.rootPath ||
+        contract.workingCopyId !== workingCopy.id || packet?.systemPromptHash !== systemPromptHash) return false;
+    const priorHash = providerRuntimeSessionContractHash({
+      runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id, contract.model, contract.effort, providerToolHash),
+      speed: contract.speed,
+      ...(runtimeAuthentication.billingMode ? { billingMode: runtimeAuthentication.billingMode } : {}),
+      systemPromptHash, scopeKey: schedulerRunScopeKey,
+    }, resumeSessionState.toolContractHash);
+    return priorHash === resumeSessionState.toolContractHash;
   };
   if (providerSwitch) {
     const staleRuntime = reusableRuntime(agent.id);
@@ -806,9 +717,16 @@ export async function prepareAgentRun(
     assertCurrent();
     if(runContext.providerProcessAuthority.count({agentId:agent.id})!==0)
       throw new Error("The previous provider process has not exited. The instruction remains saved.");
-    // Retain the old accepted snapshot for history and safe pre-submission retries
-    // until acknowledgement lets the existing executor publish the replacement.
-    resumeSessionState=undefined;
+    // Keep the accepted snapshot until the provider acknowledges this exact input.
+    if (providerSwitch.resumesNative) {
+      const origin = store.providerSessionOriginRunId(agent.id,providerSwitch.providerSessionId);
+      if (!origin || memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,origin))
+        throw contextRecoveryRequired("Earlier memory access could not be verified for native continuation.");
+      if (!nativeAdapter || requestContextRollover || providerSwitch.providerSessionId !== resumeSessionState?.sessionId ||
+          (resumeSessionState?.toolContractHash !== effectiveRuntimeSessionContractHash && !canRetainRuntimeSettings()))
+        throw contextRecoveryRequired("The interrupted provider session does not match the current settings or scope. Review its retained context before continuing.");
+      retainedVerifiedContext = true;
+    } else resumeSessionState=undefined;
     scheduledSessionRollovers.delete(agent.id);
     organizationEnvelopeStates.delete(agent.id);
   } else if (eligibleContinuationHandoff) {
@@ -822,26 +740,32 @@ export async function prepareAgentRun(
     // replacement reports low-water reconstruction and is atomically accepted.
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
-  } else if (requestContextRollover && !(voiceMemoryBoundary && !v3FreshProviderSession && (managedTransitionReplacementSession?canRetainManagedVoice():canRetainVerifiedContext('voice')))) {
+  } else if (requestContextRollover) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff cannot reseed the original session");
     // Scope/privacy changes retire opaque context; a new same-scope Request
     // alone is compatible. Close only idle owned runtime authority.
     const staleRuntime = reusableRuntime(agent.id);
     scheduledSessionRollovers.delete(agent.id);
-    clearAgentResumeSession(agent.id, voiceMemoryBoundary?"voice_memory_context":"request_context_rollover");
+    clearAgentResumeSession(agent.id, "request_context_rollover");
     organizationEnvelopeStates.delete(agent.id);
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
   } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash &&
-      !canRetainVerifiedContext('model')) {
+      !(retainedVerifiedContext = canRetainRuntimeSettings())) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff contract changed; original accepted context retained");
-    // An instruction edit may race scheduler preflight. Return this exact
-    // still-uninjected lease to admission when only the prompt changed.
+    // A model or instruction edit may race scheduler preflight. Return the
+    // exact uninjected claim before retirement can clear the accepted context.
     const oldPacket=store.acceptedProviderSessionInput(agent.id);
-    if(internalV3Dispatch && !settingsTransition && oldPacket?.exactSystemPrompt &&
-       oldPacket.exactSystemPrompt!==currentSystemPrompt &&
-       [CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter)) &&
-       !Object.hasOwn(engine.adapter,'openSession')) {
+    const oldContract=oldPacket?.sourceManifest.schemaVersion===3 ? oldPacket.sourceManifest.normalRuntimeContract : undefined;
+    if(internalV3Dispatch && nativeAdapter && !transitionActivation && !preflightActiveRollover &&
+       !pauseRecovery && !folderTransition && runtimeEngineId===agent.activeEngine &&
+       schedulerRunScopeKey===`conversation:${agent.conversationId}` &&
+       oldContract?.contractHash===resumeSessionState.toolContractHash && oldContract?.engineId===runtimeEngineId &&
+       oldContract.workingCopyId===workingCopy.id && oldContract.cwd===workingCopy.rootPath &&
+       oldContract.model && effectiveModel && oldContract.model!==effectiveModel)
+      throw new PromptContractAdmissionChanged('The model changed before admission; work remains queued for a context handoff.');
+    if(internalV3Dispatch && !settingsTransition && nativeAdapter && oldPacket?.exactSystemPrompt &&
+       oldPacket.exactSystemPrompt!==currentSystemPrompt) {
       const oldPromptHash=createHash('sha256').update(oldPacket.exactSystemPrompt).digest('hex');
       const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash,speed:effectiveSpeed,
        ...(runtimeAuthentication.billingMode?{billingMode:runtimeAuthentication.billingMode}:{}),
@@ -859,6 +783,12 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
   }
+  if (nativePause) retainedVerifiedContext = true;
+  if (retainedVerifiedContext && runtimeEngineId === 'claude') {
+    // Claude applies effort at startup. Reopen the same native generation.
+    const idle = reusableRuntime(agent.id);
+    if (idle) await teardownPersistentRuntime(agent.id, idle, "retained runtime settings changed", project.id);
+  }
   const acceptedTransitionReplacement=():string|undefined=>{
     if(!settingsTransition||!preflightActiveRollover || transitionActivation?.kind!=='context_rollover_continuation')return undefined;
     const rollover=coordinationV3.contextRollover(preflightActiveRollover.id);
@@ -870,18 +800,29 @@ export async function prepareAgentRun(
     const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],currentPolicy);
     const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
     const saved=store.resumeSessionState(agent.id);
+    const updatedNativeSnapshot = saved?.sessionId === resumeSessionState?.sessionId &&
+      saved?.toolContractHash === effectiveRuntimeSessionContractHash &&
+      store.acceptedProviderSessionInput(agent.id)?.executionId === runId;
     const switchSnapshotMatches=providerSwitch && (
       saved?.sessionId===providerSwitch.providerSessionId && saved.toolContractHash===providerSwitch.toolContractHash ||
-      saved?.sessionId!==providerSwitch.providerSessionId && store.acceptedProviderSessionInput(agent.id,true)?.executionId===runId
+      store.acceptedProviderSessionInput(agent.id,true)?.executionId===runId
     );
-    if(retainedMemoryProof&&!retainedMemoryProof())throw new Error('Memory access changed before the saved Codex thread could continue.');
+    if ((retainedVerifiedContext || voiceInput && resumeSessionState) && store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r
+      WHERE r.agent_id=? AND r.project_id=? AND r.scope_key=? AND r.id<>?
+      AND (r.provider_session_id=? OR r.provider_session_id IS NULL)
+      AND r.id NOT IN(SELECT value FROM json_each(?))
+      AND ((r.status='outcome_unknown' AND r.prompt_injection_state<>'not_injected') OR r.prompt_injection_state='injecting'
+        OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
+      .get(agent.id,project.id,schedulerRunScopeKey,runId,resumeSessionState?.sessionId,
+        JSON.stringify([...historicalRunIds,...(nativePause&&pauseRecovery?[pauseRecovery.run_id]:[])])))
+      throw contextRecoveryRequired("An earlier provider outcome requires review before retaining this native session.");
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
        currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
        current.model!==agent.model || current.effort!==agent.effort || current.speed!==agent.speed ||
        current.role!==agent.role || runtimeSystemPrompt(current,managedRules)!==currentSystemPrompt ||
        current.workingCopy.state!=='ready' || current.workingCopy.id!==workingCopy.id ||
        current.workingCopy.rootPath!==workingCopy.rootPath ||
-       (!switchSnapshotMatches && !(saved?.sessionId===(settingsTransition?preflightResumeSessionState?.sessionId:resumeSessionState?.sessionId) &&
+       (!updatedNativeSnapshot && !switchSnapshotMatches && !(saved?.sessionId===(settingsTransition?preflightResumeSessionState?.sessionId:resumeSessionState?.sessionId) &&
          saved?.toolContractHash===(settingsTransition?preflightResumeSessionState?.toolContractHash:resumeSessionState?.toolContractHash)) &&
          !(saved?.sessionId===acceptedTransitionReplacement() && saved?.toolContractHash===effectiveRuntimeSessionContractHash)) ||
        (currentProject.instructions?.trim()??'')!==projectInstructions ||
@@ -891,7 +832,7 @@ export async function prepareAgentRun(
        JSON.stringify(currentRestrictions)!==JSON.stringify(targetCapabilityRestrictions) ||
        !authenticationUnchanged() ||
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
-      throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
+      throw new Error('Settings or access changed before the saved provider session could continue. The original context remains retained.');
   };
   const assertSettingsTransitionPolicy = providerSwitch ? () => {
     assertRetainedContextPolicy();
@@ -912,11 +853,14 @@ export async function prepareAgentRun(
       "SELECT scope_key,payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND state IN ('pending','retry_pending','attached')"
     ).get(settingsTransition.activationId,agent.id,project.id) as {scope_key:string;payload_json:string}|undefined;
     const source=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(settingsTransition.sourceRunId,agent.id) as {fencing_token:number}|undefined;
-    const uncertain=source&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.id<>? AND
-      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
-       OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
-      .get(agent.id,runId);
-    if(!source||source.fencing_token!==settingsTransition.sourceFence||uncertain)
+    const origin=store.providerSessionOriginRunId(agent.id,settingsTransition.oldSessionId);
+    const lineageStart=origin&&memoryLineageStart(store,agent.id,agent.conversationId,origin);
+    const uncertain=lineageStart!==undefined&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.id<>? AND
+      (r.status IN ('leased','running') OR (r.scope_key=? AND r.fencing_token>=? AND
+        (r.status='outcome_unknown' OR r.prompt_injection_state='injecting'
+         OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')))) LIMIT 1`)
+      .get(agent.id,runId,schedulerRunScopeKey,lineageStart);
+    if(!source||source.fencing_token!==settingsTransition.sourceFence||lineageStart===undefined||uncertain)
       throw new Error('Earlier provider work has an uncertain outcome; the original context remains retained.');
     if(!current||!currentProject||!row||row.scope_key!==schedulerRunScopeKey ||
        !((saved?.sessionId===(managedTransitionReplacementSession??settingsTransition.oldSessionId) &&
@@ -930,8 +874,9 @@ export async function prepareAgentRun(
     if(opts.localMemory && (!memory || !settingsTransition.authorizationSignatureHash || !settingsTransition.authorizationOriginRunId ||
        !memory.transitionAuthorizationStillValid(agent.id,current.conversationId,settingsTransition.authorizationOriginRunId,settingsTransition.sourceRunId,runId,settingsTransition.authorizationSignatureHash)))
       throw new Error('Memory access changed during context transition; the original context remains retained.');
-  } : strictRetainedVoiceContext ? assertRetainedContextPolicy : undefined;
+  } : undefined;
   assertSettingsTransitionPolicy?.();
+  if (retainedVerifiedContext || voiceInput && resumeSessionState) assertRetainedContextPolicy();
   const validateSettingsTransitionSources = settingsTransition || folderTransition ? async () => {
     await folderTransition?.validateSources();
     if(!settingsTransition)return;
@@ -1240,10 +1185,6 @@ export async function prepareAgentRun(
   // Current-turn projection only: never persist voice mode as session policy
   // or duplicate the primary authored payload. Both resume and fresh fallback
   // receive the same exact canonical binding; the marker grants no authority.
-  const voiceInput = internalV3Dispatch && v3SchedulerRunId &&
-      availableRuntimeTools.some(tool => tool.name === "ponderosa_voice_reply") && engine.adapter.supportsVoiceReplyStream
-    ? canonicalVoiceReplyInput(store, coordinationV3, { runId, agentId: agent.id, conversationId: routingConversationId })
-    : undefined;
   const voicePacketSessionSeq = memorySessionResetSeq(store, agent.id);
   const currentVoiceInput = `[CURRENT RUN VOICE INPUT · HOST PROJECTION]\n${JSON.stringify({
     runId, voiceReply: Boolean(voiceInput),
@@ -1354,7 +1295,8 @@ export async function prepareAgentRun(
   const validLiveUsage = observedUsage?.providerSessionGeneration === resumeSessionId ? observedUsage : undefined;
   const acceptedUsage = resumeSessionId ? store.acceptedProviderSessionContextUsage(agent.id) : undefined;
   const retainedEstimate = resumeSessionId && !acceptedUsage ? store.acceptedProviderSessionInputEstimate(agent.id) : undefined;
-  if (resumeSessionId && !acceptedUsage && !retainedEstimate) {
+  const unmeasuredNativeResume = Boolean(nativePause || providerSwitch?.resumesNative);
+  if (resumeSessionId && !acceptedUsage && !retainedEstimate && !unmeasuredNativeResume) {
     throw contextRecoveryRequired("Retained provider context cannot be safely measured. Native work or uncertain input requires explicit context recovery before another turn.");
   }
   const { type: _usageType, providerSessionId: _observedSession, providerCommand: _commandOwner, ...durableUsage } = acceptedUsage?.usage ?? {};
@@ -1378,7 +1320,7 @@ export async function prepareAgentRun(
     ...(validLiveUsage ? { liveLowerBoundTokens: validLiveUsage.usedTokens } : {}),
   } : undefined;
   const currentBudget = providerInputBudget(workspacePreferences, budgetUsage, {
-    resumeSessionId, replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
+    resumeSessionId, allowUnmeasuredNativeResume: unmeasuredNativeResume, replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
     occupancyObservation,
     ...(retainedEstimate ? { estimatedSessionUtf8Bytes: retainedEstimate.acceptedInputUtf8Bytes + retainedEstimate.outputUtf8Bytes + retainedStaticUtf8Bytes } : {}),
     postObservationUtf8Bytes: acceptedUsage?.postObservationUtf8Bytes,
@@ -1421,6 +1363,8 @@ export async function prepareAgentRun(
       fresh || !resumeSessionId ? reconstructionNotice : '',
       !ownsFrozenHandoff && (fresh || !resumeSessionId) ? unfinishedTaskContext : '',
       continuationHandoffPrompt, pauseCheckpoint,
+      nativePause ? "The human resumed the previous interrupted Run. Use the retained native context and only current Run authority. Verify uncertain effects before any retry." : "",
+      providerSwitch?.resumesNative ? "This is independent new work. Earlier work may have had uncertain effects and must not be resumed or replayed." : "",
       broadcast.length ? sharedBroadcastContextPrompt(broadcast, conversation?.agents ?? []) : "",
       communicationV4NextRunDeliveryContext,
       `${turnGuidance}\n\n${basePrompt(fresh)}${attachmentContext}${sharedAttachments}${coalescedActivationContext}`,
@@ -1450,13 +1394,13 @@ export async function prepareAgentRun(
   freshRoomMessages = freshRequiredFits ? originalFreshRoom : [];
   freshBroadcastContext = freshRequiredFits ? originalFreshBroadcast : [];
   if (frozenRolloverTail) {
-    const available = reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens;
-    boundedHistoryCandidates = boundedFrozenSeedHistory(fullHistory, available);
+    const available = Math.min(MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES, 2 * (reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens));
+    boundedHistoryCandidates = available > 0 ? boundedFrozenSeedHistory(fullHistory, available) : [];
   }
   updateSeed();
   let freshPrompt = await compilePrompt(true, omissionState().fresh);
   let freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
-  let frozenAllowance = reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens;
+  let frozenAllowance = Math.min(MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES, 2 * (reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens));
   const contextNames = new Map(contextAgents.map(member => [member.id, member.title]));
   const serializedBytes = (value: string) => Buffer.byteLength(JSON.stringify(value), "utf8");
   const contextBytes = (message: ConversationMessageDto, broadcast: boolean) => {
@@ -1474,15 +1418,14 @@ export async function prepareAgentRun(
   };
   while (freshRequiredFits && estimate(true, freshExactProviderInput).estimatedInputTokens > reconstructionCeiling) {
     const excess = estimate(true, freshExactProviderInput).estimatedInputTokens - reconstructionCeiling;
-    if (freshBroadcastContext.length) trimContext(freshBroadcastContext, excess, false, true);
-    else if (freshRoomMessages.length) trimContext(freshRoomMessages, excess, false, false);
-    else if (frozenRolloverTail) {
-      frozenAllowance -= Math.max(1, excess);
-      if (frozenAllowance <= 0) throw overflow();
-      boundedHistoryCandidates = boundedFrozenSeedHistory(fullHistory, frozenAllowance);
+    if (freshBroadcastContext.length) trimContext(freshBroadcastContext, 2 * excess, false, true);
+    else if (freshRoomMessages.length) trimContext(freshRoomMessages, 2 * excess, false, false);
+    else if (frozenRolloverTail && boundedHistoryCandidates.length) {
+      frozenAllowance -= 2 * excess;
+      boundedHistoryCandidates = frozenAllowance > 0 ? boundedFrozenSeedHistory(fullHistory, frozenAllowance) : [];
     } else if (boundedHistoryCandidates.length) {
       // Current Chat continuity outranks other Agent-private/imported history.
-      let remainingExcess = excess;
+      let remainingExcess = 2 * excess;
       while (boundedHistoryCandidates.length && remainingExcess > 0) {
         const secondary = boundedHistoryCandidates.findIndex(message =>
           !contextArtifactHistory.includes(message) &&
@@ -1525,7 +1468,7 @@ export async function prepareAgentRun(
   const currentHistoryOmitted = omissions.current, freshHistoryOmitted = omissions.fresh;
   const currentBudgetEvidence = estimate(false, exactProviderInput);
   const freshBudgetEvidence = estimate(true, freshExactProviderInput);
-  const providerSessionDisposition = replacementCandidateRollover || pauseRecovery
+  const providerSessionDisposition = replacementCandidateRollover || (pauseRecovery && !nativePause)
     ? "reseeded" as const : requestContextRollover && !retainedVerifiedContext
       ? coordinationV3.runChangesScope(runId, agent.id) ? "reseeded" as const : "fresh_task" as const
       : resumeSessionId ? "continued_session" as const : "fresh_task" as const;
@@ -1825,7 +1768,7 @@ export async function prepareAgentRun(
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
     retainedVerifiedContext,
-    assertRetainedContextPolicy:retainedVerifiedContext?assertRetainedContextPolicy:undefined,
+    assertRetainedContextPolicy:retainedVerifiedContext||voiceInput&&resumeSessionId?assertRetainedContextPolicy:undefined,
     assertSettingsTransitionPolicy,
     validateSettingsTransitionSources,
     workingCopy,

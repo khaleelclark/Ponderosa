@@ -2,6 +2,7 @@ import { requireBranchGuidanceSubmission } from "./branch-guidance-authority.js"
 import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { requireBranchScheduleInjectionEligible } from "./coordination-v3-branch-schedule.js";
+import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
@@ -393,6 +394,14 @@ export class CoordinationV3RunLifecycleAuthority {
         WHERE id = ? AND fencing_token = ?
           AND status IN ('leased', 'running')
       `, [now, now, runId, fence]);
+      // A completed Run no longer needs the provider's live-steering backoff.
+      this.sqlite.prepare(`
+        UPDATE agent_activations AS a SET available_at = ?, updated_at = ?
+        WHERE a.id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+          AND a.state = 'retry_pending' AND a.kind = 'human_message' AND a.prompt_class = 'human'
+          AND a.dispatch_policy = 'steer_or_run' AND a.steering_wait_reason = 'provider_not_ready'
+          AND a.available_at > ? AND ${transitionUnsubmittedActivationSql('a')}
+      `).run(now, now, runId, now);
       this.questionAuthority.settleUnansweredQuestionsForRun(
         runId,
         now,

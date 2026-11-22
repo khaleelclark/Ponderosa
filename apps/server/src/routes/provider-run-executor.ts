@@ -1,4 +1,4 @@
-import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
+import { newlyRestrictedRuntimeAccess } from "../provider-access-restrictions.js";
 import { restrictedInternalExceptionDiagnostic } from "../provider-exception-properties.js";
 import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
@@ -23,6 +23,7 @@ import {
   type RuntimeProcessHandle,
   type RuntimeTurnInput,
   unicodeCodePointLength,
+  LONG_TEXT_MAX_UTF8_BYTES,
   runtimeRestrictions,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
@@ -289,8 +290,9 @@ export function startProviderRunExecution(
 
   const execution = (async () => {
     // Consolidate ordinary response deltas into one durable, execution-scoped
-    // Work log entry. Communication is created only by explicit intent calls.
+    // Work log entry. Preserve provider-confirmed final text separately.
     let runError: string | undefined;
+    let providerAcknowledgementUnconfirmed = false;
     let providerHttpStatusCode: number | undefined;
     let providerRetryAfterMs: number | undefined;
     let providerQuotaResetAt: string | undefined;
@@ -302,6 +304,7 @@ export function startProviderRunExecution(
     let internalFailureCode: "run_orchestration" | "context_rollover_conflict"
       | "context_rollover_boundary" | undefined;
     let finalText = "";
+    let finalAnswer: string | undefined;
     let firstTextSeq: number | undefined;
     let lastTextSeq: number | undefined;
     let v3PromptInjected = false;
@@ -320,11 +323,12 @@ export function startProviderRunExecution(
     // A bounded watchdog covers store mutations, grant/policy changes and expiry;
     // Candidate/final boundaries await the same validation; canonical commit also
     // rechecks synchronous host authority after the asynchronous storage read.
+    let retainedMemoryInputProof: (() => boolean) | undefined;
     let checkingVoice:Promise<boolean>|undefined;
     const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
       if (voiceContextInvalid) return false;
       if (!activeRun.voiceReply) return true;
-      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();assertRetainedContextPolicy?.();if(retainedMemoryInputProof&&!retainedMemoryInputProof())throw Error('Voice memory changed');const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
       catch {
         voiceContextInvalid = true;
         if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
@@ -336,7 +340,7 @@ export function startProviderRunExecution(
       }
     })().finally(()=>{checkingVoice=undefined;});
     activeRun.validateVoiceReplyContext = validateVoiceReplyContext;
-    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();return !voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
+    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();assertRetainedContextPolicy?.();return !voiceContextInvalid&&(retainedMemoryInputProof?.()??true)&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
     const voiceContextTimer = activeRun.voiceReplyStreamSupported
       ? setInterval(() => {
           if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
@@ -388,13 +392,12 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
-      let retainedMemoryInputProof: (() => boolean) | undefined;
       // The scheduler preflight may have yielded before the Run was claimed.
       // Revalidate the exact previously disclosed sources immediately before
-      // reusing an ordinary retained Codex session.
-      if (runtimeEngineId === "codex" && resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
+      // reusing an ordinary retained session.
+      if (resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
         const accepted = store.resumeSessionState(agent.id);
-        const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
+        const origin = store.providerSessionOriginRunId(agent.id, resumeSessionId);
         const scope = coordinationV3.runScopeKey(runId, agent.id);
         const source = scope ? store.sqlite.prepare(`
           SELECT id FROM scheduler_runs
@@ -431,14 +434,14 @@ export function startProviderRunExecution(
           retainedMemoryInputProof = proof.isCurrent;
         }
       }
-      const assertCurrentCodexAccess = (): void => {
-        if (runtimeEngineId !== "codex") return;
+      const assertCurrentRuntimeAccess = (): void => {
+        assertRetainedContextPolicy?.();
         if (retainedMemoryInputProof && !retainedMemoryInputProof())
           throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
         const current = runtimeRestrictions(
           new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
         );
-        if (newlyRestrictedCodexAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds))
+        if (newlyRestrictedRuntimeAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds, runtimeEngineId))
           throw new Error("Access was restricted before provider input. The original work remains available for review.");
       };
       const openPersistentRuntime = async (
@@ -448,7 +451,7 @@ export function startProviderRunExecution(
       ): Promise<PersistentRuntime> => {
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
-        assertCurrentCodexAccess();
+        assertCurrentRuntimeAccess();
         assertSettingsTransitionPolicy?.();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
@@ -457,7 +460,7 @@ export function startProviderRunExecution(
             if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
                 deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
               throw new Error("Native session lost current Run authority");
-            assertCurrentCodexAccess();
+            assertCurrentRuntimeAccess();
             assertSettingsTransitionPolicy?.();
           },
           cwd: workingCopy.rootPath,
@@ -744,11 +747,11 @@ export function startProviderRunExecution(
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
-      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || (assertSettingsTransitionPolicy && persistentRuntime?.nativeClaudeVerifiedInput)) ||
+      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || persistentRuntime?.nativeClaudeVerifiedInput) ||
           !persistentRuntime.session.isAlive() ||
           readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId)) {
         if (persistentRuntime) await teardownPersistentRuntime(agent.id,persistentRuntime,"unqualified saved-thread continuation",project.id);
-        throw new Error("The saved Codex thread could not be verified. The original context remains retained.");
+        throw new Error("The saved provider session could not be verified. The original context remains retained.");
       }
       if (persistentRuntime) {
         providerProcessAuthority.register(persistentRuntime.session, {
@@ -872,14 +875,14 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
-                        assertCurrentCodexAccess();
+                        assertCurrentRuntimeAccess();
                         if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
-                          throw new Error("Saved Codex thread changed before saved-thread continuation; original context remains retained.");
+                          throw new Error("Saved provider session changed before saved-thread continuation; original context remains retained.");
                         if(retainedVerifiedContext){
-                          if(!assertRetainedContextPolicy)throw new Error("Saved Codex policy proof is unavailable.");
+                          if(!assertRetainedContextPolicy)throw new Error("Saved provider policy proof is unavailable.");
                           assertRetainedContextPolicy();
                         }
                         if (reviewedSteeringRun) {
@@ -950,7 +953,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
-                        assertCurrentCodexAccess();
+                        assertCurrentRuntimeAccess();
                         if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
@@ -1144,6 +1147,9 @@ export function startProviderRunExecution(
             await persistRuntimeEvent(agent.id, activeRun, buffered);
           }
           if (event.type === "response_text") {
+            if (event.kind === "complete" && event.phase === "final_answer") {
+              finalAnswer = Buffer.byteLength(event.text) <= LONG_TEXT_MAX_UTF8_BYTES ? event.text : undefined;
+            }
             if (!await validateVoiceReplyContext()) continue;
             if (activeRun.voiceReply && coordinationV3.latestAcknowledgedSteeringInjection(runId) !== activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate()) {
               await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
@@ -1165,6 +1171,7 @@ export function startProviderRunExecution(
           // Retain payload-free native-work evidence for context accounting in
           // the internal audit only; it is not Chat or ordinary activity output.
           if (event.type === "work_start") {
+            finalAnswer = undefined;
             if (!await persistRuntimeEvent(agent.id, activeRun, { ...event, executionId: runId })) break;
             continue;
           }
@@ -1426,7 +1433,36 @@ export function startProviderRunExecution(
         await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...committingStream.snapshot } });
       }
       if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
-        runError = "provider ended before prompt injection could be confirmed";
+        runError = "The provider ended before Ponderosa could confirm it received the prompt. Review this Run before retrying.";
+      }
+      if (finalAnswer?.trim() && !runError && v3PromptInjected && !activeRun.voiceReply && !input.nativeAction &&
+          activeRun.observedProviderTerminalStatus === "completed" && !controller.signal.aborted && ownsActiveRun(agent.id, activeRun)) {
+        const capability = agentMessageCapabilities.get(messageCapability);
+        const intent = capability?.defaultReply?.intent;
+        const latest = coordinationV3.latestAcknowledgedPromptInjection(runId);
+        const ids = latest ? coordinationV3.activationIdsForInjection(latest.id, runId) : [];
+        const source = ids.length === 1 ? coordinationV3.activationPayloads(agent.id, ids, runId)[0]?.payload as {
+          communication?: { sender?: {kind?:string}; intent?:string }; dispatch?: {voiceReply?:boolean};
+        } | undefined : undefined;
+        if ((intent === "broadcast" || intent === "direct_to_user") && latest?.kind !== "steer" &&
+            source?.communication?.sender?.kind === "user" && !source.dispatch?.voiceReply &&
+            source.communication.intent === (intent === "broadcast" ? "broadcast" : "user_dm") &&
+            coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0) {
+          try {
+            await validateSettingsTransitionSources?.();
+            assertSettingsTransitionPolicy?.();
+            assertRetainedContextPolicy?.();
+            if (!activeRun.validateVoiceReplyCommit?.()) throw new Error("Retained context changed before final-answer publication");
+            const token = randomUUID();
+            activeRun.finalAnswerFallbackToken = token;
+            try {
+              const result = await app.inject({ method:"POST", url:"/api/agent-messages",
+                headers:{authorization:`Bearer ${messageCapability}`,"x-ponderosa-final-answer-fallback":token},
+                payload:{text:redactRunDiagnostic(finalAnswer),idempotencyKey:`final-answer-${latest!.id}`} });
+              if (result.statusCode >= 400) app.log.warn({runId,statusCode:result.statusCode},"Final-answer publication refused");
+            } finally { activeRun.finalAnswerFallbackToken = undefined; }
+          } catch { app.log.warn({runId},"Final-answer publication could not be confirmed"); }
+        }
       }
     } catch (err) {
       const cleanupFailure = takeProviderRuntimeCleanupFailure(err);
@@ -1449,6 +1485,7 @@ export function startProviderRunExecution(
       const providerFailure = isProviderRuntimeBoundaryError(err)
         ? err
         : undefined;
+      providerAcknowledgementUnconfirmed = providerFailure?.code === "provider_ack_deadline";
       const message = providerFailure ? redactRunDiagnostic(providerFailure.restrictedDetail)
         : "Agent execution failed due to an internal runtime error.";
       const failureEvent = providerFailure
@@ -1464,7 +1501,7 @@ export function startProviderRunExecution(
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
       if (workspaceIssue) runFailureClassification = undefined;
-      runError = workspaceIssue ?? runError ?? message;
+      runError = workspaceIssue ?? runError ?? (providerAcknowledgementUnconfirmed ? failureEvent.message : message);
       if (!providerFailure && !workspaceIssue) {
         const conflict = err instanceof Error &&
           err.message === "context rollover provider generation replay conflicts with its durable owner";
@@ -1878,7 +1915,7 @@ export function startProviderRunExecution(
             ...(failureKind ? { failureKind } : {}),
             ...(!failureKind && internalFailureCode ? { internalFailureCode } : {}),
             ...(confirmedNotExecuted ? { confirmedNotExecuted: true } : {}),
-            retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
+            retryable: !projectWorkspaceUnavailable && !providerAcknowledgementUnconfirmed && failureKind !== "authentication",
             error: failureKind
               ? publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed."
               : runError,

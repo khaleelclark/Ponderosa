@@ -169,16 +169,23 @@ export interface MainHistoryState {
   decisionEvents: ConversationDecisionEventDto[];
   cursor?: string;
   hasMore: boolean;
+  historical?: boolean;
 }
 
 export function mergeMainHistoryPage(
   page: { messages: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[]; history?: { cursor?: string; hasMore?: boolean } },
   current: MainHistoryState | undefined,
   live: { messages?: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[] } | undefined,
+  focus = false,
 ): MainHistoryState {
+  const previousMessages = [...(current?.messages ?? []), ...(current?.historical ? [] : live?.messages ?? [])];
+  const visibleIds = new Set(previousMessages.map(message => message?.id));
+  const detached = focus && !page.messages.some(message => visibleIds.has(message.id));
+  const historical = detached || current?.historical;
   return {
-    messages: mergeConversationMessages(page.messages, current?.messages ?? [], live?.messages ?? []),
-    decisionEvents: mergeDecisionEvents(page.decisionEvents ?? [], current?.decisionEvents ?? [], live?.decisionEvents ?? []),
+    messages: mergeConversationMessages(page.messages, detached ? [] : previousMessages),
+    decisionEvents: mergeDecisionEvents(page.decisionEvents ?? [], detached ? [] : current?.decisionEvents ?? [], historical ? [] : live?.decisionEvents ?? []),
+    ...(historical ? { historical: true } : {}),
     cursor: page.history?.cursor,
     hasMore: page.history?.hasMore ?? false,
   };

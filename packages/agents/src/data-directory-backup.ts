@@ -62,6 +62,7 @@ export interface DataDirectoryBackupManifest {
 
 export interface DataDirectoryBackupOptions {
   externalProjects?: "exclude" | "copy";
+  discardIncomplete?: boolean;
 }
 
 export interface DataDirectoryRestoreOptions {
@@ -579,6 +580,7 @@ export function createOfflineDataDirectoryBackup(
   const absoluteDataDir = path.resolve(dataDir);
   const absoluteOutput = backupDestination(dataDir, output);
   const stage = `${absoluteOutput}.partial-${randomUUID()}`;
+  let stageIdentity: string | undefined;
   let ownership: ReturnType<typeof inspectCurrentState> | undefined;
   try {
     ownership = inspectCurrentState(absoluteDataDir);
@@ -597,6 +599,7 @@ export function createOfflineDataDirectoryBackup(
     mkdirSync(path.dirname(absoluteOutput), { recursive: true, mode: 0o700 });
     mkdirSync(stage, { mode: 0o700 });
     if (realpathSync(stage) !== stage) throw new Error("backup output parent changed physical location");
+    stageIdentity = directoryIdentity(stage);
     const externalProjects: DataDirectoryBackupManifest["externalProjects"] = {
       policy: options.externalProjects === "copy" ? "included" : "excluded",
       projects: [],
@@ -632,6 +635,13 @@ export function createOfflineDataDirectoryBackup(
     fsyncDirectory(path.dirname(absoluteOutput));
     return manifest;
   } catch (error) {
+    if (options.discardIncomplete && stageIdentity && existsSync(stage)) {
+      try { removePublishedRoot(stage, stageIdentity); }
+      catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], `backup refused; incomplete stage cleanup could not be confirmed at ${stage}`);
+      }
+      throw new Error("backup refused; owned incomplete stage was removed", { cause: error });
+    }
     throw new Error(`backup refused; any partial stage is preserved at ${stage}`, { cause: error });
   } finally {
     ownership?.close();

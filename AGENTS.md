@@ -84,7 +84,8 @@ Before public release, keep only current product and storage formats. Normalize
 historical backup records only in the one-time offline restore tool; do not add
 compatibility paths to the running application. Delete removes private Agent
 history after runtime cleanup; shared Chat messages and user working folders
-remain. Do not implement archive or unarchive behavior.
+remain. Ordinary Chats support reversible archive and restore. Agents and
+Workflow-owned Chats use their existing lifecycle controls.
 
 Runtime lifecycle operations must fail closed:
 

@@ -13,7 +13,7 @@ import {assertRetainedNativeAuthentication,communicationV3SessionPrompt,provider
 
 type Context={memory?:LocalMemoryService;store:AgentStore;coordinationV3:CoordinationV3Store;workspace:WorkspaceStore;
  engines:ReadonlyMap<string,EngineRegistration>;engineAuthStatuses:Pick<EngineAuthStatusCache,"snapshot">;workingCopies:AgentWorkingCopyService;
- drainRuntime?(id:string,projectId:string):Promise<void>};
+ drainRuntime?(id:string,projectId:string):Promise<void>; clearAgentResumeSession?(id:string,reason:string):void};
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function settingsHash(ctx:Context,agent:AgentDto):string{
  const project=ctx.store.getChatContext(agent.conversationId),prefs=ctx.workspace.getPreferences();
@@ -37,6 +37,8 @@ export function workingCopyChangeStatus(ctx:Pick<Context,'store'|'coordinationV3
   phase:kept?'kept_current':completed?'completed':held?'held':r.state==='requested'?'handoff':agent.workingCopy.mode===change.mode&&agent.workingCopy.state==='ready'?'verifying':'preparing',
   retryable:r.state==='failed'&&Boolean(r.handoffEventId)&&!r.replacementRunId&&!r.replacementSessionId&&knownCopy,
   canKeepCurrent:ctx.coordinationV3.canKeepWorkingCopyTransition(r.id),
+  canUseFreshContext:ctx.coordinationV3.canKeepWorkingCopyTransition(r.id,true),
+  ...(change.freshContext?{freshContext:true}:{}),
   ...(held?{message:change.failureMessage??agent.workingCopy.failure??r.lastError??'Working-folder context is unconfirmed. Inspect Activity before another change.'}:{})}};
 }
 
@@ -73,11 +75,11 @@ export async function requestWorkingCopyChange(ctx:Context,agent:AgentDto,mode:A
   speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),
   systemPromptHash:createHash('sha256').update(packet.exactSystemPrompt).digest('hex'),scopeKey},contract.contractHash);
  if(exactHash!==contract.contractHash)throw Error('The saved provider policy changed; review context before changing the working folder.');
- const memory=ctx.memory,memoryOrigin=memory?ctx.store.acceptedProviderSessionInput(agent.id):undefined;
- const authorization=memory&&memoryOrigin?memory.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin.executionId,boundary.executionId):undefined;
- const exposure=memory&&memoryOrigin?await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin.executionId,boundary.executionId):undefined;
+ const memory=ctx.memory,memoryOrigin=memory?ctx.store.providerSessionOriginRunId(agent.id,accepted.sessionId):undefined;
+ const authorization=memory&&memoryOrigin?memory.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin,boundary.executionId):undefined;
+ const exposure=memory&&memoryOrigin?await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin,boundary.executionId):undefined;
  if(exposure==='changed')throw Error('Earlier memory access changed or was revoked; the working folder and context were retained.');
- if(memory&&(!memoryOrigin||exposure!=='valid'||!authorization||!await memory.validateTransitionReads(agent.id,agent.conversationId,memoryOrigin.executionId,boundary.executionId,boundary.executionId,authorization.signature)))
+ if(memory&&(!memoryOrigin||exposure!=='valid'||!authorization||!await memory.validateTransitionReads(agent.id,agent.conversationId,memoryOrigin,boundary.executionId,boundary.executionId,authorization.signature)))
   throw Error('Earlier memory access changed or cannot be verified; the working folder and context were retained.');
  const tail=ctx.store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!tail)throw Error('The exact saved context boundary is unavailable; the folder was retained.');
  const measured=ctx.store.acceptedProviderSessionContextUsage(agent.id)?.usage;
@@ -90,7 +92,7 @@ export async function requestWorkingCopyChange(ctx:Context,agent:AgentDto,mode:A
   sourceRunId:boundary.executionId,sourceActivationIds:[],scopeKey,...(conversationId?{conversationId}:{}),
   compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
   workingCopyTransition:{mode,sourceRunId:boundary.executionId,oldSessionId:accepted.sessionId,oldCopy:{id:agent.workingCopy.id,mode:agent.workingCopy.mode,rootPath:agent.workingCopy.rootPath},sourceFence:boundary.fencingToken,
-   oldContractHash:contract.contractHash,settingsHash:originalSettingsHash,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:memoryOrigin!.executionId}:{})}});
+   oldContractHash:contract.contractHash,settingsHash:originalSettingsHash,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:memoryOrigin!}:{})}});
  return workingCopyChangeStatus(ctx,agent.id);
 }
 
@@ -165,18 +167,30 @@ export async function prepareWorkingCopyTransition(ctx:Context,agent:AgentDto,ru
 }
 
 /** An explicit escape only when setMode never reached its beforeMutation hook. */
-export async function keepCurrentWorkingCopy(ctx:Context,agent:AgentDto,id:string):Promise<AgentDto>{
+export async function keepCurrentWorkingCopy(ctx:Context,agent:AgentDto,id:string,freshContext=false):Promise<AgentDto>{
  const current=ctx.coordinationV3.workingCopyTransitionForAgent(agent.id);
  if(!current||current.rollover.id!==id)throw Error('The saved working-folder choice changed; refresh its status.');
  if(current.rollover.state==='completed'&&current.change.keptCurrent===true)return workingCopyChangeStatus(ctx,agent.id);
- if(settingsHash(ctx,agent)!==current.change.settingsHash)throw Error('Settings or access changed. Review context before continuing in this folder.');
+ if(freshContext){
+  if(!ctx.drainRuntime||!ctx.clearAgentResumeSession||!ctx.coordinationV3.canKeepWorkingCopyTransition(id,true))
+   throw Error('The verified new folder is unavailable.');
+  const release=ctx.workingCopies.beginModeChange(agent.id);
+  try {
+   await ctx.workingCopies.awaitUses(new Set([agent.id]));
+   await ctx.drainRuntime(agent.id,agent.projectId);
+   if(!ctx.coordinationV3.canKeepWorkingCopyTransition(id,true))throw Error('Working-folder recovery changed.');
+   if(ctx.store.resumeSessionId(agent.id))ctx.clearAgentResumeSession(agent.id,'working_copy_changed');
+   ctx.coordinationV3.keepWorkingCopyTransition(id,true);
+   return workingCopyChangeStatus(ctx,agent.id);
+  }finally{release();}
+ }
+ if(!ctx.coordinationV3.canKeepWorkingCopyTransition(id))throw Error('The exact original folder or transition is no longer available.');
  const packet=ctx.store.getProviderInput(current.rollover.sourceRunId,true),contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
  if(!contract)throw Error('The saved context contract is unavailable; the working folder remains held.');
  assertRetainedNativeAuthentication(contract,ctx.engineAuthStatuses.snapshot(agent.activeEngine));
  const memory=ctx.memory,change=current.change;
  if(memory&&(!change.authorizationSignatureHash||!change.authorizationOriginRunId||!await memory.validateTransitionReads(agent.id,agent.conversationId,change.authorizationOriginRunId,current.rollover.sourceRunId,current.rollover.sourceRunId,change.authorizationSignatureHash)))
   throw Error('Earlier memory access changed or cannot be verified; context remains held.');
- const owner=ctx.store.getAgent(agent.id);if(!owner||settingsHash(ctx,owner)!==change.settingsHash)throw Error('Settings or access changed before the folder choice could be retained.');
  ctx.coordinationV3.keepWorkingCopyTransition(id);
  return workingCopyChangeStatus(ctx,agent.id);
 }

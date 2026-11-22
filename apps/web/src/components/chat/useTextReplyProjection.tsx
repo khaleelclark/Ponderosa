@@ -1,6 +1,6 @@
 import {Typography} from '@mui/material';
 import {useEffect,useReducer,useRef,useState} from 'react';
-import {TERMINAL_REQUEST_STATES,type CoordinationRequestState,type CoordinationRequestUpdateDto,type VoiceReplySnapshot,type VoiceReplyStatus,type ReplyStreamCorrelation} from '@ponderosa/core';
+import {TERMINAL_REQUEST_STATES,type CoordinationRequestState,type CoordinationRequestUpdateDto,type VoiceReplySnapshot,type VoiceReplyStatus,type ReplyStreamCorrelation,type WorkspaceEvent} from '@ponderosa/core';
 import {api} from '../../api';
 import {ApiRequestError} from '../../api/types';
 import {browserPageIsVisible} from '../../queryVisibility';
@@ -10,7 +10,7 @@ import {matchesTextReplyRoute,matchesRequestTextReplyRoute,type ReplySource} fro
 
 type Source={agentId:string;conversationId:string;sourceId:string;sent?:ReplySource;request?:{id:string;state:CoordinationRequestState}};
 type Canonical={replyStream?:ReplyStreamCorrelation;authorAgentId?:string;actorId?:string;executionId?:string;conversationId?:string;communicationIntent?:string;collaborationRecipients?:Array<{id:string}>};
-type Observed={owner:string;source:Source;reply?:VoiceReplySnapshot;exposure?:VoiceReplyStatus['memoryExposure'];blocked?:'authority'|'access';error?:unknown;success:boolean;cursor?:number;authorityRun?:string;attempt?:ReturnType<typeof sourceAttempt>;refresh():Promise<void>;retry():Promise<void>;close():void};
+type Observed={owner:string;source:Source;reply?:VoiceReplySnapshot;exposure?:VoiceReplyStatus['memoryExposure'];blocked?:'authority'|'access';error?:unknown;success:boolean;authorityRun?:string;attempt?:ReturnType<typeof sourceAttempt>;refresh():Promise<void>;retry():Promise<void>;close():void};
 export const replyPresentationKey=(binding:ReplyStreamCorrelation,agentId:string)=>`reply:${JSON.stringify([binding.streamId,binding.sourceId,binding.runId,binding.fence,agentId,binding.steeringInjectionId])}`;
 const snapshotBinding=(reply:VoiceReplySnapshot):ReplyStreamCorrelation=>({streamId:reply.streamId,sourceId:reply.messageId,runId:reply.runId,fence:reply.fence,...(reply.steeringInjectionId?{steeringInjectionId:reply.steeringInjectionId}:{})});
 const sourceKey=(source:Source)=>JSON.stringify([source.conversationId,source.sourceId,source.agentId,Boolean(source.request)]);
@@ -107,17 +107,24 @@ function useReplyStreams(projectId:string,owner:string,sources:Source[],canonica
     if(entry.blocked==='access'){entry.blocked=undefined;entry.error=undefined;render();}
     else if(!entry.blocked)await refresh();
    };
-   const subscription=api.subscribeAgent(source.agentId,entry.cursor,{
-    onEvent:envelope=>{
-     if(disposed||envelope.agentId!==source.agentId)return;
-     entry.cursor=Math.max(entry.cursor??0,envelope.seq);
-     const event=envelope.event;
-     if(event.type==='session_reset'||event.type==='memory_changed'&&event.projectId===projectId&&(!event.conversationId||event.conversationId===source.conversationId)){invalidate();return;}
-     if(event.type==='voice_reply'||event.type==='agent_lifecycle')void refresh();
-    },onOpen:()=>void refresh(),onStatus:()=>void refresh(),
-   });
-   const timer=setInterval(()=>void refresh(),500);
-   entry.close=()=>{disposed=true;controller.abort();clearInterval(timer);subscription.close();};
+   let scheduled: ReturnType<typeof setTimeout> | undefined;
+   const wake = () => {
+    if (disposed || scheduled) return;
+    scheduled = setTimeout(() => {
+     scheduled = undefined;
+     if (busy) wake();
+     else void refresh();
+    }, 300);
+   };
+   const onHint = (raw: Event) => {
+    const hint = (raw as CustomEvent<Extract<WorkspaceEvent, { type: 'agent_event' }>>).detail;
+    if (!hint) return wake();
+    if (hint.agentId !== source.agentId || hint.projectId !== projectId) return;
+    if (hint.eventType === 'session_reset' || hint.eventType === 'memory_changed') invalidate();
+    else wake();
+   };
+   window.addEventListener('ponderosa:reply-hint', onHint);
+   entry.close=()=>{disposed=true;controller.abort();clearTimeout(scheduled);window.removeEventListener('ponderosa:reply-hint', onHint);};
    void refresh();
   }
   for(const [key,entry]of entries.current)if(entry.owner!==owner||!current.current.sources.some(source=>sourceKey(source)===key)){entry.close();entries.current.delete(key);}

@@ -9,13 +9,14 @@ function fixture(invokeCommand) {
   const runtime={identity,session};
   const run={runId:'run',v3SchedulerRunId:'run',v3FencingToken:4,persistentRuntimeIdentity:identity,runtimeSession:session,controller:new AbortController()};
   const activeRuns=new Map([['agent',run]]);
-  const context={store:{getAgent:()=>({id:'agent',projectId:'project'}),sqlite:{prepare:sql=>({get:()=>sql.includes("agent_run_pauses")?undefined:{}})},appendEvent:(_id,event)=>audit.push(event)},
+  let archiveHeld=false;
+  const context={store:{getAgent:()=>({id:'agent',projectId:'project'}),sqlite:{prepare:sql=>({get:()=>sql.includes("chat_archives")?(archiveHeld?{}:undefined):sql.includes("agent_run_pauses")?undefined:{}})},appendEvent:(_id,event)=>audit.push(event)},
     assertRetainedAuthentication:()=>{},
     coordinationV3:{contextRecovery:{active:()=>undefined},activeAgentRun:()=>undefined},activeRuns,
     deletingAgentIds:new Set(),deletingProjectIds:new Set(),persistentRuntimeForTermination:()=>runtime,isClosed:()=>false};
-  registerNativeControlRoutes({get:(path,handler)=>handlers.set('GET',handler),post:(path,handler)=>handlers.set('POST',handler)},context);
+  const isBusy=registerNativeControlRoutes({get:(path,handler)=>handlers.set('GET',handler),post:(path,handler)=>handlers.set('POST',handler)},context);
   const reply={status:200,code(status){this.status=status;return this;},send(value){return value;}};
-  return {handlers,reply,run,audit};
+  return {handlers,reply,run,audit,isBusy,holdArchive:()=>{archiveHeld=true;}};
 }
 const body={sessionId:'session',runId:'run',fencingToken:4,operation:'permission-mode',value:'default'};
 
@@ -37,6 +38,21 @@ test('fence loss during native acknowledgement never reports successful source w
   await new Promise(resolve=>setImmediate(resolve));
   f.run.v3FencingToken=5;release({outcome:'completed'});
   const result=await pending;assert.equal(result.outcome,'outcome_unknown');assert.equal(calls,1);
+});
+
+test('archive admission observes an in-flight native control and a Chat hold blocks later controls',async()=>{
+  let calls=0;let release;
+  const f=fixture(async()=>{calls++;return new Promise(resolve=>{release=resolve;});});
+  const pending=f.handlers.get('POST')({params:{id:'agent'},body},f.reply);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.isBusy('agent'),true);
+  release({outcome:'completed'});
+  assert.equal((await pending).outcome,'completed');
+  assert.equal(f.isBusy('agent'),false);
+  f.holdArchive();
+  await f.handlers.get('POST')({params:{id:'agent'},body},f.reply);
+  assert.equal(f.reply.status,409);
+  assert.equal(calls,1);
 });
 
 test('native permission decisions never inherit generic remembered confirmation grants and abort settles the wait',async()=>{

@@ -31,7 +31,7 @@ function sendAttachmentBytes(reply: FastifyReply, body: Buffer, name: string, me
 
 export interface AttachmentRoutesContext {
   readonly store: Pick<AgentStore, "getAgent" | "getConversation">;
-  readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage">;
+  readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage" | "attachmentUsage">;
   readonly agentDeliveryLeases: Map<string, number>;
   readonly conversationDeliveryLeases: Map<string, number>;
   readonly conversationDeletionInProgress: (conversationId: string) => boolean;
@@ -50,6 +50,16 @@ export function registerAttachmentRoutes(
   app: FastifyInstance,
   { agentDeliveryLeases, conversationDeliveryLeases, conversationDeletionInProgress, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store, dataDir, workspace }: AttachmentRoutesContext,
 ): void {
+  app.get<{Params:{id:string}}>("/api/conversations/:id/attachments/usage", async (request, reply) => {
+    const chat=store.getConversation(request.params.id);
+    if (!chat || conversationDeletionInProgress(chat.id)) return reply.code(404).send({error:"Chat not found"});
+    return reply.header("Cache-Control","private, no-store").send(await assets.attachmentUsage(chat.projectId,chat.id));
+  });
+  app.get<{Params:{id:string}}>("/api/agents/:id/attachments/usage", async (request, reply) => {
+    const agent=store.getAgent(request.params.id);
+    if (!agent || agentDeletionInProgress(agent.id)) return reply.code(404).send({error:"Agent not found"});
+    return reply.header("Cache-Control","private, no-store").send(await assets.attachmentUsage(agent.projectId,agent.id));
+  });
   app.get<{ Params: { id: string; assetId: string; action: string } }>("/api/decisions/:id/attachments/:assetId/:action", async (request, reply) => {
     const decision = workspace?.getDecision(request.params.id);
     const file = decision?.status === "resolved" ? decision.response?.attachments?.find(item => item.id === request.params.assetId) : undefined;

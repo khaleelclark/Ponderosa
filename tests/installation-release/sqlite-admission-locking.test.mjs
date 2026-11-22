@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -246,3 +246,34 @@ print(100)`, filename], { stdio: ['ignore', 'pipe', 'pipe'] });
   }
   console.log(JSON.stringify(result));
 }
+
+test('admission resumes an owned bootstrap without replacing the installed database', linux, async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-bootstrap-test-'));
+  t.after(() => rmSync(root, {recursive:true, force:true}));
+  const {admitDataDirectory} = await import(agentsUrl);
+  const stage = path.join(root, '.ponderosa-bootstrap'), marker = '.ponderosa-layout-version';
+  mkdirSync(path.join(root, 'lost+found'));
+  mkdirSync(stage, {mode:0o700});
+  writeFileSync(path.join(stage, 'ponderosa.db'), 'interrupted first SQLite write');
+  let owner = admitDataDirectory(root);
+  const generation = owner.generationId;
+  owner.close();
+  assert.equal(existsSync(stage), false);
+  // Simulate death after the DB rename and before publishing its marker.
+  mkdirSync(stage, {mode:0o700});
+  renameSync(path.join(root, marker), path.join(stage, marker));
+  owner = admitDataDirectory(root);
+  assert.equal(owner.generationId, generation);
+  owner.close();
+  assert.equal(existsSync(stage), false);
+  // An interrupted admission removes only an earlier private copy for its generation.
+  const scratch = path.join(root, `.ponderosa-admission-${generation}`);
+  mkdirSync(scratch, {mode:0o700});
+  writeFileSync(path.join(scratch, 'ponderosa.db'), 'interrupted snapshot');
+  admitDataDirectory(root).close();
+  assert.equal(existsSync(scratch), false);
+  assert.equal(existsSync(path.join(root, 'lost+found')), true);
+  rmSync(path.join(root, marker));
+  assert.throws(() => admitDataDirectory(root), /existing bytes are preserved/);
+  assert.equal(existsSync(path.join(root, 'ponderosa.db')), true);
+});

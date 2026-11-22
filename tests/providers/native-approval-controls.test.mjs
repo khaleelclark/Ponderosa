@@ -170,6 +170,11 @@ test('Claude native question callback writes answers only while the original tur
   assert.equal(frames[1].response.response.behavior,'deny');
   session.handleNativeRequest(callback);
   assert.equal(frames.length,2,'A duplicate original question cannot be replayed');
+  session.handleNativeRequest({...callback,request_id:'question-3',request:{...callback.request,input:{questions:[]}}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(frames[2].response.subtype,'error');
+  assert.match(frames[2].response.error,/ponderosa_decision/);
+  assert.equal(session.active,true,'invalid native question leaves the current session open');
 });
 
 test('native question IDs and question text retain own data for prototype-shaped names',async()=>{

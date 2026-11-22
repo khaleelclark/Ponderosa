@@ -158,14 +158,45 @@ for(const allowlist of [[],['verified@fixture.test']])test(`authenticated rate b
  const app=Fastify();t.after(()=>app.close());
  registerRequestSecurityHooks(app,{opts:{authToken:token,operatorIdentities:allowlist,networkSecurity:{mode:'reverse_proxy',bindHost:'127.0.0.1'},requestLimits:{maxRequestsPerMinute:2,maxInflight:2}},v3DispatchKey:'private-dispatch',agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
  app.get('/api/owned',async()=>({ok:true}));
+ app.post('/api/agents/:id/cancel',async()=>({ok:true}));
  for(let i=0;i<4;i++){
   const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,'tailscale-user-login':'rotation-'+i,[OPERATOR_IDENTITY_HEADER]:allowlist[0]??'unvalidated-'+i}});
   assert.equal(r.statusCode,i<2?200:429,r.body);
  }
  const r=await app.inject({url:'/api/owned',headers:{host:'localhost',[OPERATOR_IDENTITY_HEADER]:'intruder@fixture.test'}});assert.equal(r.statusCode,429,'Rotating a claim cannot bypass the shared capacity budget');
+ assert.equal((await app.inject({method:'POST',url:'/api/agents/owned/cancel'})).statusCode,200,'Stop has reserved rate capacity');
 });
 
 import {resolveNetworkSecurity} from '../../packages/core/dist/config.js';
+
+test('Stop can enter while ordinary handlers occupy their last slot', async t => {
+ const app = Fastify();
+ t.after(() => app.close());
+ registerRequestSecurityHooks(app, {
+  opts: {requestLimits: {maxRequestsPerMinute: 20, maxInflight: 2}},
+  agentMessageCapabilities: new Map(), deletingAgentIds: new Set(),
+  artifactFilesystemError: () => undefined, isArtifactDependentWorkIntake: () => false,
+ });
+ const started = Promise.withResolvers();
+ const release = Promise.withResolvers();
+ app.get('/api/owned', async () => {
+  started.resolve();
+  await release.promise;
+  return {ok: true};
+ });
+ app.post('/api/agents/:id/cancel', async () => ({ok: true}));
+ const pending = app.inject('/api/owned').then(response => response);
+ try {
+  await Promise.race([started.promise, pending.then(response => {
+   assert.fail(`Ordinary handler finished before it entered: ${response.statusCode}`);
+  })]);
+  assert.equal((await app.inject('/api/owned')).statusCode, 503);
+  assert.equal((await app.inject({method: 'POST', url: '/api/agents/owned/cancel'})).statusCode, 200);
+ } finally {
+  release.resolve();
+  assert.equal((await pending).statusCode, 200);
+ }
+});
 test('network configuration accepts arbitrary listeners without operator credentials or VPN dependencies',()=>{
  for(const host of ['0.0.0.0','192.168.1.7','::','ponderosa.internal']){
   const config=resolveNetworkSecurity({PONDEROSA_HOST:host,PONDEROSA_OPERATOR_ORIGINS:'http://ponderosa.internal:8787',NODE_ENV:'production'});
@@ -177,8 +208,53 @@ test('operator access needs no token, while browser origins and Agent capability
  registerRequestSecurityHooks(app,{opts:{authToken:token,launcherSecurity:{controlToken:'obsolete'},operatorOrigins:['https://owned.test'],operatorIdentities:['obsolete'],networkSecurity:{mode:'reverse_proxy'}},v3DispatchKey:'owned',agentMessageCapabilities:new Map([['live-agent',{agentId:'owned-agent'}]]),deletingAgentIds:new Set(),artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
  app.get('/api/owned',async()=>({ok:true}));app.post('/api/owned',async()=>({ok:true}));app.post('/api/launcher/owned',async()=>({ok:true}));
  for(const url of ['/api/owned','/api/launcher/owned'])assert.equal((await app.inject({method:'POST',url,headers:{host:'owned.test',origin:'https://owned.test'}})).statusCode,200);
- assert.equal((await app.inject({url:'/api/owned',headers:{host:'arbitrary.internal'}})).statusCode,200);
+ assert.equal((await app.inject({url:'/api/owned',headers:{host:'arbitrary.internal'}})).statusCode,403);
+ assert.equal((await app.inject({url:'/api/owned',headers:{host:'arbitrary.internal','x-forwarded-host':'owned.test'}})).statusCode,403);
+ assert.equal((await app.inject({url:'/api/owned',headers:{host:'owned.test'}})).statusCode,200);
  assert.equal((await app.inject({method:'POST',url:'/api/owned',headers:{host:'owned.test',origin:'https://outside.test'}})).statusCode,403);
  assert.equal((await app.inject({url:'/api/owned',headers:{host:'owned.test','sec-fetch-site':'cross-site'}})).statusCode,403);
  assert.equal((await app.inject({method:'POST',url:'/api/owned',headers:{host:'owned.test',authorization:'Bearer live-agent'}})).statusCode,401);
+});
+
+test('sandboxed preview assets stay within an owned IPv6 loopback registration', async t => {
+ const {createLinkPreviewService}=await import('../../apps/server/dist/link-preview-service.js');
+ const upstream=createServer((req,res)=>{
+  res.setHeader('content-type',req.url==='/module.js'?'text/javascript':'text/html');
+  res.end(req.url==='/module.js'?'export const ready = true;':'<head><script type="module" src="/module.js"></script></head>');
+ });
+ upstream.listen(0,'::1');
+ try { await once(upstream,'listening'); } catch(error) {
+  if (['EADDRNOTAVAIL','EAFNOSUPPORT'].includes(error.code)) return t.skip('IPv6 loopback unavailable');
+  throw error;
+ }
+ t.after(()=>new Promise(resolve=>upstream.close(resolve)));
+ const app=Fastify();
+ t.after(()=>app.close());
+ registerRequestSecurityHooks(app,{
+  opts:{},agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),
+  artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,
+ });
+ const activeRuns=new Map([['agent',{runId:'run',executionId:'run'}]]);
+ createLinkPreviewService({
+  store:{getProject:id=>id==='project'?{id}:undefined,getAgent:id=>id==='agent'?{id,projectId:'project'}:undefined},
+  activeRuns,ownsActiveRun:()=>true,
+ }).registerRoutes(app);
+ const issued=await app.inject({method:'POST',url:'/api/link-previews',payload:{
+  url:'http://[::1]:'+upstream.address().port+'/',agentId:'agent',projectId:'project',runId:'run',
+ }});
+ assert.equal(issued.statusCode,200,issued.body);
+ const {id,openUrl,targetOrigin}=issued.json();
+ assert.equal(targetOrigin,'http://[::1]:'+upstream.address().port);
+ const document=await app.inject(openUrl);
+ assert.equal(document.statusCode,200,document.body);
+ assert.match(document.headers['content-security-policy'],/^sandbox allow-scripts/u);
+ assert.ok(document.body.includes(openUrl+'module.js'));
+ const assets={url:openUrl+'module.js',headers:{origin:'null','sec-fetch-site':'cross-site'}};
+ const asset=await app.inject(assets);
+ assert.equal(asset.statusCode,200,asset.body);
+ assert.equal(asset.headers['access-control-allow-origin'],'null');
+ assert.equal(asset.body,'export const ready = true;');
+ activeRuns.clear();
+ assert.equal((await app.inject(assets)).statusCode,404);
+ assert.ok(id);
 });

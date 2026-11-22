@@ -49,8 +49,15 @@ export class NativeHistoryAuthority {
     if(changed.changes!==1)throw new Error("Native history receipt changed; outcome unknown");
     return next;
   }
-  cancel(agentId:string,key:string):HistoryReceipt {
+  cancel(agentId:string,key:string, acknowledgeUnknown=false):HistoryReceipt {
     const r=this.read(agentId,key);
+    if (r?.state === 'abandoned' && acknowledgeUnknown) return r;
+    if (r?.state === 'started' && acknowledgeUnknown) {
+      if ([agentId, r.targetAgentId].some(id => id && this.store.sqlite.prepare(
+        "SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')",
+      ).get(id))) throw Error("Native history still has active Run authority");
+      return this.save(r, 'abandoned');
+    }
     if(!r||r.kind!=='fork'||r.state!=='prepared')throw new Error("Only a not-started fork preparation can be cancelled");
     return this.save(r,'cancelled');
   }
@@ -58,9 +65,9 @@ export class NativeHistoryAuthority {
   takeSeed(agentId:string,runId:string,fence:number,resumeSessionId:string|undefined,humanMessage=false):{seed:NativeTranscriptSeed;receipt:HistoryReceipt;assertCurrent():void;observed(sessionId:string):void;opened(sessionId:string):void}|undefined {
     return this.store.sqlite.transaction(()=>{
       if(this.store.sqlite.prepare(`SELECT 1 FROM coordination_idempotency WHERE operation='native_history'
-        AND json_extract(result_json,'$.boundary.agentId')=? AND json_extract(result_json,'$.state') IN ('prepared','started') LIMIT 1`).get(agentId))throw new Error("Source has a reserved native history operation");
+        AND json_extract(result_json,'$.boundary.agentId')=? AND json_extract(result_json,'$.state')='started' LIMIT 1`).get(agentId))throw new Error("Source has a reserved native history operation");
       const target=(this.store.sqlite.prepare(`SELECT result_json FROM coordination_idempotency WHERE operation='native_history'
-        AND json_extract(result_json,'$.targetAgentId')=? AND json_extract(result_json,'$.state')!='cancelled' LIMIT 2`).all(agentId) as {result_json:string}[]).map(r=>JSON.parse(r.result_json) as HistoryReceipt);
+        AND json_extract(result_json,'$.targetAgentId')=? AND json_extract(result_json,'$.state') NOT IN ('cancelled','failed','abandoned') LIMIT 2`).all(agentId) as {result_json:string}[]).map(r=>JSON.parse(r.result_json) as HistoryReceipt);
       if(!target.length)return undefined;
       if(target.length!==1)throw new Error("Ambiguous transcript seed ownership");
       let receipt=target[0]!;

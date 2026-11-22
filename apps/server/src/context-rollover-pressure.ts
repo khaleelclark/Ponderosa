@@ -47,14 +47,14 @@ export function contextRecoveryRequired(message: string) {
 export function providerInputBudget(
   preferences: ContextRolloverPressurePreferences,
   usage: { usedTokens: number; windowTokens?: number; providerSessionGeneration?: string } | undefined = undefined,
-  input: { resumeSessionId?: string; replacementLowWaterMark?: number;
+  input: { resumeSessionId?: string; allowUnmeasuredNativeResume?: boolean; replacementLowWaterMark?: number;
     postObservationUtf8Bytes?: number; estimatedSessionUtf8Bytes?: number;
     occupancyObservation?: { source: "live_session" | "accepted_run" | "provider_command" | "accepted_input_estimate"; providerSessionId: string;
       observedAt?: string; sampledAt?: string; executionId?: string; commandInvocationId?: string; fencingToken?: number;
       requestOutputIncluded?: boolean; acceptedInputUtf8Bytes?: number; outputUtf8Bytes?: number; retainedStaticUtf8Bytes?: number; liveLowerBoundTokens?: number } } = {},
 ) {
   const exact = Boolean(input.resumeSessionId && usage?.providerSessionGeneration === input.resumeSessionId);
-  if (input.resumeSessionId && !exact && input.estimatedSessionUtf8Bytes === undefined) {
+  if (input.resumeSessionId && !exact && input.estimatedSessionUtf8Bytes === undefined && !input.allowUnmeasuredNativeResume) {
     throw contextRecoveryRequired("Retained provider context is unavailable; explicit context recovery is required before dispatch.");
   }
   const reportedWindow = input.resumeSessionId && usage?.providerSessionGeneration &&
@@ -71,7 +71,7 @@ export function providerInputBudget(
   const retained = Boolean(input.resumeSessionId);
   if (!retained && input.replacementLowWaterMark !== undefined) inputCeilingTokens = Math.min(inputCeilingTokens, input.replacementLowWaterMark - 1);
   return {
-    estimator: "conservative_utf8_bytes" as const,
+    estimator: retained ? "conservative_utf8_bytes" as const : "fresh_utf8_token_estimate" as const,
     basis: retained && windowTokens === undefined ? "unknown_provider_window" as const
       : windowTokens === undefined ? "context_policy" as const : "provider_window" as const,
     // A verified window must leave at least one token for a response. There is
@@ -85,7 +85,7 @@ export function providerInputBudget(
       : windowTokens === undefined ? "policy_low_water_margin" as const : "provider_window_margin" as const,
     ...(windowTokens === undefined ? {} : { windowTokens }),
     occupancyBasis: input.estimatedSessionUtf8Bytes !== undefined ? "estimated_session" as const
-      : exact ? "exact_session" as const : "fresh_session" as const,
+      : exact ? "exact_session" as const : retained ? "unavailable" as const : "fresh_session" as const,
     occupancyTokens: input.estimatedSessionUtf8Bytes !== undefined
       ? Math.max(input.estimatedSessionUtf8Bytes, exact ? usage!.usedTokens : 0) : exact ? usage!.usedTokens : 0,
     postObservationUtf8Bytes: exact ? input.postObservationUtf8Bytes ?? 0 : 0,
@@ -100,15 +100,17 @@ export function estimateProviderInput(
 ) {
   // JSON escaping and field wrappers are counted too. Retained instructions and
   // tools are already in exact-session occupancy; do not charge them twice.
-  const retained = budget.occupancyBasis === "exact_session" || budget.occupancyBasis === "estimated_session";
+  const retained = budget.occupancyBasis !== "fresh_session";
   const outgoing = retained ? { input: prompt } : { systemPrompt, tools, input: prompt };
   const submittedUtf8Bytes = Buffer.byteLength(JSON.stringify(outgoing), "utf8");
+  // The fresh policy is advisory. Retained occupancy still uses the conservative byte bound.
+  const submittedTokens = retained ? submittedUtf8Bytes : Math.ceil(submittedUtf8Bytes / 2);
   return {
     ...budget,
     submittedUtf8Bytes,
     systemPromptUtf8Bytes: Buffer.byteLength(systemPrompt, "utf8"),
     toolDefinitionsUtf8Bytes: Buffer.byteLength(JSON.stringify(tools), "utf8"),
-    estimatedInputTokens: budget.occupancyTokens + budget.postObservationUtf8Bytes + submittedUtf8Bytes,
+    estimatedInputTokens: budget.occupancyTokens + budget.postObservationUtf8Bytes + submittedTokens,
     ...(budget.responseHeadroomBasis === "provider_window_remaining" ? {
       responseHeadroomTokens: Math.max(0, budget.windowTokens! - budget.occupancyTokens - budget.postObservationUtf8Bytes - submittedUtf8Bytes),
     } : {}),

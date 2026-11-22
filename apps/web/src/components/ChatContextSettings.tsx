@@ -1,11 +1,17 @@
-import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField } from "@mui/material";
+import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, Stack, Switch, TextField } from "@mui/material";
 import type { ConversationDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useState } from "react";
 import { api } from "../api";
+import { requestJson } from "../api/real";
+import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import { ResourceSettingsContext } from "./ResourceSettingsContext";
 import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
+import { ForgottenMemory } from "./ForgottenMemory";
+import { AttachmentStorage } from "./AttachmentStorage";
+
+type GlobalMemoryGrant = { chatId: string; readGlobal: boolean; revision: number };
 
 export function ChatContextSettings({ chat, open, onClose }: {
   chat: ConversationDto; open: boolean; onClose(): void;
@@ -15,6 +21,20 @@ export function ChatContextSettings({ chat, open, onClose }: {
   const [instructions, setInstructions] = useState(chat.instructions ?? "");
   const instructionsTooLong = instructions.length > 100000;
   const client = useQueryClient();
+  const grantEndpoint = `/api/local-memory/grants/${encodeURIComponent(chat.id)}`;
+  const grantKey = ["local-memory-grant", chat.id];
+  const grant = useQuery({
+    queryKey: grantKey,
+    queryFn: () => requestJson<GlobalMemoryGrant>(grantEndpoint),
+    retry: false,
+  });
+  const updateGrant = useMutation({
+    mutationFn: (change: { readGlobal: boolean; expectedRevision: number }) =>
+      requestJson<GlobalMemoryGrant>(grantEndpoint, { method: "PUT", body: JSON.stringify(change) }),
+    onSuccess: updated => { client.setQueryData(grantKey, updated); },
+    onError: () => client.invalidateQueries({ queryKey: grantKey }),
+  });
+  const grantError = grant.error instanceof ApiRequestError && grant.error.status === 404 ? null : grant.error;
   const save = useMutation({
     mutationFn: () => api.updateConversation(chat.id, { instructions }),
     onSuccess: async () => {
@@ -31,6 +51,15 @@ export function ChatContextSettings({ chat, open, onClose }: {
         error={instructionsTooLong}
         helperText={instructionsTooLong ? "Use 100,000 characters or fewer." : "Only this Chat and its Agents."} />
       {extension.render?.("chat",chat.id)}
+      {grant.data && <FormControlLabel label="Search global memory in this Chat" control={
+        <Switch checked={grant.data.readGlobal} disabled={updateGrant.isPending || grant.isFetching}
+          onChange={(_, readGlobal) => {
+            if (grant.data) updateGrant.mutate({ readGlobal, expectedRevision: grant.data.revision });
+          }} />
+      } />}
+      {(grantError || updateGrant.error) && <Alert severity="error">{(grantError || updateGrant.error)?.message}</Alert>}
+      {grant.data && <ForgottenMemory chatId={chat.id} />}
+      <AttachmentStorage id={chat.id} owner="conversations" />
       <TextField label="Working Folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
         helperText="Working folder · Not a filesystem sandbox." />
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}

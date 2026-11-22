@@ -49,6 +49,9 @@ export interface ConversationDto {
   updatedAt: string;
   /** Present only on a deletion-surviving audit identity with no live authority. */
   deletedAt?: string;
+  archivedAt?: string;
+  archivePending?: true;
+  archivedWorkBlockingAgents?: string[];
 }
 
 /** POST /api/projects/:id/conversations body. */
@@ -1051,4 +1054,16 @@ export interface InboxPageDto {
   items: InboxItemDto[];
   decisions?: InboxDecisionEventDto[];
   history: HistoryWindowDto;
+}
+
+export interface ChatArchivePreviewDto {
+  workingDirectory?: string;
+  pending: boolean;
+  activeRuns: { agentId: string; runId: string; title: string }[];
+}
+
+export interface ChatArchivesDto {
+  chats: Array<Pick<ConversationDto, "id" | "projectId" | "title" | "workingDirectory"> & { archivedAt: string }>;
+  pendingChats: Array<Pick<ConversationDto, "id" | "projectId" | "title" | "workingDirectory">>;
+  heldWork: Array<{ id: string; chatId: string; chatTitle: string; agentTitle: string; kind: string; createdAt: string; preview: string | null; blocksNewWork: boolean }>;
 }

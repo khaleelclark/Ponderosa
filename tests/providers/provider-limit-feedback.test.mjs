@@ -81,7 +81,8 @@ test('UI014 unresolved-notice lookup uses exact indexed communication IDs, never
     f.ok(await f.api('GET','/api/conversations/'+chat.id));
     assert.ok(plans.length);
     for(const plan of plans){
-      assert.ok(plan.some(row=>row.includes('runtime_communications_authored_event')),plan.join('\n'));
+      assert.ok(plan.some(row=>row.startsWith('SEARCH') && row.includes('runtime_communications_authored_event')),plan.join('\n'));
+      assert.ok(plan.some(row=>row.startsWith('SEARCH message') && row.includes('idx_chat_search_chat_newest')),plan.join('\n'));
       assert.equal(plan.some(row=>/SEARCH communication USING INDEX runtime_communications_project_created|SCAN communication/u.test(row)),false,plan.join('\n'));
     }
   }); } finally { Database.prototype.prepare=original; }

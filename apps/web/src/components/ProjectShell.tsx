@@ -15,8 +15,9 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, type ReactNode } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { mergeAgentStatuses } from "../agents";
-import { useAgent, useAgentHealth, useConversations, useAgents } from "../hooks/queries";
+import { useAgent, useAgentHealth, useConversation, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { retainedDataFailure } from "../retainedData";
 import { workspaceFileReturnFallback } from "../workspaceFileReturn";
@@ -196,15 +197,23 @@ export function ProjectShell({
   );
   const routeAgentId = routeResources.agentId;
   const routeConversationId = routeResources.conversationId;
+  const chatOutsideList = Boolean(routeConversationId && conversationsQuery.isSuccess &&
+    !conversations.some(conversation => conversation.id === routeConversationId));
+  // Active lists omit archives. Resolve direct Chat links with the same bounded
+  // detail query the transcript uses, while preserving Project ownership.
+  const archivedChatQuery = useConversation(route.kind === "conversation" && chatOutsideList ? route.conversationId : undefined, 100, false);
+  const archivedChat = archivedChatQuery.data?.conversation;
+  const canOpenArchivedChat = archivedChat?.projectId === projectId &&
+    archivedChat.id === routeConversationId && Boolean(archivedChat.archivedAt);
   const routeResourceLoading =
     (Boolean(routeAgentId) && agentsQuery.isLoading) ||
-    (Boolean(routeConversationId) && conversationsQuery.isLoading);
+    (Boolean(routeConversationId) && conversationsQuery.isLoading) || archivedChatQuery.isLoading;
   const routeResourceError =
     (Boolean(routeAgentId) && agentsFailure === "initial") ||
     (Boolean(routeConversationId) && conversationsFailure === "initial");
   const routeResourceUnavailable =
     (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
-    (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId));
+    (chatOutsideList && !canOpenArchivedChat);
 
   useReportWorkspaceRead(workspaceRead(`project:${project.id}`,"Chats",conversationsQuery));
   useReportWorkspaceRead(workspaceRead(`project:${project.id}`,"Agents",agentsQuery));
@@ -213,6 +222,10 @@ export function ProjectShell({
   if (routeResourceLoading) return <LinearProgress aria-label="Loading Requested Resource" />;
   if (routeResourceError) {
     return <WorkspaceQueryError initial read={workspaceRead(`project:${project.id}`,routeAgentId?"Agents":"Chats",routeAgentId?agentsQuery:conversationsQuery)}/>;
+  }
+  if (archivedChatQuery.isError && !archivedChat &&
+    !(archivedChatQuery.error instanceof ApiRequestError && archivedChatQuery.error.status === 404)) {
+    return <WorkspaceQueryError initial read={workspaceRead(`chat:${routeConversationId}`, "Chat", archivedChatQuery)} />;
   }
   if (routeResourceUnavailable) {
     return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "home" })}>Go Home</Button>}>This resource is unavailable in this Project.</Alert></Box>;
@@ -239,6 +252,12 @@ export function ProjectShell({
           conversationId: route.conversationId,
           ...(view === "main" ? {} : { view }),
         })}
+        onClearMessageFocus={() => navigate({
+          kind: "conversation",
+          projectId,
+          conversationId: route.conversationId,
+          view: route.view ?? route.channel,
+        }, { replace: true })}
         engines={projectEngines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}

@@ -53,7 +53,7 @@ async function fixture(run:(f:{
   permission(){const staleEnd=this.onend;this.onerror?.({error:'not-allowed'});staleEnd?.();}
  }
  class Utterance {
-  text:string;lang='en-US';rate=1;onstart:(()=>void)|null=null;onend:(()=>void)|null=null;onerror:(()=>void)|null=null;
+  text:string;lang='en-US';rate=1;volume=1;onstart:(()=>void)|null=null;onend:(()=>void)|null=null;onerror:(()=>void)|null=null;
   constructor(text:string){this.text=text;}
   finish(){this.onend?.();}
  }
@@ -74,7 +74,7 @@ async function fixture(run:(f:{
  });
  speechWindow.SpeechRecognition=Recognition;
  speechWindow.SpeechSynthesisUtterance=Utterance;
- Object.defineProperty(window,'speechSynthesis',{configurable:true,value:{paused:false,cancel(){},pause(){},resume(){},speak(utterance:Utterance){utterances.push(utterance);queueMicrotask(()=>utterance.onstart?.());}}});
+ Object.defineProperty(window,'speechSynthesis',{configurable:true,value:{paused:false,cancel(){},pause(){},resume(){},speak(utterance:Utterance){if(!utterance.text.trim()){assert(utterance.volume===0,'Audio priming must be silent');return;}utterances.push(utterance);queueMicrotask(()=>utterance.onstart?.());}}});
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});
  client.setQueryData(queryKeys.workspacePreferences.all,{speech:DEFAULT_SPEECH_PREFERENCES});
  const button=(name:string)=>until(()=>document.querySelector<HTMLButtonElement>(`[data-ponderosa-call] button[aria-label="${name}"]`)??undefined,'Missing '+name+' call button');
@@ -122,8 +122,8 @@ export async function voiceCallMountedSessionRegression():Promise<void>{
   assert(f.calls[1]!.conversationId===agent.conversationId&&f.calls[1]!.request.idempotencyKey!==f.calls[0]!.request.idempotencyKey,'Second call turn lost conversation or reused submission identity');
   f.publish(1,'Second canonical answer.');
   await until(()=>f.utterances.filter(item=>item.text==='Got your message.').length===2?true:undefined,'Second accepted turn did not get its own receipt');
-  f.utterances.filter(item=>item.text==='Got your message.')[1]!.finish();
-  await until(()=>f.utterances.some(item=>item.text==='Second canonical answer.')?true:undefined,'Second canonical answer did not play');
+  f.utterances.filter(item=>item.text==='Got your message.')[1]!.onerror?.();
+  await until(()=>f.utterances.some(item=>item.text==='Second canonical answer.')?true:undefined,'Optional receipt failure paused the second canonical answer');
   for(const item of f.utterances.slice(2))item.finish();
   await until(()=>f.recognitions.length===4?true:undefined,'Second answer did not return to capture');
   (await f.button('Mute Microphone')).click();await f.button('Unmute Microphone');

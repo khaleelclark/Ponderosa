@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import { WebPushDeliveryManager, pushPayload } from '../../apps/server/dist/web-
 import { requestSettingsTransition, reconcileSettingsTransitionReservations } from '../../apps/server/dist/context-transition-admission.js';
 import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 import { createRuntimeEventAuthority } from '../../apps/server/dist/runtime-event-authority.js';
+import { CoordinationV3Scheduler } from '../../apps/server/dist/coordination-v3-scheduler.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
 import { AgentWorkProjection } from '../../apps/server/dist/routes/agent-work.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
@@ -292,13 +293,13 @@ test('duplicate snapshots do not grow durable history; changes, failed writes, s
   owner.publishMessageDeliveryChanged(b.id);
   assert.equal(snapshots(a.id).length, 2, 'failed append did not suppress the retry');
   assert.equal(snapshots(b.id).length, 2, 'one Agent cannot suppress another Agent change');
-  for (const id of [a.id, b.id]) assert.deepEqual(snapshots(id).at(-1).event.coordination, coordinationV3.agentSnapshot(id));
+  for (const id of [a.id, b.id]) assert.deepEqual(snapshots(id).at(-1).event, { type: "coordination_v3_changed" });
   for (const id of [a.id, b.id]) assert.deepEqual(published.filter(x => x.id === id).map(x => x.event.seq), snapshots(id).map(x => x.seq), 'live and replay use the same ordered durable sequence');
   store.close(); store = new AgentStore(root); coordinationV3 = new CoordinationV3Store(store.sqlite); owner = models();
   assert.equal(coordinationV3.getRequest(requestId).payload.text, text, 'SQLite request authority survives reopen');
   for (let i = 0; i < 100; i++) owner.publishCoordinationV3Changed(a.id);
   assert.equal(snapshots(a.id).length, 3, 'a restart permits one fresh mirror, not another burst');
-  assert.deepEqual(snapshots(a.id).at(-1).event.coordination, coordinationV3.agentSnapshot(a.id));
+  assert.deepEqual(snapshots(a.id).at(-1).event, { type: "coordination_v3_changed" });
 });
 
 
@@ -405,6 +406,7 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  const run={startedAt:agent.updatedAt,executionId:'execution',v3SchedulerRunId:'scheduler',ownershipState:'running',leaseExpiresAt:new Date(now+3600000).toISOString()};
  const activeRuns=new Map([[agent.id,run]]),persisted=[],published=[];
  const authority=createRuntimeEventAuthority({opts:{},activeRuns,store:{appendEvent:(id,event)=>{persisted.push({id,event});return {...event,ts:new Date().toISOString()}}},
+  resolveOperationalNotification:()=>{},
   ownsActiveRunForAuditDrain:(id,current)=>activeRuns.get(id)===current,publish:(id,event)=>published.push({id,event})});
  const models=createServerReadModels({activeRuns,scheduledSessionRollovers:new Map(),runtimeStallAfterMs:30000,
   workspace:{listDecisions:()=>[]},store:{latestHealthObservation:()=>undefined,getRunHealthSummaries:()=>[],activeExecutionPhase:()=>undefined,uncertainProviderContextRecoveryBoundary:()=>undefined},
@@ -413,18 +415,53 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  const health=()=>models.agentHealth({type:'project',id:'project'},[agent]).agents[0];
  assert.equal(authority.receiveRuntimeEvent(agent.id,run),true);
  t.mock.timers.setTime(now+29999);assert.equal(health().status,'running');
- t.mock.timers.setTime(now+30000);const stalled=health();
+ t.mock.timers.setTime(now+30000);
+ const observedAt=Date.now();
+ run.runtimeSession={backgroundTasksObservedAt:()=>observedAt};
+ assert.equal(health().status,'waiting');
+ assert.equal(health().reason,'waiting_on_background_tasks');
+ assert.equal(health().runtimeActivity,undefined);
+ assert.equal(run.ownershipState,'running');
+ t.mock.timers.setTime(now+45000);const stalled=health();
  assert.equal(stalled.status,'stalled');assert.equal(stalled.reason,'runtime_event_consumer_stalled');
  assert.equal(stalled.attention.reason,'runtime_event_consumer_stalled');assert.equal(stalled.executionId,'execution');
  assert.equal(run.ownershipState,'stalled');assert.equal(persisted.length,0,'health cannot invent provider output or finish the task');
  await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'Controlled input',executionId:'execution'});
  assert.equal(persisted.length,1);assert.equal(published.length,1);assert.equal(health().status,'running');
- assert.equal(run.ownershipState,'running');assert.equal(run.lastEventPersistedAt,new Date(now+30000).toISOString());
+ assert.equal(run.ownershipState,'running');assert.equal(run.lastEventPersistedAt,new Date(now+45000).toISOString());
  // Quiet native commands are not proof of a blocked event consumer.
  t.mock.timers.setTime(now+360000);assert.equal(health().status,'running');assert.equal(persisted.length,1);
  run.ownershipState='cancelling';assert.equal(authority.receiveRuntimeEvent(agent.id,run),false);
  assert.equal(await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'late',executionId:'execution'}),undefined);
  assert.equal(persisted.length,1);
+});
+
+test('provider liveness distinguishes confirmed background tasks from silence', t => {
+ const startedAt = Date.parse('2030-01-01T00:00:00Z');
+ t.mock.timers.enable({apis:['Date'],now:startedAt+360000});
+ let observedAt=Date.now(), heartbeat, silenceNotices=0;
+ const run={startedAt:new Date(startedAt).toISOString(),executionId:'execution',ownershipState:'running',
+  runtimeSession:{isAlive:()=>true,backgroundTasksObservedAt:()=>observedAt}};
+ const authority=createRuntimeEventAuthority({
+  activeRuns:new Map([['agent',run]]),store:{getAgent:()=>undefined},
+  ownsActiveRunForAuditDrain:()=>true,isClosed:()=>false,executionLeaseNow:Date.now,
+  executionHeartbeatMs:20000,executionLeaseMs:360000,leaseExpiry:()=>new Date(Date.now()+360000).toISOString(),
+  setExecutionLeaseTimer:(callback,delay)=>{if(delay===20000)heartbeat=callback;return {};},
+  clearExecutionLeaseTimer:()=>{},createOperationalNotification:()=>{silenceNotices++;},
+  resolveOperationalNotification:()=>{silenceNotices--;}
+ });
+ authority.scheduleRuntimeLivenessHeartbeat('agent',run);
+ heartbeat();
+ assert.equal(run.ownershipState,'running');
+ assert.equal(silenceNotices,0);
+ t.mock.timers.setTime(observedAt+20000);
+ heartbeat();
+ assert.equal(run.ownershipState,'stalled');
+ assert.equal(silenceNotices,1);
+ observedAt=Date.now();
+ heartbeat();
+ assert.equal(run.ownershipState,'running');
+ assert.equal(silenceNotices,0);
 });
 
 // Offline canonical stores and a fake sender; no provider or push service.
@@ -607,4 +644,51 @@ test('active notification batches ignore stale and foreign IDs while preserving 
  assert.equal((await request('/api/notifications/active',Array(101).fill('missing'))).statusCode,400);
  assert.equal((await request('/api/notifications/active',[null])).statusCode,400);
  assert.deepEqual((await request('/api/notifications/active',[])).json(),{activeNotificationIds:[]});
+});
+
+test('workspace pulse compaction preserves notification authority and the exact replay cursor', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ponderosa-workspace-pulses-'));
+  let workspace = new WorkspaceStore(root);
+  t.after(() => { workspace.close(); rmSync(root, {recursive:true, force:true}); });
+  const notice = workspace.createNotification({dedupeKey:'compaction-test',kind:'operational',
+    category:'system',status:'open',severity:'attention',title:'Evidence retained',body:'Synthetic fixture'},false);
+  const start = workspace.cursor();
+  workspace.close();
+  const file = path.join(root, 'workspace-events.jsonl');
+  appendFileSync(file, Array.from({length:12_000}, (_,i) => JSON.stringify({
+    id:start+i+1,ts:at,event:{type:'provider_status_changed',engineId:'codex'},
+  })+'\n').join(''));
+  workspace = new WorkspaceStore(root);
+  const cursor = start+12_000;
+  assert.equal(workspace.cursor(), cursor);
+  assert.equal(workspace.getNotification(notice.id)?.title, 'Evidence retained');
+  const replay = workspace.readSince(cursor-5000);
+  assert.equal(replay.length, 5000);
+  assert.equal(replay[0].id, cursor-4999);
+  assert.equal(replay.at(-1).id, cursor);
+  assert.equal(readFileSync(file,'utf8').split('provider_status_changed').length-1, 5000);
+  assert.equal(workspace.append({type:'provider_status_changed'}).id, cursor+1);
+});
+
+test('repeated scheduler admission faults log and notify once before recovery', async t => {
+  let failing=true;
+  const health=[], errors=[];
+  const store={
+    pruneSettledOutboxes(){}, maintainCommunicationV4NextRunDeliveries(){},
+    expireDue(){if(failing)throw Error('Controlled scheduler fault');},
+    recoverExpiredRuns(){}, claimOutbox:()=>[], activeRunCount:()=>0,
+  };
+  const scheduler=new CoordinationV3Scheduler(store,async()=>{throw Error('Unexpected dispatch');},{
+    workerId:'fault-fixture',maxConcurrentRuns:0,pollMs:10,
+    onPassError:error=>errors.push(error.message),
+    onPassHealthChanged:healthy=>health.push(healthy),
+  });
+  t.after(()=>scheduler.stop());
+  scheduler.start();
+  await until(()=>health.includes(false),'scheduler failure notice');
+  assert.deepEqual(health,[false]);
+  assert.deepEqual(errors,['Controlled scheduler fault','Controlled scheduler fault']);
+  failing=false;
+  await until(()=>health.includes(true),'scheduler recovery notice');
+  assert.deepEqual(health,[false,true]);
 });

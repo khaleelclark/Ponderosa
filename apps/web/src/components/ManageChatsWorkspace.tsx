@@ -1,4 +1,5 @@
-import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
+import { ArchivedChats, ChatStorage } from "./ChatStorageAndArchives";
+import { ChatArchiveDialog } from "./ChatArchiveDialog";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
@@ -26,6 +27,8 @@ import {
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
+import { routeLinkPath } from "../routeRegistry";
+import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import {
   CollectionStateFeedback,
   CollectionToolbar,
@@ -65,6 +68,9 @@ export function ManageChatsWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const [archivesOpen, setArchivesOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<ChatRow>();
   const notify = useMutationNotification();
   const [search, setSearch] = useState("");
   // Retained data only renders the closing Dialog; actual targets clear immediately.
@@ -264,6 +270,8 @@ export function ManageChatsWorkspace({
             spacing={1}
             sx={{ alignItems: "center", minWidth: 0, flexWrap: "wrap" }}
           >
+            <Button color="inherit" size="small" onClick={() => setArchivesOpen(true)}>Archived Chats</Button>
+            <Button color="inherit" size="small" onClick={() => setStorageOpen(true)}>Chat Storage</Button>
             <Button
               color="inherit"
               size="small"
@@ -305,6 +313,7 @@ export function ManageChatsWorkspace({
     >
       {rows.map(row => {
         const checked = selected.has(row.conversation.id);
+        const chatRoute = { kind: "conversation", projectId: row.project.id, conversationId: row.conversation.id } as const;
         return <Paper
           key={row.conversation.id}
           variant="outlined"
@@ -324,23 +333,21 @@ export function ManageChatsWorkspace({
             inputProps={{ "aria-label": `Select ${row.conversation.title}` }}
           />
           <Box sx={{ minWidth: 0, flex: 1, py: 0.5 }}>
-            <Typography noWrap fontWeight={700}>{row.conversation.title}</Typography>
-            <Typography noWrap variant="caption" color="text.secondary">
+            <Typography component="a" href={routeLinkPath(chatRoute)} noWrap fontWeight={700}
+              sx={{ display: "block", color: "text.primary", "&:hover": { color: "primary.main" } }}
+              onClick={event => {
+                if (isUnmodifiedPrimaryClick(event)) {
+                  event.preventDefault();
+                  onNavigate(chatRoute);
+                }
+              }}>
+              {row.conversation.title}
+            </Typography>
+            <Typography component="div" noWrap variant="caption" color="text.secondary">
               {row.project.label}
             </Typography>
           </Box>
-          <Tooltip title={`Open ${row.conversation.title}`}>
-            <IconButton
-              aria-label={`Open ${row.conversation.title}`}
-              onClick={() => onNavigate({
-                kind: "conversation",
-                projectId: row.project.id,
-                conversationId: row.conversation.id,
-              })}
-            >
-              <ArrowForwardIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
+          {row.conversation.branchId ? null : <Button size="small" sx={{ flexShrink: 0, ml: 1 }} onClick={() => setArchiveTarget(row)}>Archive</Button>}
         </Paper>;
       })}
       <CollectionStateFeedback
@@ -356,6 +363,20 @@ export function ManageChatsWorkspace({
       />
     </CollectionWorkspace>
 
+    {archivesOpen ? <ArchivedChats onClose={() => setArchivesOpen(false)} onOpen={chat => {
+      setArchivesOpen(false);
+      onNavigate({ kind: "conversation", projectId: chat.projectId, conversationId: chat.id });
+    }} /> : null}
+    {storageOpen ? <ChatStorage onClose={() => setStorageOpen(false)} /> : null}
+    {archiveTarget ? <ChatArchiveDialog id={archiveTarget.conversation.id} title={archiveTarget.conversation.title}
+      onClose={() => setArchiveTarget(undefined)} onArchived={() => {
+        setSelected(current => {
+          const next = new Map(current);
+          next.delete(archiveTarget.conversation.id);
+          return next;
+        });
+        setArchiveTarget(undefined);
+      }} /> : null}
     <ResourceDeletionDialog
       open={deleteOpen}
       resourceType="Chats"

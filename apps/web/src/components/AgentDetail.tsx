@@ -780,6 +780,7 @@ export function AgentDetail({
   const resetOrChangeEngine = (next: string) => {
     const nextEngine = engines.find(candidate => candidate.id === next);
     if (!nextEngine || !detail) return;
+    if (next !== detail.agent.activeEngine && !window.confirm('Switch provider? The next Run starts a fresh provider session using saved Chat history.')) return;
     setSubmissionRuntimeIntent(value => value + 1);
     const resolved = resolveRuntimeSelection(
       nextEngine,
@@ -902,7 +903,11 @@ export function AgentDetail({
       onSettingsEngine={setSettingsEngine}
       onSettingsModel={setSettingsModel}
       onSettingsEffort={setSettingsEffort}
-      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
+      onSaveRuntimeSettings={() => {
+        if (settingsEngine !== detail.agent.activeEngine &&
+            !window.confirm('Switch provider? The next Run starts a fresh provider session using saved Chat history.')) return;
+        updateRuntimeSettings.mutate(undefined);
+      }}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
       onOpenAgent={onOpenAgent}

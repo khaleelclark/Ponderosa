@@ -923,6 +923,10 @@ export function useWorkspaceStream(
         }
       }
       else if (event.type === "agent_event") {
+        if (["voice_reply", "agent_lifecycle", "memory_changed", "session_reset"].includes(event.eventType)) {
+          window.dispatchEvent(new CustomEvent("ponderosa:reply-hint", { detail: event }));
+        }
+        if (event.eventType === "voice_reply" || event.eventType === "memory_changed") return;
         if (workspaceEventUpdatesLiveProgress(event)) {
           for (const id of event.conversationIds) pendingProgressChats.add(id);
           publicProgressRefresh.schedule();
@@ -966,7 +970,7 @@ export function useWorkspaceStream(
           notificationRefresh.dispose();
           invalidate(queryKeys.notifications.all);
         } else notificationRefresh.schedule();
-        if (event.conversationId) {
+        if (event.decisionId && event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
         if (event.decisionId) agentWorkInvalidator.schedule(event.projectId);
@@ -1058,6 +1062,7 @@ export function useWorkspaceStream(
           markPhaseEvidenceStale();
           phaseCatchUpCursor = status.cursor;
           noteConnected();
+          window.dispatchEvent(new CustomEvent("ponderosa:reply-hint"));
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.snapshot) {
             cursor.current = status.cursor;

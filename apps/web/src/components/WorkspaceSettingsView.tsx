@@ -3,6 +3,7 @@ import {LifecyclePanel} from './lifecycle/LifecyclePanel';
 import {AssistantSettings} from './AssistantSettings';
 import {TextSizeSetting} from './TextSizeSetting';
 import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
+import {ForgottenMemory} from './ForgottenMemory';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import {useMutationNotification,MutationErrorDetails} from "./MutationNotifications";
 import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
@@ -267,7 +268,7 @@ function GeneralSettingsSection({
       </SettingsGroup>
       {currentProductScope()!=="branches"&&<SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>}
       <SettingsGroup title="Voice & Audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
-      <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/></SettingsGroup>
+      <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/><ForgottenMemory/></SettingsGroup>
       {currentProductScope()!=="branches"&&<SettingsGroup title="Tool Permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default Tool Permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
       <SettingsGroup title="Provider Session Rollover" description="Choose when Agents move to a fresh provider session.">
         <Stack spacing={2}>

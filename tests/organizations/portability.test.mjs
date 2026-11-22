@@ -211,6 +211,10 @@ test('background import replays a lost completion acknowledgment after restart w
   const payload = JSON.stringify({ conversationId: f.destination.id, engineMapping: { codex: 'codex' } }) + '\n' + JSON.stringify(pkg);
   const input = { method: 'POST', url: `/api/projects/${f.project.id}/agent-import-operations`,
     headers: { 'idempotency-key': key, 'content-type': 'application/vnd.ponderosa.agent-import' }, payload };
+  const invalid=await f.request({...input,payload:payload.replace(pkg.schema,'ponderosa.unsupported.v99')});
+  assert.equal(invalid.statusCode,400,invalid.body);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM agent_import_submission_intents').get().n,0,
+    'Unsupported package is rejected before durable admission');
   const queued = f.ok(await f.request(input));
   const statusUrl = `/api/projects/${f.project.id}/agent-import-operations/${queued.id}`;
   const settled = async () => {
@@ -1045,3 +1049,51 @@ test('selected Chat title history budget refuses oversize without clipping or ch
  const pkg=await f.exportAgent(f.a.id),invalid=structuredClone(pkg);invalid.chatTitleHistory[0].change.actor={kind:'authenticated_admin'};
  const before=f.store.listAgents(f.project.id).length,response=await f.request(f.importRequest(invalid));assert.equal(response.statusCode,400);assert.equal(f.store.listAgents(f.project.id).length,before);
 }));
+
+test('Agent package memory omission is explicit and supports a memory-disabled destination',options,t=>withPortability(t,async f=>{
+ const pkg=await f.exportAgent(f.a.id);
+ pkg.memory=[{agentRefs:{'source-agent':pkg.rootRef},snapshot:{
+  schema:'ponderosa.chat-memory.v1',signature:'fixture-embedding',sourceChatId:'source-chat',
+  agentIds:['source-agent'],excludedScopes:['global'],chunks:[],conflicts:[],
+ }}];
+ const blocked=await f.request(f.importRequest(pkg));
+ assert.equal(blocked.statusCode,409,blocked.body);
+ assert.match(blocked.json().error,/configure destination local memory/u);
+ const selected=f.importRequest(pkg,randomUUID(),{omitMemory:true});
+ const imported=f.ok(await f.request(selected));
+ assert.ok(imported.rootAgentId);
+ assert.equal((await f.exportAgent(imported.rootAgentId)).memory,undefined);
+ const separate=f.ok(await f.request(f.importRequest(pkg,randomUUID(),{omitMemory:true})));
+ assert.notEqual(separate.rootAgentId,imported.rootAgentId);
+},{}));
+
+test('ordinary whole-folder export reports omitted dependency and credential paths',options,t=>withPortability(t,async f=>{
+ const {mkdir}=await import('node:fs/promises');
+ const root=await mkdtemp(path.join(f.dataDir,'selected-root-'));
+ await mkdir(path.join(root,'node_modules'));
+ await writeFile(path.join(root,'node_modules','dependency.js'),'generated dependency');
+ await writeFile(path.join(root,'.env'),'SYNTHETIC_CREDENTIAL');
+ await writeFile(path.join(root,'readme.md'),'User-authored contents');
+ const config='{\n // Generated note\n "compilerOptions": {"strict": true,},\n "references": [{"path":"https://example.invalid/path//"}],\n}\n';
+ await writeFile(path.join(root,'tsconfig.json'),config);
+ const source=f.store.createProject({label:'Selected root',hostPath:root,defaultEngine:'codex'});
+ const chat=f.store.createConversation(source.id,{title:'Repo Chat'});
+ const agent=f.store.createAgent(source.id,{title:'Repo Agent',engine:'codex',conversationId:chat.id});
+ const prepared=f.ok(await f.request({method:'POST',url:'/api/agents/'+agent.id+'/export',
+  headers:{'x-ponderosa-export-request':randomUUID()},
+  payload:{mode:'full',wholeWorkingFolder:true,download:true,omitMemory:true},
+ }));
+ assert.deepEqual(prepared.workingFolderOmissions,{count:2,paths:['.env','node_modules']});
+ const pkg=f.ok(await f.request(prepared.downloadUrl));
+ assert.deepEqual(pkg.agents[0].workingFiles.map(file=>file.path),['readme.md','tsconfig.json']);
+ const configRef=pkg.agents[0].workingFiles.find(file=>file.path==='tsconfig.json').artifactRef;
+ const configArtifact=pkg.agents[0].artifacts.find(artifact=>artifact.ref===configRef);
+ const raw=Buffer.from(configArtifact.dataBase64,'base64');
+ assert.equal((configArtifact.dataEncoding==='gzip'?gunzipSync(raw):raw).toString(),config);
+ const {validateWorkingFileData}=await import('../../apps/server/dist/portable-working-files.js');
+ assert.throws(()=>validateWorkingFileData('tsconfig.json',Buffer.from('{ /* note */ "apiKey": "synthetic",}')),/credential fields/);
+ assert.throws(()=>validateWorkingFileData('tsconfig.json',Buffer.from('{ /* API_KEY=synthetic */ "compilerOptions": {},}')),/credential fields/);
+ assert.throws(()=>validateWorkingFileData('tsconfig.json',Buffer.from('{ /* note */ "strict":true, "strict":false,}')),/duplicate object keys/);
+ assert.deepEqual(pkg.agents[0].workingFolder.excludedPaths,prepared.workingFolderOmissions.paths);
+ assert.equal(await readFile(path.join(root,'node_modules','dependency.js'),'utf8'),'generated dependency');
+},{}));

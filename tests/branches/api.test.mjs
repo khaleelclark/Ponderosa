@@ -270,7 +270,7 @@ test('Assistant bootstrap is single-flight, persistent, editable and disabled un
   await f.reopen();assert.equal(f.ok(await enable()).app.agentId,app.agentId);
   const schedule=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:false,everyMs:1200000}));
   assert.equal(schedule.automatic,false);assert.equal(schedule.everyMs,1200000);
-  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'run_latest','everyday schedule settings preserve the existing busy policy');
+  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'update_current','new Assistant schedules steer and cadence edits preserve the policy');
   assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:60000})).status,409);
   f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,{enabled:false}));
   assert.equal(f.ok(await enable()).enabled,false,'ordinary initialization never restores a removed speaker');
@@ -339,7 +339,8 @@ test('a retry pins the original Assistant import payload even if workspace model
  const workspace={cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})};
  const branches={create:()=>({id:'owned-branch',createdAt:'2026-10-29T00:00:00.000Z'})};
  const importer={validateAgent(){},async importAgent(project,chat,pkg,mapping,key){attempts.push({pkg,mapping,key});throw Error('Controlled interrupted import');}};
- const create=()=>new OutputAgentApps({},branches,workspace,async()=>({id:'chat',projectId:'project'}),importer,()=> 'codex');
+ const create=()=>new OutputAgentApps({},branches,workspace,async()=>({id:'chat',projectId:'project'}),importer,
+  async()=>({engine:'codex',model:preferences.engineDefaults.codex.model}));
  await assert.rejects(create().initialize(true),/Controlled interrupted/);
  preferences.engineDefaults.codex.model='changed';
  await assert.rejects(create().initialize(true),/Controlled interrupted/);
@@ -477,6 +478,7 @@ for(const [kind,sourceConfig] of [
   if(kind==='manual'){
    assert.equal((await save(true)).status,409,'A manual workflow needs an explicitly selected interval');
    f.ok(await save(true,{everyMs:180000}));assert.equal((await read()).everyMs,180000);assert.equal((await read()).triggerKind,'schedule');
+   assert.equal(branches.trigger(app.branchId).sourceConfig.whenRunning,'update_current');
   }else{
    f.ok(await save(true));const enabled=await read();assert.equal(enabled.versionId,versionId);assert.equal(enabled.bindingRevisionId,bindingRevisionId);
    assert.deepEqual(branches.trigger(app.branchId).sourceConfig,original.sourceConfig);assert.equal(branches.trigger(app.branchId).id,original.id);
@@ -798,7 +800,7 @@ for(const removal of ['speaker','output','import'])for(const coupling of [undefi
    const {OutputAgentApps}=await import('../../apps/server/dist/output-agent-apps.js');
    const {BranchStore,CoordinationV3Store}=await import('../../packages/agents/dist/index.js');
    let preferences={outputApps:{agentIds:[previous.agent.id],speakerAgentId:previous.agent.id,initialized:true}};
-   const owner=new OutputAgentApps(store,new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},()=>{throw Error('Unexpected chat creation');},{},()=> 'codex');
+   const owner=new OutputAgentApps(store,new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},()=>{throw Error('Unexpected chat creation');},{},async()=>({engine:'codex',model:'fixture'}));
    const mapping={worker:previous.agent.id},review=owner.reviewImport([{ref:'worker',output:true,speaker:false}],'exact-package',true,mapping);
    owner.claimImport(review.id,'exact-package','import-operation');
    owner.finalizeImport(review.id,'exact-package','import-operation',mapping);

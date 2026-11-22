@@ -120,3 +120,8 @@ export {
   runtimeDispatchAttachmentsAreValid,
 };
 export type { RuntimeDispatchAttachmentV3 };
+
+/** Canonical UTC for fields persisted and compared in SQLite as text. */
+export function canonicalTimestamp(value: string): string {
+  return new Date(Date.parse(value)).toISOString();
+}

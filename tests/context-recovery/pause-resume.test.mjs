@@ -6,6 +6,7 @@ import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
 import {projectPauseCheckpointForProvider} from '../../apps/server/dist/routes/agent-run-preparation.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 import {AgentStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
+import {createRuntimeEventAuthority} from '../../apps/server/dist/runtime-event-authority.js';
 import {createActiveAccessRevocation} from '../../apps/server/dist/active-access-revocation.js';
 
 test('pause checkpoint projects obsolete tool definitions without changing durable evidence or task text',()=>{
@@ -600,12 +601,12 @@ test('global memory revocation holds only a Run with effective prior memory acce
 });
 
 
-test('memory revocation selects the Run home Chat and notification failures do not change committed policy',t=>{
+for(const engine of ['codex','claude'])test(`memory revocation selects the ${engine} Run home Chat and survives failed notification`,t=>{
  const root=mkdtempSync(path.join(tmpdir(),'access-revocation-owner-')),store=new AgentStore(root);
  t.after(()=>{store.close();rmSync(root,{recursive:true,force:true})});
- const project=store.createProject({label:'Home',hostPath:root,defaultEngine:'codex',chatOwned:true}),home=store.getConversation(project.lastConversationId);
- const agent=store.createAgent(project.id,{conversationId:home.id,title:'Worker',engine:'codex'});
- const run={runId:'source',v3SchedulerRunId:'source',runtimeEngineId:'codex',homeConversationId:home.id,conversationId:'different-routed-chat'};
+ const project=store.createProject({label:'Home',hostPath:root,defaultEngine:engine,chatOwned:true}),home=store.getConversation(project.lastConversationId);
+ const agent=store.createAgent(project.id,{conversationId:home.id,title:'Worker',engine});
+ const run={runId:'source',v3SchedulerRunId:'source',runtimeEngineId:engine,homeConversationId:home.id,conversationId:'different-routed-chat'};
  const pauses=[],logs=[];
  const context={store,coordinationV3:{pauseAgentRun:input=>{pauses.push(input)}},activeRuns:new Map([[agent.id,run]]),ownsRun:()=>true,
   wakeScheduler:()=>{throw Error('controlled wake failure')},publishPause:()=>{throw Error('controlled publication failure')},logError:(_error,operation)=>logs.push(operation)};
@@ -618,7 +619,10 @@ test('memory revocation selects the Run home Chat and notification failures do n
  const policies=new CapabilityPolicyStore(store.sqlite);
  const committed=helper.policyChange(()=>policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
  assert.equal(committed.revision,1);assert.equal(policies.get('agent',agent.id).revision,1);
- assert.equal(pauses.length,2);assert.deepEqual(logs,['wake scheduler','publish pause','wake scheduler','publish pause']);
+ assert.equal(pauses.length,2);
+ helper.policyChange(()=>policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:1,
+  restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead,`connector:${engine}:example`]}));
+ assert.equal(pauses.length,3,'the matching native connector restriction reaches the active Run');assert.deepEqual(logs,['wake scheduler','publish pause','wake scheduler','publish pause','wake scheduler','publish pause']);
 });
 
 
@@ -634,4 +638,29 @@ for(const [label,restriction] of [['workflow-only','workflow.scripts'],['other-p
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id).n,0);
   assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),input);
  },{storeFactory:p=>(store=new AgentStore(p))});
+});
+
+test('a live but silent provider gets one incident and stays available to resume',async()=>{
+ let now=0, heartbeat, notifications=0;
+ const notices = new Set();
+ const controller = new AbortController();
+ const run={ownershipState:'running',executionId:'controlled',startedAt:new Date(now).toISOString(),
+  runtimeSession:{isAlive:()=>true},controller};
+ const authority=createRuntimeEventAuthority({
+  activeRuns:new Map([['agent',run]]),
+  store:{getAgent:()=>({projectId:'project'}),appendEvent:(_agent,event)=>({event})},
+  executionLeaseNow:()=>now,executionHeartbeatMs:100,executionLeaseMs:300,
+  setExecutionLeaseTimer(callback,delay){if(delay===100)heartbeat=callback;return {unref(){}};},
+  clearExecutionLeaseTimer(){},leaseExpiry:()=>new Date(now+300).toISOString(),
+  ownsActiveRunForAuditDrain:()=>true,isClosed:()=>false,logWarn(_meta,message){assert.fail(message);},publish(){},
+  createOperationalNotification(input){notifications++;notices.add(input.dedupeKey);},
+  resolveOperationalNotification(key){notices.delete(key);},
+ });
+ authority.scheduleRuntimeLivenessHeartbeat('agent',run);
+ now=300;heartbeat();
+ assert.equal(run.ownershipState,'stalled');assert.equal(notices.size,1);
+ now=400;heartbeat();
+ assert.equal(notifications,1);assert.equal(controller.signal.aborted,false);
+ await authority.persistRuntimeEvent('agent',run,{type:'text',executionId:run.executionId,delta:'resumed'});
+ assert.equal(run.ownershipState,'running');assert.equal(notices.size,0);
 });

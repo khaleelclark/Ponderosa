@@ -1,3 +1,4 @@
+import { chatArchiveBlocksChat } from "@ponderosa/agents";
 import { normalizeAgentRole } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -323,6 +324,7 @@ export function registerAgentCreationRoutes(
           result: savedPlan,
         });
       }
+      if (chatArchiveBlocksChat(store.sqlite, request.body.conversationId)) return abandonMutationFreeOperation(409, "Restore the Chat before adding Agents");
       if (deletingConversationIds.has(request.body.conversationId)) {
         return abandonMutationFreeOperation(409, "Chat deletion is already in progress");
       }
@@ -402,7 +404,7 @@ export function registerAgentCreationRoutes(
         return abandonMutationFreeOperation(409, "Project deletion is already in progress");
       }
       const creationConversation = store.getConversation(request.body.conversationId);
-      if (deletingConversationIds.has(request.body.conversationId) ||
+      if (chatArchiveBlocksChat(store.sqlite, request.body.conversationId) || deletingConversationIds.has(request.body.conversationId) ||
           !creationConversation || creationConversation.projectId !== request.params.id) {
         return abandonMutationFreeOperation(409, "Chat is unavailable for Agent creation");
       }

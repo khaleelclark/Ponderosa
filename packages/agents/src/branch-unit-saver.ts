@@ -20,6 +20,7 @@ export class BranchUnitSaver {
   private readonly maxPendingBytes = 32 * 1024 * 1024;
   private readonly lanes = new Map<string,Promise<void>>();
   private readonly failures = new Map<string,unknown>();
+  private readonly retries = new Map<string,number>();
   private readonly statuses = new Map<string,Status>();
   private readonly watermarks = new Map<string,number>();
   private readonly coalesced = new Map<string,Candidate>();
@@ -50,7 +51,7 @@ export class BranchUnitSaver {
   unowned(context:BranchUnitContext):void {
     for(const id of context.written){const error=new Error('Raw ambient transaction has no owned checkpoint commit handoff; use unitTransaction');this.failures.set(id,error);this.statuses.set(id,{state:'coverage_unknown',error});}
   }
-  publish(candidates:Candidate[]):void {
+  publish(candidates:Candidate[],retry=false):void {
     if(this.sqlite.inTransaction)throw new Error('Cannot publish before actual root COMMIT');
     for(const candidate of candidates){
       const id=candidate.executionId;
@@ -64,9 +65,11 @@ export class BranchUnitSaver {
       }
       this.coalesced.delete(id);
       const previous=this.lanes.get(id)??Promise.resolve();
+      // Only an explicitly re-frozen cut can supersede a failed durable save.
+      const predecessor=retry?previous.catch(()=>{}):previous;
       const bytes=(candidate.content?.length??0)*2;
       this.pendingBytes+=bytes;
-      const save=previous.then(()=>{
+      const save=predecessor.then(()=>{
         if(this.sqlite.inTransaction)throw new Error('Checkpoint saver cannot join a primary transaction');
         if(Object.hasOwn(candidate,'error'))throw candidate.error;
         // Deletion can run between commit and the async saver. Never recreate ownership.
@@ -78,6 +81,7 @@ export class BranchUnitSaver {
           if(candidate.invocationId)this.sqlite.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?,'$.durability',?) WHERE id=? AND json_extract(checkpoint_invocation_json,'$.id')=?").run(savedId,candidate.closing?'saved':'pending',id,candidate.invocationId);
           return savedId;
         }).immediate();
+        this.failures.delete(id); this.retries.delete(id);
         if(savedId===undefined)Object.assign(ticket,{state:'suppressed'});
         else Object.assign(ticket,{state:'saved',savedId,contentHash:candidate.hash});
       });
@@ -87,12 +91,27 @@ export class BranchUnitSaver {
       void save.then(()=>{this.pendingBytes-=bytes;},()=>{this.pendingBytes-=bytes;});
       void save.catch(error=>{
         this.failures.set(id,error);Object.assign(ticket,{state:'failed',error});
+        this.retries.set(id,Date.now()+5_000);
         // Reporting failure must itself remain outside the primary effect channel.
         try {if(candidate.invocationId)this.sqlite.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.durability','failed') WHERE id=? AND json_extract(checkpoint_invocation_json,'$.id')=?").run(id,candidate.invocationId);}
         catch(reportError){this.failures.set(id,new AggregateError([error,reportError],'Checkpoint save and failure reporting failed'));}
       });
     }
   }
+  retryFailedSaves(now = Date.now()): void {
+    if (this.sqlite.inTransaction || this.pendingBytes >= this.maxPendingBytes) return;
+    // Bound one retry pass. Re-freeze only the stable, committed owner cut;
+    // recovered coverage can never bypass currentSavedMatches in sync mode.
+    const due = new Set<string>();
+    for (const [id, ticket] of this.statuses) {
+      if (ticket.state !== 'failed' || (this.retries.get(id) ?? 0) > now) continue;
+      due.add(id);
+      this.retries.set(id, now + 5_000);
+      if (due.size === 4) break;
+    }
+    if (due.size) this.publish(this.freeze({written: due}),true);
+  }
+
   currentSavedMatches(executionId:string,invocationId:string,savedId:number|undefined):boolean {
     if(!savedId)return false;
     try {

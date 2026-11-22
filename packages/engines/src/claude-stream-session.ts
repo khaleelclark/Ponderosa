@@ -168,7 +168,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     opts.assertHistoryCurrent?.();
     // Session state frames are opt-in. ClaudeTaskLifetime needs the post-result
     // idle frame to close any turn that started native background work.
-    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1", ...CLAUDE_MODEL_ENVIRONMENT };
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1", ...CLAUDE_MODEL_ENVIRONMENT, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
     this.modelEnvironment = environment;
     this.modelGuard = claudeModelGuard(opts.model, environment);
     const contained = spawnContainedCli({
@@ -571,10 +571,19 @@ export class ClaudeStreamSession implements RuntimeSession {
             (frame.session_id === undefined || frame.session_id === this.engineAgentId)) {
           const callbackOptions = { ...this.opts, signal: AbortSignal.any([this.opts.signal, controller.signal]) };
           const identity = { requestId, sessionId: this.engineAgentId, turnId, kind: "tool" as const };
-          if (request.tool_name === "AskUserQuestion") {
-            updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
-            allowed = updatedInput !== undefined;
-          } else allowed = await requestNativeApproval(callbackOptions, identity, request);
+          try {
+            if (request.tool_name === "AskUserQuestion") {
+              updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
+              allowed = updatedInput !== undefined;
+            } else allowed = await requestNativeApproval(callbackOptions, identity, request);
+          } catch {
+            if (controller.signal.aborted || this.closed) return;
+            const error = request.tool_name === "AskUserQuestion"
+              ? "The question could not be displayed or answered. Submit a smaller, valid question through ponderosa_decision."
+              : "Native approval exceeds the form limit. Request approval for a smaller operation.";
+            await this.writeFrame({ type: "control_response", response: { subtype: "error", request_id: requestId, error } });
+            return;
+          }
         }
         if (controller.signal.aborted || this.closed) return;
         if (request?.subtype !== "can_use_tool") {

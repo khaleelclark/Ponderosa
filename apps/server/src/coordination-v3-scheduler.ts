@@ -6,6 +6,7 @@ export interface CoordinationV3DispatchResult {
   retryable?: boolean;
   /** Keep steer-or-run semantics instead of silently converting to Queue. */
   retrySteering?: boolean;
+  activeTurnRefusedSteering?: boolean;
   steeringWaitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
   terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
   outcomeUnknown?: boolean;
@@ -102,6 +103,10 @@ export class CoordinationV3Scheduler {
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
+  private passFailures = 0;
+  private nextFailureLogAt = 0;
+  private passFailureNotified = false;
+  private passHealthyReported = false;
   private maxConcurrentRuns: number;
   private readonly stopWaiters = new Set<() => void>();
   private readonly metrics: CoordinationV3SchedulerMetrics = {
@@ -163,6 +168,8 @@ export class CoordinationV3Scheduler {
       /** Preflight exactly the candidate that the subsequent claim may lease. */
       prepareRunAdmission?: (excludedAgentIds:readonly string[]) => Promise<string|null>;
       workflowOperations?: WorkflowOperations;
+      onPassError?: (error: unknown) => void;
+      onPassHealthChanged?: (healthy: boolean) => void;
       reconcileContextRecoveries?: () => Promise<void>;
     },
   ) {
@@ -449,6 +456,7 @@ export class CoordinationV3Scheduler {
           fencingToken: steering.fencingToken,
           retryDelayMs: result.retryable === false ? 30_000 : 500,
           preserveSteering: result.retrySteering === true,
+          activeTurnRefusedSteering: result.activeTurnRefusedSteering,
           waitReason: result.steeringWaitReason,
         });
       } catch (error) {
@@ -588,12 +596,44 @@ export class CoordinationV3Scheduler {
       this.timer = undefined;
       // Poll admission independently of slow preparation/provider startup.
       this.schedule(this.options.pollMs ?? 250);
-      void this.drainOnce()
-        .catch((error) => {
-          this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-        });
+      if (!this.draining) void this.drainOnce().then(
+        () => this.recordPassResult(true),
+        error => this.recordPassResult(false, error),
+      );
     }, delayMs);
     this.timer.unref?.();
+  }
+
+  private recordPassResult(healthy: boolean, error?: unknown): void {
+    if (this.stopped) return;
+    const now = performance.now();
+    try {
+      if (healthy) {
+        const recovered = this.passFailures > 0;
+        this.passFailures = 0;
+        if (!this.passHealthyReported || this.passFailureNotified) {
+          if (!recovered && now < this.nextFailureLogAt) return;
+          this.nextFailureLogAt = now + 5_000;
+          this.options.onPassHealthChanged?.(true);
+          this.passFailureNotified = false;
+          this.passHealthyReported = true;
+        }
+        this.nextFailureLogAt = 0;
+        return;
+      }
+      this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+      this.passFailures += 1;
+      if (now < this.nextFailureLogAt) return;
+      // Bound logs and notice-write retries even when storage is unavailable.
+      this.nextFailureLogAt = now + (this.passFailures < 4 ? 1_000 : 30_000);
+      this.options.onPassError?.(error);
+      if (this.passFailures >= 4 && !this.passFailureNotified) {
+        this.options.onPassHealthChanged?.(false);
+        this.passFailureNotified = true;
+      }
+    } catch (reportError) {
+      this.options.onPassError?.(reportError);
+    }
   }
 
   private recordDispatchLatency(latencyMs: number): void {

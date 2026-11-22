@@ -7,7 +7,7 @@ export const lifecycleHash=(value:unknown)=>createHash('sha256').update(stableJs
 /** Private, immutable evidence. A failed database commit leaves a resumable hold, never permission. */
 export function lifecycleJournal(directory:string,db:Database.Database){
  fs.mkdirSync(directory,{recursive:true,mode:0o700});
- const owned=fs.lstatSync(directory);if(!owned.isDirectory()||owned.isSymbolicLink()||(owned.mode&0o077))throw Error('Lifecycle journal must be private');
+ const owned=fs.lstatSync(directory);if(!owned.isDirectory()||owned.isSymbolicLink()||(process.platform!=='win32'&&(owned.mode&0o077)))throw Error(`Lifecycle journal must be private: ${directory}`);
  const sync=(file:string)=>{if(process.platform!=='win32'){const fd=fs.openSync(file,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}};
  sync(path.dirname(directory));
  const file=(key:string)=>path.join(directory,`${lifecycleHash(key)}.json`);

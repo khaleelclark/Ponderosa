@@ -10,7 +10,7 @@ import {
 } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
-import { isIso } from "./coordination-v3-runtime-validation.js";
+import { canonicalTimestamp, isIso } from "./coordination-v3-runtime-validation.js";
 import type {
   Actor,
   RunAuthorizationV3,
@@ -38,13 +38,14 @@ export interface RequestRow {
 export class CoordinationV3StoreSupport {
   constructor(private readonly sqlite: Database.Database) {}
 
-  validateLifetime(lifetime: RequestLifetime, now: string): void {
+  validateLifetime(lifetime: RequestLifetime, now: string): string | null {
+    if (lifetime.kind !== "deadline") return null;
     if (
-      lifetime.kind === "deadline" &&
-      (!isIso(lifetime.at) || lifetime.at <= now)
+      !isIso(lifetime.at) || Date.parse(lifetime.at) <= Date.parse(now)
     ) {
       throw new Error("request deadline must be a future ISO timestamp");
     }
+    return canonicalTimestamp(lifetime.at);
   }
 
   requireProject(projectId: string): void {

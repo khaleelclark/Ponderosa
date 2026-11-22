@@ -116,6 +116,8 @@ test('unexplained pool growth and changed legacy inventory refuse new exports',a
   assert.equal((await request(f,'accounting-before',{value:1})).statusCode,200);
   const fd=openSync(path.join(f.root,'fixture-pool'),'r+');try{writeSync(fd,Buffer.from('X'),0,1,3*1024*1024);fdatasyncSync(fd);}finally{closeSync(fd);}
   const refusal=await request(f,'accounting-after',{value:2});assert.equal(refusal.statusCode,503,refusal.body);
+  assert.equal(refusal.headers['x-ponderosa-export-staging'],'unavailable-before-capture');
+  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) AS count FROM package_export_claims WHERE request_key='accounting-after'").get().count,0);
  }finally{await f.dispose();}
  const g=await fixture();
  try{

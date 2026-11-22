@@ -33,6 +33,15 @@ export class AssetAuthority {
     if (code.includes("CORRUPT") || code.includes("NOTADB")) return new AssetError(409, "asset authority is corrupt");
     return new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
+  attachmentUsage(projectId: string, ownerId: string) {
+    const committed = (this.db.prepare("SELECT coalesce(sum(size),0) bytes FROM asset_committed WHERE project_id=? AND agent_id=?")
+      .get(projectId,ownerId) as {bytes:number}).bytes;
+    const pending = this.db.prepare(`
+      SELECT asset_id id FROM asset_committed a WHERE project_id=? AND agent_id=?
+        AND NOT EXISTS(SELECT 1 FROM runtime_attachment_associations r WHERE r.asset_id=a.asset_id)
+      ORDER BY rowid LIMIT 101`).all(projectId,ownerId) as {id:string}[];
+    return {committed,pending};
+  }
   reserve(projectId: string, agentId: string, assetId: string, size: number): string {
     const id = randomUUID();
     try {
@@ -45,7 +54,8 @@ export class AssetAuthority {
         const rate = (this.db.prepare("SELECT count(*) count FROM asset_rate_events WHERE project_id=? AND agent_id=?").get(projectId, agentId) as { count: number }).count;
         if (active.count >= 4) throw new AssetError(429, "too many concurrent asset uploads");
         if (rate >= 100) throw new AssetError(429, "asset upload rate limit exceeded");
-        if (committed + active.bytes + size > ASSET_LIMITS.maxAgentBytes) throw new AssetError(413, "agent asset quota exceeded");
+        if (committed + active.bytes + size > ASSET_LIMITS.maxAgentBytes) throw new AssetError(413,
+          `Attachment storage has ${((committed+active.bytes)/1024**2).toFixed(1)} MiB used or uploading out of ${ASSET_LIMITS.maxAgentBytes/1024**2} MiB. Review Attachment storage in Settings to remove unsent files.`);
         this.db.prepare("INSERT INTO asset_reservations VALUES (?,?,?,?,?,?)").run(id, assetId, projectId, agentId, size, now);
         this.db.prepare("INSERT INTO asset_rate_events VALUES (?,?,?,?)").run(id, projectId, agentId, now);
          return id;

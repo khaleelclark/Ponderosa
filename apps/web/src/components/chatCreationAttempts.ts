@@ -1,6 +1,7 @@
 import type { ConversationDto, CreateProjectRequest } from "@ponderosa/core";
 import { api } from "../api";
 import { requestJson } from "../api/real";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { readBrowserStorage, writeBrowserStorage } from "../browserStorage.js";
 
 export interface ChatCreationOwner { product: "branches"; branchId: string }
@@ -15,18 +16,77 @@ export const submitCreationAttempt = (attempt: ChatCreationAttempt): Promise<Con
   ? requestJson(`/api/branches/${encodeURIComponent(attempt.owner.branchId)}/chats`, {method: "POST", headers: {"idempotency-key": attempt.key}, body: JSON.stringify(attempt.input)})
   : api.createChat(attempt.input, attempt.key);
 
-export interface ChatCreationAttempt { key: string; owner?: ChatCreationOwner; origin?: "import_destination"; input: CreateProjectRequest; chat?: Pick<ConversationDto, "id" | "projectId"> }
+export interface ChatCreationAttempt {
+  key: string;
+  owner?: ChatCreationOwner;
+  origin?: "import_destination";
+  input: CreateProjectRequest;
+  chat?: Pick<ConversationDto, "id" | "projectId">;
+  opening?: {
+    text: string;
+    title: string;
+    runtime?: Pick<CreateProjectRequest, "defaultEngine" | "defaultModel" | "defaultEffort" | "defaultSpeed">;
+  };
+}
 /** A retry requires one unchanged, still-unconfirmed original request. */
 export function mayRetryCreationAttempt(items:ChatCreationAttempt[],attempt:ChatCreationAttempt):boolean {
   const matches=items.filter(item=>sameCreationAttempt(item,attempt)),existing=matches[0];
-  return matches.length===1&&Boolean(existing&&!existing.chat&&existing.origin===attempt.origin&&JSON.stringify(existing.input)===JSON.stringify(attempt.input));
+  return matches.length===1&&Boolean(existing&&!existing.chat&&existing.origin===attempt.origin&&sameCreationInput(existing,attempt));
 }
 /** Existing completion evidence must agree before an import-origin receipt is saved. */
 export function mayRecordCreationReceipt(items:ChatCreationAttempt[],attempt:ChatCreationAttempt,chat:Pick<ConversationDto,"id"|"projectId">):boolean {
   const matches=items.filter(item=>sameCreationAttempt(item,attempt)),existing=matches[0];
-  return matches.length===1&&Boolean(existing&&existing.origin===attempt.origin&&JSON.stringify(existing.input)===JSON.stringify(attempt.input)&&
+  return matches.length===1&&Boolean(existing&&existing.origin===attempt.origin&&sameCreationInput(existing,attempt)&&
     (!existing.chat||(existing.chat.id===chat.id&&existing.chat.projectId===chat.projectId)));
 }
+function sameCreationInput(a: ChatCreationAttempt, b: ChatCreationAttempt): boolean {
+  return JSON.stringify(a.input) === JSON.stringify(b.input) &&
+    JSON.stringify(a.opening) === JSON.stringify(b.opening);
+}
+
+export function withChatCreationReceipt(attempt: ChatCreationAttempt, chat: ConversationDto): ChatCreationAttempt {
+  const { id, projectId, defaultEngine, defaultModel, defaultEffort, defaultSpeed } = chat;
+  const opening = attempt.opening && {
+    ...attempt.opening,
+    runtime: attempt.opening.runtime ?? {
+      defaultEngine: defaultEngine ?? attempt.input.defaultEngine, defaultModel, defaultEffort, defaultSpeed,
+    },
+  };
+  return { ...attempt, chat: { id, projectId }, opening };
+}
+
+/** Replays the first message through the same Agent creation operation. */
+export async function submitChatOpening(attempt: ChatCreationAttempt, chat: ConversationDto): Promise<void> {
+  const opening = attempt.opening;
+  if (!opening) return;
+  const journal = readDurableChatAttempts();
+  if (!mayRecordCreationReceipt(journal, attempt, chat)) {
+    throw new Error("Saved opening message changed. The original request is retained.");
+  }
+  if (!opening.runtime) throw new Error("The opening message runtime could not be recovered.");
+  const { defaultEngine, defaultModel, defaultEffort, defaultSpeed } = opening.runtime;
+  await api.createAgent(chat.projectId, chat.id, {
+    title: opening.title,
+    engine: defaultEngine,
+    model: defaultModel,
+    effort: defaultEffort,
+    speed: defaultSpeed,
+    initialMessage: opening.text,
+    idempotencyKey: `${attempt.key}:opening`,
+  });
+  settleChatOpening(attempt, chat);
+  const draftKey = chatStateKey("draft", `new-chat.${attempt.key}`);
+  if (readChatState(draftKey)?.trim() === opening.text) writeChatState(draftKey, "");
+}
+
+export function settleChatOpening(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): void {
+  const journal = readDurableChatAttempts();
+  if (!mayRecordCreationReceipt(journal, attempt, chat) ||
+      !saveCreationAttempts(journal.map(item => sameCreationAttempt(item, attempt) ? { ...item, opening: undefined } : item))) {
+    throw new Error("The opening message receipt could not be saved. Retry the same request.");
+  }
+}
+
 export const chatCreationAttemptsKey = "ponderosa.new-chat-attempts.v2";
 
 export function readCreationAttempts(): ChatCreationAttempt[] {
@@ -36,6 +96,12 @@ export function readCreationAttempts(): ChatCreationAttempt[] {
     return items.filter((item): item is ChatCreationAttempt => item && typeof item.key === "string" &&
       (item.owner === undefined || (item.owner?.product === "branches" && typeof item.owner.branchId === "string" && item.owner.branchId.length > 0)) &&
       (item.origin === undefined || item.origin === "import_destination") &&
+      (item.opening === undefined || (!item.owner && !item.origin &&
+        typeof item.opening?.text === "string" && Boolean(item.opening.text) &&
+        typeof item.opening?.title === "string" && Boolean(item.opening.title) &&
+        (item.opening.runtime === undefined || (typeof item.opening.runtime?.defaultEngine === "string" &&
+          ["defaultModel", "defaultEffort", "defaultSpeed"].every(field =>
+            item.opening.runtime[field] === undefined || typeof item.opening.runtime[field] === "string"))))) &&
       (item.chat === undefined || (typeof item.chat?.id === "string" && item.chat.id && typeof item.chat?.projectId === "string" && item.chat.projectId)) &&
       typeof item.input?.label === "string" && typeof item.input?.defaultEngine === "string" &&
       ["hostPath", "defaultModel", "defaultEffort", "defaultSpeed"].every(field => item.input[field] === undefined || typeof item.input[field] === "string"));
@@ -65,7 +131,7 @@ export function ensureCreationAttemptPersisted(attempt: ChatCreationAttempt): bo
     if(matches.length>1)return false;
     if(matches.length===1){
       const existing=matches[0]!;
-      return existing.origin===attempt.origin&&JSON.stringify(existing.input)===JSON.stringify(attempt.input)&&
+      return existing.origin===attempt.origin&&sameCreationInput(existing,attempt)&&
         JSON.stringify(existing.chat??null)===JSON.stringify(attempt.chat??null);
     }
     return saveCreationAttempts([...journal,attempt]);

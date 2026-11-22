@@ -262,3 +262,26 @@ test('BR004 complete canonical snapshots survive replay and ignore unrelated res
   assert.ok(plan.some(row=>/SEARCH recent_use USING AUTOMATIC COVERING INDEX/.test(row.detail)),JSON.stringify(plan));
   assert.equal(sqlite.prepare(query).all(complete.json).filter(row=>row.last_used_at).length,125);
 });
+
+test('workspace pulse compaction preserves quiet Agent recency across two opens', async t => {
+  const {WorkspaceStore}=await import('@ponderosa/agents');
+  const {appendFileSync,mkdtempSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const root=mkdtempSync(join(tmpdir(),'workspace-agent-recency-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  new WorkspaceStore(root).close();
+  const pulses=Array.from({length:10_001},(_,seq)=>JSON.stringify({
+    id:seq+1,ts:new Date(Date.UTC(2026,0,1,0,0,0,seq)).toISOString(),
+    event:{type:'agent_event',projectId:'project',agentId:seq===0?'quiet':'active',conversationIds:[],seq,eventType:'text',category:'progress'},
+  }));
+  appendFileSync(join(root,'workspace-events.jsonl'),pulses.join('\n')+'\n');
+  for(let attempt=0;attempt<2;attempt++){
+    const workspace=new WorkspaceStore(root);
+    try{
+      const rows=new Map(JSON.parse(workspace.resourceRecencySnapshot('agent').json));
+      assert.equal(rows.get('quiet'),'2026-01-01T00:00:00.000Z');
+      assert.equal(rows.size,2);
+    }finally{workspace.close();}
+  }
+});

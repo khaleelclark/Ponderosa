@@ -9,6 +9,12 @@ import { runtimeEnvironment } from "./runtime-environment.js";
 
 type RpcId = number;
 export class JsonRpcOutputLimitError extends Error {}
+export class JsonRpcDeadlineError extends Error {
+  readonly code = "provider_ack_deadline";
+  constructor(method: string) {
+    super(`Codex did not confirm ${method} before its deadline. The operation's outcome is unconfirmed.`);
+  }
+}
 
 type RpcMessage = {
   id?: RpcId;
@@ -174,14 +180,26 @@ export class JsonRpcProcess {
     return result;
   }
 
-  request<T>(method: string, params?: unknown): Promise<T> {
+  request<T>(method: string, params?: unknown, timeoutMs: number | null = 30_000): Promise<T> {
     if (this.closed) return Promise.reject(this.failure ?? new Error("engine RPC process is closed"));
     const id = this.nextId++;
-    const promise = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
+    return new Promise<T>((resolve, reject) => {
+      const timer = timeoutMs === null ? undefined : setTimeout(() => {
+        this.pending.delete(id);
+        reject(new JsonRpcDeadlineError(method));
+      }, timeoutMs);
+      timer?.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value as T); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      try { this.write({ id, method, params }); }
+      catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
-    this.write({ id, method, params });
-    return promise;
   }
 
   notify(method: string, params?: unknown): void {

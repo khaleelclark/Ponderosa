@@ -78,7 +78,7 @@ function load(relative, imports = {}, globals = {}) {
 function hooks() {
   const state = []; let index = 0;
   const useState = initial => { const i = index++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value; }]; };
-  return { react: { ...React, useState, useRef: value => useState(() => ({ current: value }))[0], useEffect() {}, useMemo: fn => fn() }, render(fn) { index = 0; return fn(); } };
+  return { react: { ...React, useState, useRef: value => useState(() => ({ current: value }))[0], useEffect() {}, useLayoutEffect() {}, useMemo: fn => fn() }, render(fn) { index = 0; return fn(); } };
 }
 function* walk(node) {
   if (!React.isValidElement(node)) return;
@@ -240,32 +240,17 @@ test('UI013 current queue blockers explain Waiting without borrowing another tur
   const terminal = status({ state: 'processed', queueWaitReason: 'host_resource_pressure', steeringWaitReason: 'provider_not_ready' })();
   assert.ok(!terminal.some(node => node.type === mui.Typography && /Waiting/.test(text(node))));
 });
-test('UI004 footer never borrows an earlier busy Run for a later queued message', () => {
-  const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {
-    react: h.react, '../time': { formatExecutionElapsed: () => '0:01' },
-    './chat/ChatLiveBanner': { ChatLiveBanner: mui.Box },
-  });
-  const props = { agents: [{ id: 'a', title: 'Reader' }], healthByAgentId: new Map([['a', { runtimeActivity: { executionId: 'earlier', startedAt: '2026-10-19T00:00:00Z' } }]]) };
-  const message = deliveryReceipts => ({ role: 'user', deliveryReceipts });
-  const active = { activationId: 'old', targetAgentId: 'a', state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i', executionId: 'earlier' };
-  const render = messages => h.render(() => module.MasterRespondingIndicator({ ...props, messages }));
-  assert.match(text(render([message([active])])), /Reader is working/u);
-  for (const messages of [[message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])],
-    [message([{ ...active, executionId: 'different' }])], [message([{ ...active, state: 'processed' }])]]) {
-    const nodes = [...walk(render(messages))];
-    assert.ok(!nodes.some(node => node.type === mui.Tooltip), 'Only current acknowledged Working agents have a footer banner; Waiting remains on message delivery');
-    assert.equal(text(nodes.find(node => node.props.role === 'status')), 'No agents are working');
-  }
-});
-
-test('working summary deduplicates stable IDs and shares exact rows, phases and timer-free announcements', () => {
+test('working summary shows only confirmed Runs routed to this Chat and shares exact rows and timer-free announcements', () => {
   const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {
     react: h.react, '../time': { formatExecutionElapsed: () => '0:01' }, './chat/ChatLiveBanner': { ChatLiveBanner: mui.Box },
   });
   const agents = ['a', 'b', 'c', 'd'].map(id => ({ id, title: id === 'a' ? 'Boston' : 'Same long name '.repeat(30) }));
-  const active = agents.map(agent => ({ activationId: 'turn-' + agent.id, targetAgentId: agent.id, state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i-' + agent.id, executionId: 'run-' + agent.id }));
-  const healthByAgentId = new Map(agents.map(agent => [agent.id, { runtimeActivity: { executionId: 'run-' + agent.id, startedAt: '2026-10-19T00:00:00Z' } }]));
-  const render = (receipts, role = 'user') => [...walk(h.render(() => module.MasterRespondingIndicator({ agents, healthByAgentId, messages: [{ role, deliveryReceipts: receipts }] })))];
+  const active = agents.map(agent => [agent.id, { agentId: agent.id, runtimeActivity: {
+    conversationId: 'chat', executionId: 'run-' + agent.id, startedAt: '2026-10-19T00:00:00Z',
+  } }]);
+  const render = entries => [...walk(h.render(() => module.ChatWorkingAgents({
+    agents, conversationId: 'chat', healthByAgentId: new Map(entries),
+  })))];
   for (const count of [1, 2, 4]) {
     const nodes = render([...active.slice(0, count), ...active.slice(0, count)]);
     const trigger = nodes.find(node => node.type === mui.ButtonBase), tooltip = nodes.find(node => node.type === mui.Tooltip);
@@ -277,12 +262,15 @@ test('working summary deduplicates stable IDs and shares exact rows, phases and 
     const live = nodes.find(node => node.props['aria-live'] === 'polite');
     assert.ok(!text(live).includes('0:01'), 'Elapsed ticks cannot mutate the live announcement');
   }
-  for (const receipts of [[{ ...active[0], providerAcknowledged: false }], [{ ...active[0], injectionKind: 'steer' }],
-    [{ ...active[0], state: 'preparing' }], [{ ...active[0], state: 'queued' }], []]) {
-    assert.ok(!render(receipts).some(node => node.type === mui.Tooltip));
+  const [id, a] = active[0];
+  const otherChat = [id, { ...a, runtimeActivity: { ...a.runtimeActivity, conversationId: 'other-chat' } }];
+  const queued = [id, { agentId: id, status: 'idle', reason: 'queued_delivery' }];
+  for (const entries of [[otherChat], [queued], []]) {
+    const nodes = render(entries);
+    assert.ok(!nodes.some(node => node.type === mui.Tooltip));
+    assert.equal(text(nodes.find(node => node.props.role === 'status')), 'No agents are working');
   }
-  assert.ok(!render(active, 'assistant').some(node => node.type === mui.Tooltip));
-  assert.equal(render([active[0], { ...active[0], state: 'processed' }, active[1]]).find(node => node.type === mui.ButtonBase).props['aria-label'], `${agents[1].title.trim()} is working`);
+  assert.equal(render([otherChat, active[1]]).find(node => node.type === mui.ButtonBase).props['aria-label'], `${agents[1].title.trim()} is working`);
   render(active).find(node => node.type === mui.Tooltip).props.onOpen();
   render(active).find(node => node.type === mui.ButtonBase).props.onClick();
   assert.equal(render(active).find(node => node.type === mui.Tooltip).props.open, true, 'Clicking after hover or keyboard focus must not close the details');

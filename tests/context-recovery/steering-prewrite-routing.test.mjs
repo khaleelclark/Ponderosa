@@ -25,6 +25,54 @@ test('a proven pre-write refusal uses the existing scheduler queue', {timeout:15
  }});
 });
 
+for (const status of ['not_active', 'not_steerable']) test(`a human Steer refused as ${status} starts once after the old Run completes`, {timeout:15000}, async t => {
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Refused human Steer');
+    const agent = await f.createIdleAgent(chat, 'Worker');
+    const oldSession = await f.hold(agent.id);
+    const oldRun = (await f.detail(agent.id)).runs[0].id;
+    await until(() => store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND state='acknowledged'").get(oldRun), 'original prompt acknowledged');
+    assert.equal((await f.tool(oldSession, 'ponderosa_message', {text:'Original turn finished'})).status, 200);
+
+    const followUp = 'Run this preserved follow-up once';
+    const message = await f.send(agent.id, followUp, {activeRunDelivery:'steer'});
+    const ref = await until(async () => {
+      const receipt = (await f.detail(agent.id)).messages.find(m => m.communicationEventId === message.communicationEventId)?.deliveryReceipts?.[0];
+      return receipt?.steeringWaitReason === 'provider_not_ready' && receipt;
+    }, 'provider declined the steer');
+    assert.equal(ref.providerAcknowledged, undefined);
+    if (status === 'not_steerable') {
+      const activation = () => store.sqlite.prepare(
+        "SELECT state, dispatch_policy, steering_deferrals FROM agent_activations WHERE id=?",
+      ).get(ref.activationId);
+      for (let attempts = 2; attempts <= 7; attempts++) {
+        store.sqlite.prepare("UPDATE agent_activations SET available_at=? WHERE id=?")
+          .run(new Date().toISOString(), ref.activationId);
+        const deferred = await until(() => {
+          const row = activation();
+          return row.state === 'retry_pending' && row.steering_deferrals >= attempts && row;
+        }, 'active turn declined another attempt');
+        assert.equal(deferred.dispatch_policy, 'steer_or_run');
+      }
+    }
+    f.plans.set(agent.id, [{hold:true}]);
+    oldSession.finish();
+
+    await until(() => f.turns.some(turn => turn.input.prompt.includes(followUp)), 'the exact follow-up starts after the refusal');
+    const delivery = () => store.sqlite.prepare("SELECT state FROM agent_activations WHERE id=?").get(ref.activationId)?.state;
+    await until(() => delivery() === 'attached', 'existing delivery attaches to the next Run');
+    const detail = await f.detail(agent.id);
+    assert.equal(detail.runs.find(run => run.id === oldRun).status, 'completed');
+    assert.equal(f.turns.filter(turn => turn.input.prompt.includes(followUp)).length, 1);
+    assert.equal(detail.messages.filter(m => m.communicationEventId === message.communicationEventId).length, 1);
+    f.sessions.get(agent.id).finish();
+  }, {
+    storeFactory: dataDir => (store = new AgentStore(dataDir)),
+    steeringResponse: async () => ({status}),
+  });
+});
+
 test('a pre-write refusal arriving after Run recovery stays conservatively held',{timeout:15000},async t=>{
  let store,sourceRun;
  await withFixture(t,async f=>{

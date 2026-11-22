@@ -3,10 +3,9 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
-import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readCreationAttempts, readDurableChatAttempts, saveCreationAttempts, sameCreationAttempt, sameCreationOwner, submitCreationAttempt, type ChatCreationAttempt, type ChatCreationOwner } from "./chatCreationAttempts";
+import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readCreationAttempts, readDurableChatAttempts, saveCreationAttempts, sameCreationAttempt, sameCreationOwner, submitCreationAttempt, submitChatOpening, withChatCreationReceipt, type ChatCreationAttempt, type ChatCreationOwner } from "./chatCreationAttempts";
 
-/** Recovery is available after healthy direct entry too, without delaying it or
- * replaying an opening message. The ordinary workspace header owns this slot. */
+/** Recovery is available after healthy direct entry too, without delaying it. The ordinary workspace header owns this slot. */
 export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = false, onCreated }: {
   activeCreationKey?: string;
   owner?: ChatCreationOwner;
@@ -24,7 +23,7 @@ export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = fa
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const retained = attempts.filter(item => sameCreationOwner(item.owner,owner) && item.key !== activeCreationKey && !item.chat && (!importOnly || item.origin === "import_destination"));
+  const retained = attempts.filter(item => sameCreationOwner(item.owner,owner) && item.key !== activeCreationKey && (!item.chat || item.opening) && (!importOnly || item.origin === "import_destination"));
   const reveal = (chat: Pick<ConversationDto, "id" | "projectId">) => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }).catch(() => {});
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all }).catch(() => {});
@@ -34,7 +33,10 @@ export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = fa
     if (locked.current) return;
     locked.current = true; setBusy(true); setError(undefined);
     try {
-      if (!mayRetryCreationAttempt(readDurableChatAttempts(), attempt))
+      const original = readDurableChatAttempts();
+      if (!(attempt.chat && attempt.opening
+        ? mayRecordCreationReceipt(original, attempt, attempt.chat)
+        : mayRetryCreationAttempt(original, attempt)))
         throw new Error("Saved destination information is unavailable or changed. The original request is preserved.");
       if (!ensureCreationAttemptPersisted(attempt)) {
         throw new Error("Browser storage is unavailable. The original attempt is retained; enable storage before retrying.");
@@ -49,10 +51,11 @@ export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = fa
       if (!mayRecordCreationReceipt(journal, attempt, chat)) {
         throw new Error("Destination receipt conflicts with saved information. The original evidence is retained.");
       }
-      if (!saveCreationAttempts([...journal.filter(item => !sameCreationAttempt(item, attempt)),
-        { ...attempt, chat: { id: chat.id, projectId: chat.projectId } }])) {
+      const completed = withChatCreationReceipt(attempt, chat);
+      if (!saveCreationAttempts([...journal.filter(item => !sameCreationAttempt(item, attempt)), completed])) {
         throw new Error("Chat was saved, but its local receipt could not be saved. The original attempt is kept for exact retry.");
       }
+      if (completed.opening) await submitChatOpening(completed, chat);
       reveal(chat);
     } catch (failure) {
       if (mounted.current) setError(failure instanceof Error ? failure.message : String(failure));
@@ -70,7 +73,7 @@ export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = fa
         <Stack spacing={2}>
           {error ? <Alert severity="error">{error}</Alert> : null}
           {retained.map(item => <Button key={item.key} disabled={busy}
-            onClick={() => void recover(item)}>Open Unconfirmed Chat: {item.input.label}</Button>)}
+            onClick={() => void recover(item)}>{item.opening ? "Recover Chat And First Message" : `Open Unconfirmed Chat: ${item.input.label}`}</Button>)}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>

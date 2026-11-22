@@ -206,7 +206,11 @@ test('rollover allowance and frozen-tail transport guards preserve private scope
   for (const maxUtf8Bytes of [0, -1, NaN, Infinity, 256 * 1024 + 1]) {
     assert.throws(() => store.bindContextRolloverBoundary({ ...input, maxUtf8Bytes }), /valid rendered tail allowance/);
   }
-  assert.throws(() => boundedFrozenSeedHistory([{ role: 'user', text: 'Required provenance cannot fit' }], 1), /bounded presentation|aggregate bound/);
+  assert.deepEqual(boundedFrozenSeedHistory([{ role: 'user', text: 'Optional provenance cannot fit' }], 1), []);
+  const many = Array.from({length:40},(_,i)=>({role:'user',text:`short message ${i}`}));
+  const newest = boundedFrozenSeedHistory(many,160);
+  assert.ok(newest.length>0 && newest.length<many.length);
+  assert.equal(newest.at(-1).text,'short message 39');
   const coordination = new CoordinationV3Store(store.sqlite);
   assert.throws(() => coordination.requestContextRollover({ projectId: agent.projectId, agentId: agent.id,
     oldProviderSessionId: 'oversized', providerSessionGeneration: 'oversized', detectedOccupancy: 160000,

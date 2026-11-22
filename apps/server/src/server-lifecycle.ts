@@ -221,7 +221,7 @@ type ServerLifecycleContext =
     "drainProviderRuntimeAuthority" | "retireCompletedContextRolloverSession"> &
   Pick<ReadModels, "ensureDecisionResponseActivation"> &
   Pick<CommunicationJournal,
-    "refreshCommunicationReconciliation" | "stopCommunicationReconciliation"> &
+    "refreshCommunicationReconciliation"> &
   Pick<BrowserAuthority, "closeRunBrowser"> & {
     opts: CreateServerOptions;
     store: AgentStore;
@@ -352,7 +352,6 @@ export function registerServerLifecycle(
     retireCompletedContextRolloverSession,
     ensureDecisionResponseActivation,
     refreshCommunicationReconciliation,
-    stopCommunicationReconciliation,
     stopCoordinationAttentionNotifications,
     closeRunBrowser,
     providerProcessAuthority,
@@ -1064,7 +1063,6 @@ export function registerServerLifecycle(
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
     if (conversationDeletionCleanupSweep) clearInterval(conversationDeletionCleanupSweep);
     if (agentCreationRecoverySweep) clearInterval(agentCreationRecoverySweep);
-    stopCommunicationReconciliation();
     void stopCoordinationAttentionNotifications();
     shutdownRunBrowserClosures = [];
     for (const [agentId, run] of activeRuns) {

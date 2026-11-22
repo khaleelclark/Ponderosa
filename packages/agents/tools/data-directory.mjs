@@ -41,7 +41,7 @@ if (command === "check-web-deployment" || command === "backup-web-deployment") {
   if (externalProjects !== "copy" && externalProjects !== "exclude") {
     throw new Error("--external-projects must be explicitly set to copy or exclude");
   }
-  const manifest = createOfflineDataDirectoryBackup(dataDir, output, { externalProjects });
+  const manifest = createOfflineDataDirectoryBackup(dataDir, output, { externalProjects, discardIncomplete: args.includes("--discard-incomplete") });
   console.log(JSON.stringify({ status: "created", output, files: manifest.entries.filter(entry => entry.type === "file").length }));
 } else if (command === "restore") {
   const backup = value("--backup");

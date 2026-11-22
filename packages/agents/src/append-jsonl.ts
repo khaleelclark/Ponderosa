@@ -39,13 +39,20 @@ function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
   }
 }
 
-export function readRepairableJsonl<T>(file: string, label: string, repair = false): T[] {
-  if (!existsSync(file)) return [];
+export function readRepairableJsonl<T>(file: string, label: string, repair = false, visit?: (record: T) => void, offset = 0): T[] {
+  if (!existsSync(file) && offset === 0) return [];
   const fd = openSync(file, repair ? "r+" : "r");
   try {
     const records: T[] = [];
-    let validBytes = 0;
-    let position = 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error(`${label} has an invalid recovery offset`);
+    if (offset) {
+      const boundary = Buffer.alloc(1);
+      if (fs.readSync(fd, boundary, 0, 1, offset - 1) !== 1 || boundary[0] !== 10) {
+        throw new Error(`${label} does not begin on a record boundary`);
+      }
+    }
+    let validBytes = offset;
+    let position = offset;
     let pieces: Buffer[] = [];
     let pendingBytes = 0;
     const readLine = (bytes: Buffer, end: number, terminated: boolean): void => {
@@ -65,7 +72,8 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
         }
         return;
       }
-      records.push(record);
+      if (visit) visit(record);
+      else records.push(record);
       validBytes = end;
       if (repair && !terminated) {
         touchSourceMutation();
@@ -135,7 +143,7 @@ export function appendFsyncedJsonl(file: string, records: unknown[]): void {
 /** Atomically replace a JSONL snapshot and make both its bytes and directory
  * entry durable before returning. Readers see either the old complete snapshot
  * or the new complete snapshot after a crash. */
-export function writeAtomicFsyncedJsonl(file: string, records: unknown[]): void {
+export function writeAtomicFsyncedJsonl(file: string, records: unknown[] | ((write: (record: unknown) => void) => void)): void {
   touchSourceMutation();
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
@@ -143,8 +151,10 @@ export function writeAtomicFsyncedJsonl(file: string, records: unknown[]): void 
   let fd: number | undefined;
   try {
     fd = openSync(temporary, "wx", 0o600);
-    const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
-    writeAll(fd, bytes, "JSONL snapshot write made no progress");
+    const descriptor = fd;
+    const write = (record: unknown) => writeAll(descriptor, Buffer.from(JSON.stringify(record) + "\n"), "JSONL snapshot write made no progress");
+    if (typeof records === "function") records(write);
+    else writeAll(descriptor, Buffer.from(records.map(record => JSON.stringify(record) + "\n").join("")), "JSONL snapshot write made no progress");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;

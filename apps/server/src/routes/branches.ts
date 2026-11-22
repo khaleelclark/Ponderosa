@@ -1,6 +1,6 @@
 import {nextIntervalTime} from "@ponderosa/core";
 import {localMemoryFor} from '../local-memory.js';
-import {packageExportDownloads} from '../package-export-downloads.js';
+import {packageExportDownloads,workingFolderOmissions} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
 import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
@@ -237,7 +237,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       store.sqlite.transaction(()=>{
         if(changeCadence){
           const now=Date.now(),startsAt=new Date(nextIntervalTime(everyMs!,now,now)).toISOString();
-          const config={scheduleKind:'interval' as const,everyMs:everyMs!,startsAt,...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
+          const whenRunning=schedule&&'scheduleKind'in schedule&&schedule.scheduleKind!=='once'?schedule.whenRunning:'update_current';
+          const config={scheduleKind:'interval' as const,everyMs:everyMs!,startsAt,...(whenRunning?{whenRunning}:{})};
           normalizeTriggerSourceConfig('schedule',config);
           const ref=version.definition.trigger.kind==='schedule'?version.definition.trigger.configRef:'output_schedule';
           const bindings=branches.localConfiguration(branch.id);if(!bindings)throw new Error('Workflow bindings are unavailable');
@@ -290,10 +291,10 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       if(input.mode!==undefined&&!['template','full'].includes(input.mode as string)||input.includeValues!==undefined&&typeof input.includeValues!=='boolean'||input.download!==undefined&&typeof input.download!=='boolean')throw Error('Choose explicit Branch export mode and values');
       const mode=input.mode==='full'?'full':'template',result=await context.installations.export(id,mode,input.includeValues===true,input.fileSelections as import('@ponderosa/core').BranchExportFileSelections|undefined,false,false,undefined,true);
       if(mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
-      return await packageDownloads.send(result,'workflow-'+mode+'.ponderosa.json',reply,input.download===true);
+      return await packageDownloads.send(result,'workflow-'+mode+'.ponderosa.json',reply,input.download===true,false,workingFolderOmissions(result.workingData?.package.agents ?? result.chats.flatMap(chat=>chat.agents.flatMap(agent=>agent.definition.agents))));
     }catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}
   };
-  app.post<{Params:{id:string};Body:unknown}>('/api/branches/:id/package',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout?.(0);}},async(request,reply)=>{try{return await packageDownloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'branch',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Branch export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
+  app.post<{Params:{id:string};Body:unknown}>('/api/branches/:id/package',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout?.(0);}},async(request,reply)=>{try{return await packageDownloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'branch',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Branch export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message,...(reply.hasHeader('x-ponderosa-export-staging')?{code:'EXPORT_STAGING_UNAVAILABLE'}:{})});}});
   app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string;fileSelections?:string}}>('/api/branches/:id/package',{config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout?.(0);}},async(request,reply)=>{
     try{return await exportPackage(request.params.id,{mode:request.query.mode,includeValues:request.query.includeValues==='true',fileSelections:request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined},reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}
   });

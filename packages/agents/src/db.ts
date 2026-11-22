@@ -18,6 +18,7 @@ import {
   publicProviderFailureSummary,
   type CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
+import { canonicalTimestamp } from "./coordination-v3-runtime-validation.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import {
   sanitizeMaterializedProviderUpdates,
@@ -85,6 +86,9 @@ const schemaExtensions = [
   "0046_retained_coordination_cut_sources.sql",
   "0047_memory_exposure_receipts.sql",
   "0048_lifecycle_run_lookup.sql",
+  "0049_new_chat_global_memory_default.sql",
+  "0050_coordination_retry_and_deadlines.sql",
+  "0051_chat_archives.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
@@ -155,6 +159,19 @@ function establishSchemaExtensions(sqlite: Database.Database, through?: string):
       .get(extensionName) !== undefined;
     if (applied) continue;
     sqlite.transaction(() => {
+      if (extensionName === "0050_coordination_retry_and_deadlines.sql") {
+        // Backfill columns only. Authored payloads and committed replay hashes
+        // keep the exact deadline spelling they originally received.
+        for (const [table, column] of [
+          ["coordination_requests", "deadline_at"], ["coordination_joins", "deadline_at"],
+          ["communication_v4_next_run_deliveries", "expires_at"],
+        ]) {
+          const old = sqlite.prepare(`SELECT id,${column} AS stamp FROM ${table} WHERE ${column} IS NOT NULL AND ${column} NOT GLOB '????-??-??T??:??:??.???Z'`)
+            .all() as Array<{ id: string; stamp: string }>;
+          const update = sqlite.prepare(`UPDATE ${table} SET ${column}=? WHERE id=?`);
+          for (const row of old) update.run(row.stamp ? canonicalTimestamp(row.stamp) : null, row.id);
+        }
+      }
       sqlite.exec(sql);
       sqlite
         .prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
@@ -1105,7 +1122,7 @@ export function initializeCurrentDatabase(sqlite: Database.Database): void {
 export function initializePredecessorSchema(sqlite: Database.Database, through: string): void {
   if (sqlite.name !== ":memory:" || hasApplicationSchema(sqlite) ||
       !schemaExtensions.includes(through as typeof schemaExtensions[number]) ||
-      through < "0027_schedule_work_lookup.sql") throw new Error("Invalid predecessor schema reconstruction");
+      through < "0024_asset_browser_metadata.sql") throw new Error("Invalid predecessor schema reconstruction");
   initializeDatabaseSchema(sqlite, through);
 }
 

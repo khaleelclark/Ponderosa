@@ -27,6 +27,7 @@ const initialStreamState: StreamState = {
 };
 
 const executionTypes: ReadonlySet<string> = new Set([
+  "session_reset",
   "command",
   "file_change",
   "test_result",
@@ -190,7 +191,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
   const { event, seq, ts } = envelope;
 
 
-  if (event.type === "coordination_v3_changed") {
+  if (event.type === "coordination_v3_changed" && event.coordination) {
     return { ...detail, coordinationV3: event.coordination };
   }
 

@@ -1,3 +1,4 @@
+import { chatArchiveActivationSql } from "./chat-archive.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ProviderContextRecoveryProgress, ProviderContextRecoveryRequest } from "@ponderosa/core";
@@ -59,7 +60,7 @@ export class CoordinationV3ContextRecoveryAuthority {
     if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(boundary.projectId,boundary.agentId,boundary.scopeKey))return false;
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM agent_activations a
       WHERE a.agent_id=? AND a.project_id=? AND a.scope_key=? AND a.kind='human_message' AND a.prompt_class='human'
-        AND a.state IN ('pending','retry_pending') AND ${transitionUnsubmittedActivationSql('a')}
+        AND a.state IN ('pending','retry_pending') AND NOT ${chatArchiveActivationSql('a')} AND ${transitionUnsubmittedActivationSql('a')}
         -- An interrupted handoff belongs to its existing rollover authority;
         -- session compaction cannot reconstruct an unconfirmed transfer.
         AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations source

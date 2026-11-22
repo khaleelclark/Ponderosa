@@ -124,8 +124,8 @@ export class CoordinationV3RunContextReadModel {
     const currentScopeKey = this.scopeKey(runId, agentId);
     const previous = this.sqlite.prepare(`
       SELECT scope_key FROM scheduler_runs
-      WHERE agent_id = ? AND id <> ?
-      ORDER BY created_at DESC, rowid DESC LIMIT 1
+      WHERE agent_id = ? AND id <> ? AND prompt_injection_state <> 'not_injected'
+      ORDER BY fencing_token DESC LIMIT 1
     `).get(agentId, runId) as { scope_key: string } | undefined;
     return Boolean(previous && previous.scope_key !== currentScopeKey);
   }

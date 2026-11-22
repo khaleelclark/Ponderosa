@@ -112,7 +112,7 @@ export interface AgentDto {
   workingCopy: AgentWorkingCopyDto;
   /** Pending operator folder choice; never substitutes for the canonical workingCopy. */
   workingCopyChange?: { rolloverId:string; mode:AgentWorkingCopyMode;
-    phase:"handoff"|"preparing"|"verifying"|"held"|"completed"|"kept_current"; retryable:boolean; canKeepCurrent:boolean; message?:string };
+    phase:"handoff"|"preparing"|"verifying"|"held"|"completed"|"kept_current"; retryable:boolean; canKeepCurrent:boolean; canUseFreshContext?:boolean; freshContext?:boolean; message?:string };
 
   /** Stable creation provenance for an agent spawned by another agent. */
   spawnedByAgentId?: string;
@@ -226,6 +226,8 @@ export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDt
 /** Portable intent only; the destination import review controls activation. */
 export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }
 export interface OutputRoleImportReviewDto { id: string; warning?: string; inactive: boolean; speaker: 'activate' | 'inactive' | 'unchanged'; targets: Array<{ref:string;output:boolean;speaker:boolean}> }
+export interface WorkingFolderOmissions { count: number; paths: string[] }
+
 export interface AgentPortablePackageDto {
   /** Immediate explicitly selected physical child roots; all destination overlaps must match. */
   workingRootNesting?:Array<{parentRootRef:string;childRootRef:string;path:string}>;
@@ -254,6 +256,7 @@ export interface AgentImportChatInstructionsResolution {
   expectedDestinationSha256: string;
 }
 export interface ImportAgentPackageRequest {
+  omitMemory?: boolean;
   package: AgentPortablePackageDto;
   outputRoleReviewId?: string;
   workingFilesDestination?: string;
@@ -668,6 +671,8 @@ export interface AgentHealthDto {
   /** Present only while the server canonically owns an active execution. */
   runtimeActivity?: {
     state: "responding";
+    /** Chat to which the Run is routed, when applicable. */
+    conversationId?: string;
     executionId: string;
     startedAt: string;
     /** Meaningful execution evidence, not a heartbeat or this projection's clock. */

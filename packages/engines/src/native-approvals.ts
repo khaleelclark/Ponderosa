@@ -22,7 +22,7 @@ export async function requestNativeApproval(
     return toolName === nativeName || toolName.startsWith(`${nativeName}__`);
   })) return false;
   const message = JSON.stringify(details, null, 2);
-  if (!message || message.length > 32_000) return false;
+  if (!message || message.length > 32_000) throw new Error("Native approval exceeds the form limit. Request approval for a smaller operation.");
   try {
     const response = await opts.handleElicitation({
       mode: "form", serverName: "native runtime approval", nativeApproval: identity,

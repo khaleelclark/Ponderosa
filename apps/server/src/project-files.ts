@@ -34,12 +34,13 @@ const FILE_REFERENCE_IGNORED_SEGMENTS = new Set([
 ]);
 
 /** File mentions are model context, so credential-ish and generated paths fail closed. */
-export function isProjectFileReferenceAllowed(relativePath: string): boolean {
+export function isProjectFileReferenceAllowed(relativePath: string, explicitBrowse = false): boolean {
   const segments = relativePath.replaceAll("\\", "/").split("/").filter(Boolean);
   return segments.every((segment) =>
     !FILE_REFERENCE_IGNORED_SEGMENTS.has(segment) &&
     !segment.startsWith(".") &&
-    !/(?:^|[-_.])(secret|secrets|credential|credentials|token|tokens|password|passwd|oauth)(?:$|[-_.])/iu.test(segment),
+    !/^(?:secret|secrets|credential|credentials|token|tokens|password|passwd|oauth)(?:\.[^.]+)?$/iu.test(segment) &&
+    (explicitBrowse || !/(?:^|[-_.])(secret|secrets|credential|credentials|token|tokens|password|passwd|oauth)(?:$|[-_.])/iu.test(segment)),
   );
 }
 
@@ -48,7 +49,7 @@ async function readScopedPath(
   relInput: string | undefined,
 ): Promise<FilesResponse> {
   const rel = safeRelativePath(relInput);
-  if (rel && !isProjectFileReferenceAllowed(rel)) throw new Error("path is excluded from project references");
+  if (rel && !isProjectFileReferenceAllowed(rel, true)) throw new Error("This file belongs to a hidden, generated, or repository metadata path");
   const entries = listSecureDirectory({ root, relativePath: rel });
   if (entries) {
     return {
@@ -56,7 +57,7 @@ async function readScopedPath(
       path: rel,
       entries: entries
         .filter((entry) =>
-          isProjectFileReferenceAllowed(path.posix.join(rel, entry.name)))
+          isProjectFileReferenceAllowed(path.posix.join(rel, entry.name), true))
         .map((entry) => ({
           name: entry.name,
           path: path.posix.join(rel, entry.name),
