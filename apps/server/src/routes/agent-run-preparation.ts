@@ -6,7 +6,7 @@ import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
 import {canonicalDefaultReplyRoute} from "../required-reply-route.js";
 import {memorySessionResetSeq} from "../voice-memory-exposure.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
-import type {LocalMemoryService} from "../local-memory.js";
+import {memoryLineageStart,type LocalMemoryService} from "../local-memory.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { providerInputBudget, estimateProviderInput, contextRecoveryRequired } from "../context-rollover-pressure.js";
@@ -853,11 +853,14 @@ export async function prepareAgentRun(
       "SELECT scope_key,payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND state IN ('pending','retry_pending','attached')"
     ).get(settingsTransition.activationId,agent.id,project.id) as {scope_key:string;payload_json:string}|undefined;
     const source=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(settingsTransition.sourceRunId,agent.id) as {fencing_token:number}|undefined;
-    const uncertain=source&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.id<>? AND
-      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
-       OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
-      .get(agent.id,runId);
-    if(!source||source.fencing_token!==settingsTransition.sourceFence||uncertain)
+    const origin=store.providerSessionOriginRunId(agent.id,settingsTransition.oldSessionId);
+    const lineageStart=origin&&memoryLineageStart(store,agent.id,agent.conversationId,origin);
+    const uncertain=lineageStart!==undefined&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.id<>? AND
+      (r.status IN ('leased','running') OR (r.scope_key=? AND r.fencing_token>=? AND
+        (r.status='outcome_unknown' OR r.prompt_injection_state='injecting'
+         OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')))) LIMIT 1`)
+      .get(agent.id,runId,schedulerRunScopeKey,lineageStart);
+    if(!source||source.fencing_token!==settingsTransition.sourceFence||lineageStart===undefined||uncertain)
       throw new Error('Earlier provider work has an uncertain outcome; the original context remains retained.');
     if(!current||!currentProject||!row||row.scope_key!==schedulerRunScopeKey ||
        !((saved?.sessionId===(managedTransitionReplacementSession??settingsTransition.oldSessionId) &&

@@ -22,6 +22,47 @@ import {requestProduct,resourceInProduct,type ProductScope} from './product-scop
 type Ports={opts:CreateServerOptions;store:AgentStore;capabilities:Map<string,AgentMessageCapability>;activeRuns:Map<string,ActiveRun>;ownsRun:(capability:AgentMessageCapability,run:ActiveRun|undefined)=>boolean;publishInvalidation?:(agentId:string,event:import('@ponderosa/core').MemoryChangedEvent)=>void;beforeGlobalMemoryRevocation?:(chatId:string)=>void};
 class MemoryDenied extends Error{constructor(message:string,readonly statusCode=403){super(message);}}
 export class MemoryHostClosing extends MemoryDenied{constructor(){super('Local memory host is closing');}}
+/** Only canonical settings lineage or a fully bound folder intent may carry
+ * inherited memory. Ambiguous/malformed payloads remain fail-closed. */
+function memoryTransitionMarker(payload:any):any|undefined{
+ if(payload&&Object.hasOwn(payload,'settingsTransition'))
+  return Object.hasOwn(payload,'workingCopyTransition')?undefined:payload.settingsTransition;
+ const m=payload?.workingCopyTransition;
+ if(!m||!['shared','separate_git'].includes(m.mode)||!['shared','separate_git'].includes(m.oldCopy?.mode)||
+    typeof m.oldCopy?.id!=='string'||!m.oldCopy.id||typeof m.oldCopy.rootPath!=='string'||!m.oldCopy.rootPath||
+    typeof m.sourceRunId!=='string'||!m.sourceRunId||typeof m.oldSessionId!=='string'||!m.oldSessionId||
+    !Number.isSafeInteger(m.sourceFence)||m.sourceFence<1||! /^[0-9a-f]{64}$/.test(m.oldContractHash??'')||
+    ! /^[0-9a-f]{64}$/.test(m.settingsHash??'')||! /^[0-9a-f]{64}$/.test(m.authorizationSignatureHash??'')||
+    typeof m.authorizationOriginRunId!=='string'||!m.authorizationOriginRunId)return undefined;
+ return m;
+}
+export function memoryLineageStart(store:AgentStore,agentId:string,chatId:string,originRunId:string):number|undefined{
+ const db=store.sqlite,seen=new Set<string>();
+ let cursor=originRunId;
+ while(!seen.has(cursor)){
+  seen.add(cursor);
+  const run=db.prepare('SELECT fencing_token,scope_key,provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?')
+   .get(cursor,agentId) as {fencing_token:number;scope_key:string;provider_session_id:string|null}|undefined;
+  if(!run)return undefined;
+  const parents=db.prepare(`SELECT r.old_provider_session_id,r.source_run_id,r.scope_key,r.conversation_id,r.replacement_session_id,
+      r.state,r.completion_reason,h.payload_json FROM context_rollovers r
+     JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+     JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+     WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,cursor) as Array<any>;
+  if(!parents.length)return run.fencing_token;
+  if(parents.length!==1)return undefined;
+  const p=parents[0],payload=JSON.parse(p.payload_json),m=memoryTransitionMarker(payload);
+  if(p.state!=='completed'||p.completion_reason!=='replacement_verified'||p.scope_key!==run.scope_key||
+     p.conversation_id!==chatId||p.replacement_session_id!==run.provider_session_id||!m||
+     m.oldSessionId!==p.old_provider_session_id||m.sourceRunId!==p.source_run_id||
+     typeof m.authorizationOriginRunId!=='string')return undefined;
+  const prior=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(p.source_run_id,agentId) as {fencing_token:number}|undefined;
+  if(!prior||prior.fencing_token>=run.fencing_token||payload?.workingCopyTransition&&m.sourceFence!==prior.fencing_token)return undefined;
+  cursor=m.authorizationOriginRunId;
+ }
+ return undefined;
+}
+
 /** Host authority view; physical sources/business operations stay in immutable private.6. No memory journal or command receipt state. */
 export class LocalMemoryService{
  readonly core:HostMemoryRuntime;
@@ -570,12 +611,14 @@ export class LocalMemoryService{
    const origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    const source=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    if(!origin||!source||origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token)return undefined;
-   // A previously unknown provider outcome can invalidate the supposedly
-   // complete session boundary, including while a handoff resume is paused.
-   if(db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.fencing_token<? AND
+   // Only history inherited through a verified handoff can affect this session.
+   const lineageStart=memoryLineageStart(this.ports.store,agentId,chatId,originRunId);
+   if(lineageStart===undefined)return undefined;
+   if(db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.scope_key=?
+      AND r.fencing_token>=? AND r.fencing_token<? AND
       (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
        OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
-      .get(agentId,origin.fencing_token))return undefined;
+      .get(agentId,origin.scope_key,lineageStart,origin.fencing_token))return undefined;
    let first:string|undefined,last:string|undefined,attempted=false;
    const rows=db.prepare(`SELECT r.id,r.scope_key,r.status,r.provider_session_id,r.prompt_injection_state,r.fencing_token,
     e.agent_id AS receipt_agent,e.chat_id,e.fencing_token AS receipt_fence,e.authorization_hash,e.attempted,e.pending,e.uncertain,e.unverified
@@ -589,46 +632,6 @@ export class LocalMemoryService{
    }
    return first===originRunId&&last===sourceRunId?{signature,attempted}:undefined;
   }catch{return undefined;}
- }
- /** Only canonical settings lineage or a fully bound folder intent may carry
-  * inherited memory. Ambiguous/malformed payloads remain fail-closed. */
- private memoryTransitionMarker(payload:any):any|undefined{
-  if(payload&&Object.hasOwn(payload,'settingsTransition'))
-   return Object.hasOwn(payload,'workingCopyTransition')?undefined:payload.settingsTransition;
-  const m=payload?.workingCopyTransition;
-  if(!m||!['shared','separate_git'].includes(m.mode)||!['shared','separate_git'].includes(m.oldCopy?.mode)||
-     typeof m.oldCopy?.id!=='string'||!m.oldCopy.id||typeof m.oldCopy.rootPath!=='string'||!m.oldCopy.rootPath||
-     typeof m.sourceRunId!=='string'||!m.sourceRunId||typeof m.oldSessionId!=='string'||!m.oldSessionId||
-     !Number.isSafeInteger(m.sourceFence)||m.sourceFence<1||! /^[0-9a-f]{64}$/.test(m.oldContractHash??'')||
-     ! /^[0-9a-f]{64}$/.test(m.settingsHash??'')||! /^[0-9a-f]{64}$/.test(m.authorizationSignatureHash??'')||
-     typeof m.authorizationOriginRunId!=='string'||!m.authorizationOriginRunId)return undefined;
-  return m;
- }
- private memoryLineageStart(agentId:string,chatId:string,originRunId:string):number|undefined{
-  const db=this.ports.store.sqlite,seen=new Set<string>();
-  let cursor=originRunId;
-  while(!seen.has(cursor)){
-   seen.add(cursor);
-   const run=db.prepare('SELECT fencing_token,scope_key,provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?')
-    .get(cursor,agentId) as {fencing_token:number;scope_key:string;provider_session_id:string|null}|undefined;
-   if(!run)return undefined;
-   const parents=db.prepare(`SELECT r.old_provider_session_id,r.source_run_id,r.scope_key,r.conversation_id,r.replacement_session_id,
-       r.state,r.completion_reason,h.payload_json FROM context_rollovers r
-      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
-      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
-      WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,cursor) as Array<any>;
-   if(!parents.length)return run.fencing_token;
-   if(parents.length!==1)return undefined;
-   const p=parents[0],payload=JSON.parse(p.payload_json),m=this.memoryTransitionMarker(payload);
-   if(p.state!=='completed'||p.completion_reason!=='replacement_verified'||p.scope_key!==run.scope_key||
-      p.conversation_id!==chatId||p.replacement_session_id!==run.provider_session_id||!m||
-      m.oldSessionId!==p.old_provider_session_id||m.sourceRunId!==p.source_run_id||
-      typeof m.authorizationOriginRunId!=='string')return undefined;
-   const prior=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(p.source_run_id,agentId) as {fencing_token:number}|undefined;
-   if(!prior||prior.fencing_token>=run.fencing_token||payload?.workingCopyTransition&&m.sourceFence!==prior.fencing_token)return undefined;
-   cursor=m.authorizationOriginRunId;
-  }
-  return undefined;
  }
  private transitionSourceEpochs(agentId:string,first:number,last:number){
   return this.ports.store.sqlite.prepare(`SELECT e.run_id,e.mutation_epoch FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
@@ -646,7 +649,7 @@ export class LocalMemoryService{
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {provider_session_id:string|null}|undefined;
    if(!source?.provider_session_id||createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,runId)).digest('hex')!==expected)return false;
-   const lineageStart=this.memoryLineageStart(agentId,chatId,originRunId);
+   const lineageStart=memoryLineageStart(this.ports.store,agentId,chatId,originRunId);
    if(lineageStart===undefined)return false;
    if(!allowDirty&&db.prepare(`SELECT 1 FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
     WHERE r.agent_id=? AND r.fencing_token>=?
@@ -665,7 +668,7 @@ export class LocalMemoryService{
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
    const origin=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number}|undefined;
-   const lineageStart=this.memoryLineageStart(agentId,chatId,originRunId);
+   const lineageStart=memoryLineageStart(this.ports.store,agentId,chatId,originRunId);
    if(!source||!origin||lineageStart===undefined)return false;
    const epochs=this.transitionSourceEpochs(agentId,lineageStart,source.fencing_token);
    const refs=db.prepare(`SELECT DISTINCT e.scope,e.source_id,e.content_hash FROM memory_exposure_sources e
@@ -718,7 +721,7 @@ export class LocalMemoryService{
    recordedSources=parents.length>0&&inheritedRecorded;
    if(parents.length>1)return inheritedRecorded?'unavailable':'unknown';
    if(parents.length){
-    const parent=parents[0]!,payload=JSON.parse(parent.payload_json),marker=this.memoryTransitionMarker(payload);
+    const parent=parents[0]!,payload=JSON.parse(parent.payload_json),marker=memoryTransitionMarker(payload);
     if(parent.state!=='completed'||parent.completion_reason!=='replacement_verified'||parent.scope_key!==origin.scope_key||
        parent.conversation_id!==chatId||parent.replacement_session_id!==sessionId||!marker||
        marker.oldSessionId!==parent.old_provider_session_id||marker.sourceRunId!==parent.source_run_id||
@@ -789,7 +792,7 @@ export class LocalMemoryService{
       this.ports.store.resumeSessionState(agentId)?.sessionId!==sessionId)return {status:'unavailable',isCurrent:()=>false};
    const product:ProductScope=owner.branchId?'branches':'dev',initialGrant=this.getGrant(chatId,product);
    const initialReadDenied=new CapabilityPolicyStore(db).resolveForAgent(agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead);
-   const floor=this.memoryLineageStart(agentId,chatId,originRunId);
+   const floor=memoryLineageStart(this.ports.store,agentId,chatId,originRunId);
    if(floor===undefined)return {status:'unavailable',isCurrent:()=>false};
    const sameOwner=()=>{
     const current=this.ports.store.getAgent(agentId),currentOwner=activeChatResourceOwner(this.ports.store,'agent',agentId);
@@ -802,7 +805,7 @@ export class LocalMemoryService{
       (r.status IN ('leased','running') OR (r.status='outcome_unknown' AND r.prompt_injection_state<>'not_injected') OR r.prompt_injection_state='injecting'
        OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
       .get(agentId,source.scope_key,currentRunId,floor);
-    return !uncertain&&this.memoryLineageStart(agentId,chatId,originRunId)===floor&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
+    return !uncertain&&memoryLineageStart(this.ports.store,agentId,chatId,originRunId)===floor&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
       currentOwner.projectId===owner.projectId&&currentOwner.branchId===owner.branchId&&!currentOwner.executionId&&
       this.ports.store.resumeSessionState(agentId)?.sessionId===sessionId&&
       this.ports.store.providerSessionOriginRunId(agentId,sessionId)===originRunId&&

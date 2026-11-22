@@ -5,6 +5,7 @@ import { CAPABILITY_IDS } from '../../packages/core/dist/index.js';
 import { withFixture, until } from '../shared/fixture.mjs';
 import { inertCodex } from '../shared/inert-codex.mjs';
 import { ownedChroma } from '../memory/portability-fixture.mjs';
+import { localMemoryFor } from '../../apps/server/dist/local-memory.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -25,6 +26,12 @@ for (const operation of ['get','save']) test(`durable memory receipt supports ${
   const chat=await f.createChat('Durable memory transition'),agent=await f.createIdleAgent(chat,'Worker');
   let id;
   if(operation==='get'){
+   const now=new Date().toISOString();
+   store.sqlite.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES (?,10)').run(agent.id);
+   store.sqlite.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,
+    prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at,scope_key)
+    VALUES(?,?,?,'outcome_unknown','synthetic',?,1,'injected','retired-generation',?,?,?,?,?)`)
+    .run(randomUUID(),chat.projectId,agent.id,now,now,now,now,now,`conversation:${chat.id}`);
    f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
    const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic durable source.',destination:'global'}));
    id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
@@ -53,6 +60,19 @@ for (const operation of ['get','save']) test(`durable memory receipt supports ${
   const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'original task after restart',20000);
   assert.ok(JSON.stringify(final[3]).includes('Continue using the new model.'));
   await native.sendTool('ponderosa_message',{text:'Continued work complete.'});await f.settled(agent.id);
+  if(operation==='get'){
+   const source=store.providerCommandContextBoundary(agent.id);
+   assert.ok(source);
+   const origin=store.providerSessionOriginRunId(agent.id,source.providerSessionId);
+   assert.ok(origin);
+   const authorize=()=>localMemoryFor(f.app).transitionAuthorization(agent.id,chat.id,source.providerSessionId,origin,source.executionId);
+   assert.ok(authorize(),'unrelated retired history does not block an inherited session');
+   store.sqlite.exec('SAVEPOINT uncertain_inherited_run');
+   try{
+    store.sqlite.prepare("UPDATE scheduler_runs SET status='outcome_unknown' WHERE id=?").run(receipt.run_id);
+    assert.equal(authorize(),undefined,'uncertainty in the inherited session still blocks transfer');
+   }finally{store.sqlite.exec('ROLLBACK TO uncertain_inherited_run; RELEASE uncertain_inherited_run');}
+  }
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
