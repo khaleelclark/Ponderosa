@@ -57,3 +57,31 @@ export function controlStates(detail: BranchExecutionDetailDto): Record<string, 
   }
   return states;
 }
+
+export function isOlderExecutionObservation(
+  previous: Pick<BranchExecutionDetailDto, 'execution' | 'observedAt'>,
+  incoming: Pick<BranchExecutionDetailDto, 'execution' | 'observedAt'>,
+): boolean {
+  if (previous.execution.id !== incoming.execution.id) return false;
+  if (previous.execution.revision !== incoming.execution.revision) return incoming.execution.revision < previous.execution.revision;
+  return Boolean(previous.observedAt && incoming.observedAt && incoming.observedAt < previous.observedAt);
+}
+
+export function branchStepStatus(
+  step: BranchExecutionDetailDto['steps'][number],
+  wait?: BranchOperationalSummaryDto['agentWaits'][number],
+  needsAttention = false,
+  waiting = false,
+): {status: SemanticStatusKind; label: string} {
+  switch (step.state) {
+    case 'completed': return {status:'completed', label:'Completed'};
+    case 'failed': return {status:'failed', label:'Failed'};
+    case 'canceled': return {status:'idle', label:'Canceled'};
+    case 'outcome_unknown': return {status:'needs_attention', label:'Needs Attention'};
+  }
+  if (needsAttention || wait?.state==='provider_attention' || wait?.state==='waiting_human' || wait?.state==='needs_reconciliation')
+    return {status:'needs_attention', label:'Needs Attention'};
+  if (step.state==='running' || wait?.state==='agent_running') return {status:'running', label:'Running'};
+  if (waiting || step.state==='waiting') return {status:'waiting', label:'Waiting'};
+  return {status:'waiting', label:'Queued'};
+}

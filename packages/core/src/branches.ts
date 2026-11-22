@@ -142,7 +142,13 @@ export interface BranchExecutionDto {
 export interface BranchStepExecutionDto {
   id: string; executionId: string; stepId: string; pathId: string; invocation: number;
   state: BranchAttemptState; input: string; result?: BranchResult; sealedResultId?: string;
+  publishedResult?: BranchPublishedResultDto;
+  resultFiles?: BranchResultFileDto[];
 }
+export interface BranchPublishedResultDto {
+  label: string; sha256: string; reused: boolean;
+}
+export interface BranchResultFileDto { label: string; href: string }
 export interface BranchAttemptDto {
   id: string; stepExecutionId: string; number: number; state: BranchAttemptState;
   requestId?: string; fence: number; leaseOwner?: string; leaseUntil?: string;
@@ -160,6 +166,8 @@ export interface BranchLiveOutputDto {
 export interface BranchExecutionDetailDto {
   /** Live telemetry targets for this bounded history page. */
   liveOutputs?:BranchLiveOutputDto[];
+  observedAt?: string;
+  publishedResult?: BranchPublishedResultDto;
   execution: BranchExecutionDto; steps: BranchStepExecutionDto[]; attempts: BranchAttemptDto[];
   paths: BranchPathDto[]; gates: BranchGateDto[]; resources: BranchResourceDto[];
   sealedResults?: BranchSealedResultDto[]; maps?: BranchMapInvocationDto[]; mapItems?: BranchMapItemDto[];
@@ -199,14 +207,15 @@ export interface BranchExecutionActionsDto {
 /** Read-only explanations projected from canonical workflow records. */
 export interface BranchWaitDto {
   kind:'execution_budget'|'child'|'disabled_branch'|'approval'|'retry'|'join'|'agent'|'capacity'|'cleanup'|'reconciliation'|'operation';
-  message:string; stepId?:string; requestId?:string; branchId?:string; executionId?:string; availableAt?:string;
+  message:string; stepId?:string; stepExecutionId?:string; reason?:string; requestId?:string; branchId?:string; executionId?:string; availableAt?:string;
 }
 export interface BranchOperationalSummaryDto {
   executionId: string;
+  revision: number;
   state: "queued" | "running" | "waiting_agent" | "waiting_human" | "retrying" | "provider_unavailable" | "provider_attention" | "needs_reconciliation" | "blocked" | "completed" | "failed" | "canceled" | "skipped" | "merged";
   label: string; observedAt: string;
   counts: { completed:number; running:number; retrying:number; failed:number; waitingAgent:number; waitingHuman:number; needsReconciliation:number; mapItems:number; mapSettled:number };
-  agentWaits: Array<{requestId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation";label:string;since:string;reason?:string;nextRetryAt?:string}>;
+  agentWaits: Array<{requestId:string;stepId:string;stepExecutionId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation";label:string;since:string;reason?:string;nextRetryAt?:string}>;
   additionalAgentWaits: number;
 }
 /** Bounded Home metadata; full inputs, outputs and audit history stay in execution inspection. */

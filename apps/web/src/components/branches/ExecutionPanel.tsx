@@ -10,9 +10,10 @@ import {useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/re
 import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,Chip,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Paper,Stack,Switch,TextField,Typography} from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {branchScriptFailureSummary} from '@ponderosa/core';
-import type {BranchDefinition,BranchExecutionDetailDto,BranchExecutionDto,BranchGateDto,BranchGateResolution,BranchIntervention,BranchStepEvidenceDto,BranchMapItemDto,BranchOperationalSummaryDto,BranchExecutionActionsDto,BranchStepExecutionDto} from '@ponderosa/core';
+import type {BranchDefinition,BranchExecutionDetailDto,BranchExecutionDto,BranchGateDto,BranchGateResolution,BranchIntervention,BranchStepEvidenceDto,BranchMapItemDto,BranchOperationalSummaryDto,BranchExecutionActionsDto,BranchStepExecutionDto,BranchWaitDto} from '@ponderosa/core';
 type ReviewIntervention=Omit<BranchIntervention,'action'>&{action:BranchIntervention['action']|'resolve_guidance';injectionId?:string};
 import {requestJson} from '../../api/real';
+import {productApiPath} from '../../api/productScope';
 import {ApiRequestError} from '../../api/types';
 import {BranchLiveOutputs} from './BranchLiveOutput';
 import {BranchGraph} from './BranchGraph';
@@ -23,7 +24,7 @@ import {ChatMessageBody} from '../chat/ChatMessages';
 import {currentFailedInvocations,nodeName} from './model';
 import {SemanticStatus} from '../SemanticStatus';
 import {branchExecutionStatus} from './branchRunStatus';
-import {controlStates,currentExecutionActions,mapItemStatus,shouldPollOperations} from './executionPresentation';
+import {branchStepStatus,controlStates,currentExecutionActions,mapItemStatus,shouldPollOperations} from './executionPresentation';
 // A valid same-Run actions page may arrive before matching execution details.
 class RunActionsRevisionPending extends Error {}
 function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:BranchGateDto;label:string;onChanged():void;disabled?:boolean;refreshing?:boolean}):JSX.Element{
@@ -45,8 +46,9 @@ export interface ExecutionPanelViewState {
  callsExpanded:boolean;
  technicalOpen?:boolean;
  inspectedStep?:BranchStepExecutionDto;
+ summaryStepId?:string;
 }
-export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,evidenceControls,runLinks,authorityFresh=true}:{detail:BranchExecutionDetailDto;definition?:BranchDefinition;authorityFresh?:boolean;viewStates:Map<string,ExecutionPanelViewState>;onBudgetSettings?(branchId?:string):void;evidenceControls?:ReactNode;runLinks?:ReactNode}):JSX.Element{
+export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,evidenceControls,runLinks,onMoreResults,loadingMoreResults,authorityFresh=true}:{detail:BranchExecutionDetailDto;definition?:BranchDefinition;authorityFresh?:boolean;viewStates:Map<string,ExecutionPanelViewState>;onBudgetSettings?(branchId?:string):void;evidenceControls?:ReactNode;runLinks?:ReactNode;onMoreResults?():void;loadingMoreResults?:boolean}):JSX.Element{
  const client=useQueryClient(),execution=detail.execution;
  // Presentation retention only. The shared Decision response owner reports
  // active/unconfirmed forms; it remains the sole authority for response recovery.
@@ -62,6 +64,9 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const [selected,setSelected]=useState(savedView?.selected??firstFailed?.stepId??'');
  const [selectedInvocation,setSelectedInvocation]=useState(savedView?.selectedInvocation??firstFailed?.id??'');
  const [showFullInput,setShowFullInput]=useState(false);
+ const [summaryStepId,setSummaryStepId]=useState(savedView?.summaryStepId??''),stepOpener=useRef<HTMLElement>();
+ const [showAllResults,setShowAllResults]=useState(false);
+ const [showAllSteps,setShowAllSteps]=useState(false);
  const [intervention,setIntervention]=useState<{action:ReviewIntervention['action'];attemptId?:string;occurrenceId?:string;injectionId?:string;snapshotRetry?:boolean;unknown?:boolean}>(),[updateApplied,setUpdateApplied]=useState<''|'applied'|'not_applied'>(''),[reason,setReason]=useState(''),[reconciled,setReconciled]=useState(false),[result,setResult]=useState(''),[failed,setFailed]=useState(false),[target,setTarget]=useState(''),[commandKey,setCommandKey]=useState(()=>createClientId());
  const [itemSearch,setItemSearch]=useState(savedView?.itemSearch??''),[itemFilter,setItemFilter]=useState(savedView?.itemFilter??'all'),[itemSort,setItemSort]=useState(savedView?.itemSort??'index'),[itemLimit,setItemLimit]=useState(savedView?.itemLimit??100),[gateSearch,setGateSearch]=useState(''),[itemEvidenceId,setItemEvidenceId]=useState('');
  const mergeTargets=useInfiniteQuery({queryKey:['branch-merge-targets',execution.branchId,execution.id],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDto[]>('/api/branches/'+encodeURIComponent(execution.branchId)+'/executions?mergeFor='+encodeURIComponent(execution.id)+(pageParam?'&before='+encodeURIComponent(pageParam):'')),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:intervention?.action==='merge'});
@@ -69,9 +74,9 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const [callsExpanded,setCallsExpanded]=useState(savedView?.callsExpanded??detail.attempts.filter(attempt=>attempt.calledBranch||attempt.childExecutionId).length<=8);
  useLayoutEffect(()=>{
   viewStates.delete(execution.id);
-  viewStates.set(execution.id,{selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep});
+  viewStates.set(execution.id,{selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep,summaryStepId});
   if(viewStates.size>25)viewStates.delete(viewStates.keys().next().value!);
- },[viewStates,execution.id,selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep]);
+ },[viewStates,execution.id,selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep,summaryStepId]);
  useEffect(()=>{
   if(!savedView?.technicalOpen||!savedView.selectedInvocation)return;
   const frame=requestAnimationFrame(()=>document.getElementById(`branch-step-${savedView.selectedInvocation}`)?.scrollIntoView({block:'center'}));
@@ -79,9 +84,23 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  },[execution.id,savedView]);
  const bundleReference=/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(execution.output??'');
  const bundleMatch=bundleReference?.[1]===execution.id?bundleReference:null;
- const operations=useQuery({queryKey:["branch-execution-operations",execution.id],queryFn:async()=>{const value=await requestJson<BranchOperationalSummaryDto>("/api/branch-executions/"+execution.id+"/operations");if(value.executionId!==execution.id)throw new Error("The operational status belongs to another run.");return value},refetchInterval:query=>shouldPollOperations(execution.state,query.state.data)?5000:false});
+ const operations=useQuery({queryKey:["branch-execution-operations",execution.id],queryFn:async()=>{const value=await requestJson<BranchOperationalSummaryDto>("/api/branch-executions/"+execution.id+"/operations");if(value.executionId!==execution.id)throw new Error("The operational status belongs to another run.");return value},structuralSharing:(saved,next)=>{
+  const previous=saved as BranchOperationalSummaryDto|undefined,incoming=next as BranchOperationalSummaryDto;
+  return previous&&(previous.revision>incoming.revision||
+    previous.revision===incoming.revision&&previous.observedAt>incoming.observedAt)?previous:incoming;
+ },refetchInterval:query=>shouldPollOperations(execution.state,query.state.data)?5000:false});
+ const ongoing=['queued','running','waiting'].includes(execution.state);
+ const op=operations.data?.revision===execution.revision?operations.data:undefined;
+ useEffect(()=>{
+  if(ongoing&&operations.data&&operations.data.revision!==execution.revision)
+   void client.invalidateQueries({queryKey:['branch-execution-operations',execution.id],exact:true});
+ },[client,ongoing,execution.id,execution.revision,operations.data?.revision]);
  const bundle=useQuery({queryKey:['branch-result-bundle',bundleMatch?.[1],bundleMatch?.[2]],queryFn:()=>requestJson<{content:string;contentHash:string}>(`/api/branch-executions/${bundleMatch![1]}/result-bundles/${bundleMatch![2]}`),enabled:Boolean(bundleMatch)});
- const stepEvidence=useQuery({queryKey:['branch-step-evidence',execution.id,selectedInvocation],queryFn:()=>requestJson<BranchStepEvidenceDto>(`/api/branch-executions/${execution.id}/steps/${selectedInvocation}/evidence`),enabled:Boolean(technicalOpen&&selectedInvocation)});
+ const stepEvidence=useQuery({queryKey:['branch-step-evidence',execution.id,selectedInvocation],queryFn:()=>requestJson<BranchStepEvidenceDto>(`/api/branch-executions/${execution.id}/steps/${selectedInvocation}/evidence`),enabled:Boolean(technicalOpen&&selectedInvocation),staleTime:0});
+ const summaryStep=detail.steps.find(step=>step.id===summaryStepId)??(inspectedStep?.id===summaryStepId?inspectedStep:undefined);
+ const stepOutput=useQuery({queryKey:['branch-step-output',execution.id,summaryStepId,execution.revision,summaryStep?.state],
+  queryFn:()=>requestJson<BranchStepEvidenceDto>(`/api/branch-executions/${execution.id}/steps/${summaryStepId}/evidence`),
+  enabled:Boolean(summaryStep&&summaryStep.state==='completed'&&!summaryStep.publishedResult)});
  const itemEvidence=useQuery({queryKey:['branch-map-item-evidence',execution.id,itemEvidenceId],queryFn:()=>requestJson<BranchMapItemDto>(`/api/branch-executions/${execution.id}/map-items/${encodeURIComponent(itemEvidenceId)}/evidence`),enabled:Boolean(itemEvidenceId)});
  const searchTooLong=itemSearch.trim().length>100;
  const searchedItems=useInfiniteQuery({queryKey:['branch-map-item-search',execution.id,itemSearch.trim()],initialPageParam:0,queryFn:({pageParam})=>requestJson<{items:BranchMapItemDto[];more:boolean}>(`/api/branch-executions/${execution.id}/map-items/search?q=${encodeURIComponent(itemSearch.trim())}&offset=${pageParam}`),getNextPageParam:(last,pages)=>last.more?pages.length*100:undefined,enabled:technicalOpen&&itemSearch.trim().length>0&&!searchTooLong});
@@ -91,11 +110,11 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const fullOutput=useQuery({queryKey:['branch-execution-output',execution.id],queryFn:async()=>{
   const requestedRevision=execution.revision;
   return {...await requestJson<{output:string|null}>(`/api/branch-executions/${execution.id}/result`),requestedRevision};
- },enabled:Boolean(detail.executionOutputTruncated&&!bundleMatch)});
+ },enabled:Boolean(detail.executionOutputTruncated&&!bundleMatch&&!detail.publishedResult)});
  // Keep this Run's cached text mounted through refresh/errors, including shared
  // long-message expansion. The query owns which revision it last requested.
  useEffect(()=>{
-  if(detail.executionOutputTruncated&&!bundleMatch&&fullOutput.data&&fullOutput.data.requestedRevision!==execution.revision)
+  if(detail.executionOutputTruncated&&!bundleMatch&&!detail.publishedResult&&fullOutput.data&&fullOutput.data.requestedRevision!==execution.revision)
    void client.invalidateQueries({queryKey:['branch-execution-output',execution.id],exact:true});
  },[client,execution.id,execution.revision,detail.executionOutputTruncated,bundleMatch?.[2],fullOutput.data?.requestedRevision]);
  const fullInput=useQuery({queryKey:['branch-execution-input',execution.id],queryFn:()=>requestJson<{input:string}>(`/api/branch-executions/${execution.id}/input`),enabled:Boolean(technicalOpen&&showFullInput&&detail.executionInputTruncated)});
@@ -121,12 +140,21 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const scheduleUpdates=actionItems?.filter(item=>item.kind==='schedule_update')??[];
  const waitingGates=actionItems?.filter(item=>item.kind==='gate')??[];
  const stopping=execution.stopping;
- // The chip is the shared server classification (rows, filters, counts agree); operations only explain it.
- const headline=execution.runtimeData?{status:'waiting' as const,label:'Imported Runtime Data Held'}:execution.budgetWait&&!stopping?{status:'waiting' as const,label:'Waiting For Budget'}:branchExecutionStatus(execution);
- const explanation=stopping||execution.runtimeData||execution.budgetWait?undefined:operations.data?.label??(operations.isPending?'Loading Run Status…':undefined);
+ const manualWait=op&&['provider_attention','waiting_human','needs_reconciliation'].includes(op.state)
+  || detail.waits?.some(wait=>['approval','reconciliation','disabled_branch'].includes(wait.kind));
+ const fallback=branchExecutionStatus(execution);
+ const headline=execution.runtimeData?{status:'waiting' as const,label:'Imported Runtime Data Held'}
+  :stopping||!ongoing?fallback
+  :execution.budgetWait?{status:'waiting' as const,label:'Waiting For Budget'}
+  :manualWait?{status:'needs_attention' as const,label:'Needs Attention'}
+  :fallback.status==='needs_attention'?fallback
+  :op?branchExecutionStatus({...execution,effectiveStatus:op.state==='queued'?'queued':op.counts.running?'running':'waiting'})
+  :fallback;
+ const explanation=!ongoing||stopping||execution.runtimeData||execution.budgetWait?undefined
+  :op?.label??(operations.isPending||operations.data&&!op?'Loading Run Status…':undefined);
  // An accepted Stop/Skip is final: the server refuses step decisions while it drains.
  const attentionAttempts=stopping?[]:actionItems?.filter(item=>item.kind==='attempt')??[];
- const inspectStep=(step:BranchStepExecutionDto)=>{if(step.executionId!==execution.id)return;setInspectedStep(step);setSelected(step.stepId);setSelectedInvocation(step.id);setTechnicalOpen(true);requestAnimationFrame(()=>{const target=document.getElementById('branch-step-'+step.id)??technicalDetails.current;target?.scrollIntoView({block:'nearest'});target?.focus({preventScroll:true})})};
+ const inspectEvidence=(step:BranchStepExecutionDto)=>{if(step.executionId!==execution.id)return;setInspectedStep(step);setSelected(step.stepId);setSelectedInvocation(step.id);setTechnicalOpen(true);requestAnimationFrame(()=>{const target=document.getElementById('branch-step-'+step.id)??technicalDetails.current;target?.scrollIntoView({block:'nearest'});target?.focus({preventScroll:true})})};
  const inspectedSteps=detail.steps.some(step=>step.id===inspectedStep?.id)||!inspectedStep?detail.steps:[...detail.steps,inspectedStep];
  const refresh=()=>{void client.invalidateQueries({queryKey:actionsKey,exact:true});void client.invalidateQueries({queryKey:['branch-execution-operations',execution.id]});void client.invalidateQueries({queryKey:['branch-execution',execution.id]});void client.invalidateQueries({queryKey:['branch-executions',execution.branchId]});void client.invalidateQueries({queryKey:['branch-lifecycle-summary',execution.branchId]});void client.invalidateQueries({queryKey:['branches']})};
  const cancel=useMutation({mutationFn:()=>requestJson(`/api/branch-executions/${execution.id}/cancel`,{method:'POST'}),onSuccess:refresh});
@@ -148,21 +176,99 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const graphControlStates=controlStates(detail);
  const selectedControl=definition?.controls.find(control=>control.id===selected);
  const selectedDecisions=detail.decisions?.filter(decision=>decision.nodeId===selected)??[];
- const ongoing=['queued','running','waiting'].includes(execution.state);
- const waitRows=detail.waits?.map((wait,i)=>{const operational=wait.requestId?operations.data?.agentWaits.find(item=>item.requestId===wait.requestId):undefined;return <Alert key={i} severity={operational?.state==="provider_attention"||operational?.state==="provider_unavailable"||wait.kind==="approval"||wait.kind==="reconciliation"?"warning":"info"}><Typography>{wait.message}{wait.availableAt?" "+new Date(wait.availableAt).toLocaleString():""}</Typography>{operational&&<Typography variant="body2">{operational.label}{operational.reason?" - "+operational.reason:""}{operational.nextRetryAt?" Next retry: "+new Date(operational.nextRetryAt).toLocaleString():""}</Typography>}{operational&&<Typography variant="caption">Waiting since {new Date(operational.since).toLocaleString()} - {operational.agentName}</Typography>}{wait.executionId?<Button href={"/branches?execution="+wait.executionId}>Open Blocking Execution</Button>:wait.branchId?<Button href={"/branches?branch="+wait.branchId}>Open Branch</Button>:null}</Alert>})??[];
- return <Stack spacing={2}>
+ const agentWaits=ongoing&&!stopping&&!execution.runtimeData?op?.agentWaits??[]:[];
+ const waits:BranchWaitDto[]=ongoing&&!stopping&&!execution.runtimeData?[...(detail.waits??[])]:[];
+ for(const agent of agentWaits){
+  if(!waits.some(wait=>wait.requestId===agent.requestId))
+   waits.push({kind:'agent',requestId:agent.requestId,stepId:agent.stepId,stepExecutionId:agent.stepExecutionId,message:agent.label});
+ }
+ const stepLabel=(id:string)=>{const node=definition?.steps.find(step=>step.id===id);return node?nodeName(node):id;};
+ const providerSettings=branchRoutePath({branchId:execution.branchId,tab:'executions',executionId:execution.id,global:'providers'});
+ const stepStatus=(step:BranchStepExecutionDto)=>{
+  const wait=waits.find(item=>item.stepExecutionId===step.id);
+  return branchStepStatus(step,agentWaits.find(item=>item.stepExecutionId===step.id),
+   wait?.kind==='approval'||wait?.kind==='reconciliation'||wait?.kind==='disabled_branch',Boolean(wait));
+ };
+ const openStep=(step:BranchStepExecutionDto,opener:HTMLElement)=>{
+  if(step.executionId!==execution.id)return;
+  stepOpener.current=opener;setInspectedStep(step);setSummaryStepId(step.id);
+  requestAnimationFrame(()=>{const panel=document.getElementById('branch-summary-step');panel?.scrollIntoView({block:'nearest'});panel?.focus({preventScroll:true})});
+ };
+ const resultHref=(digest:string)=>productApiPath(`/api/branches/${encodeURIComponent(execution.branchId)}/results/${encodeURIComponent(digest)}`);
+ const publications=new Map<string,NonNullable<BranchExecutionDetailDto['publishedResult']>>();
+ if(detail.publishedResult)publications.set(detail.publishedResult.sha256,detail.publishedResult);
+ const files=new Map<string,{label:string;href:string}>();
+ const resultSteps=detail.steps.filter(step=>{
+  if(step.state!=='completed'||step.result?.failed!==false)return false;
+  if(step.publishedResult)publications.set(step.publishedResult.sha256,step.publishedResult);
+  for(const file of step.resultFiles??[])files.set(file.href,file);
+  return Boolean(step.result.output?.trim()&&!step.publishedResult&&(detail.executionOutputTruncated||step.result.output!==execution.output));
+ });
+ const ordinaryResult=Boolean(execution.output?.trim())&&!detail.publishedResult;
+ const sideBySide='@container branch-runs (min-width: 48rem)';
+ const waitRows=waits.map((wait,i)=>{
+  const operational=wait.requestId?agentWaits.find(item=>item.requestId===wait.requestId):undefined;
+  if(operational?.state==='agent_running')return null;
+  const manual=operational&&['provider_attention','waiting_human','needs_reconciliation'].includes(operational.state)
+   || ['approval','reconciliation','disabled_branch'].includes(wait.kind);
+  const retryAt=operational?.nextRetryAt??wait.availableAt;
+  return <Alert key={i} severity={manual?'warning':'info'}>
+   <Typography fontWeight={600}>{operational&&wait.stepId?`${stepLabel(wait.stepId)} · ${operational.label}`:wait.message}</Typography>
+   {(operational?.reason??wait.reason)&&<Typography variant="body2">{operational?.reason??wait.reason}</Typography>}
+   {retryAt?<Typography variant="body2">Retry eligible {new Date(retryAt).toLocaleString()}.</Typography>
+    :operational?.state==='retry_pending'&&operational.label!=='Retry scheduled'&&<Typography variant="body2">An automatic retry is pending.</Typography>}
+   {!manual&&<Typography variant="body2">No action needed.</Typography>}
+   {operational?.state==='provider_attention'&&<Button href={providerSettings}>Open Provider Settings</Button>}
+   {wait.executionId?<Button href={branchRoutePath({tab:'executions',executionId:wait.executionId})}>Open Blocking Execution</Button>
+    :wait.branchId?<Button href={branchRoutePath({branchId:wait.branchId,tab:'workflow'})}>{'Open Workflow'}</Button>:null}
+  </Alert>;
+ }).filter(Boolean);
+ return <Box sx={{display:'grid',minWidth:0,gap:2,gridTemplateColumns:'minmax(0,1fr)',
+   ...(summaryStep?{[sideBySide]:{gridTemplateColumns:'minmax(0,1fr) minmax(12rem,40%)'}}:{})}}>
+ <Stack spacing={2} sx={{minWidth:0}}>
   {execution.runtimeData&&<BranchRuntimeOwnerReadback key={`${execution.id}:${execution.runtimeData.manifestSha256}`} planId={execution.runtimeData.planId} branchId={execution.branchId} executionId={execution.id} sourceExecutionId={execution.runtimeData.sourceExecutionId} manifestSha256={execution.runtimeData.manifestSha256}/>}
   <Stack spacing={1}>
    <Typography variant="body2" color="text.secondary">{new Date(execution.createdAt).toLocaleString()} · {execution.runtimeData?'Imported held data':execution.admissionSource==='automatic'?'Triggered':execution.admissionSource==='call'?'Called by another workflow':'Manual'}</Typography>
    <Stack direction="row" gap={1} alignItems="center" justifyContent="space-between" flexWrap="wrap"><Stack direction="row" gap={1} alignItems="center" flexWrap="wrap"><SemanticStatus {...headline}/>{explanation&&explanation!==headline.label&&<Typography variant="body2" color="text.secondary">{explanation}</Typography>}</Stack>{ongoing&&!stopping&&<Button color="error" disabled={!!execution.runtimeData||cancel.isPending||!authorityFresh} onClick={()=>cancel.mutate()}>Cancel Run</Button>}</Stack>
-   {!execution.runtimeData&&operations.data&&<><Typography variant="body2" color="text.secondary">{operations.data.counts.mapItems?operations.data.counts.mapSettled+' of '+operations.data.counts.mapItems+' For Each items settled · ':''}{operations.data.counts.completed} {operations.data.counts.completed===1?'Step':'Steps'} completed · {operations.data.counts.running} running · {operations.data.counts.retrying} retrying · {actionsCurrent?`${operations.data.counts.waitingHuman} waiting for review`:'Review status refreshing'}</Typography>{operations.data.agentWaits.map(wait=><Typography key={wait.requestId} variant="body2">{wait.agentName}: {wait.label}{wait.reason?' — '+wait.reason:''}{wait.nextRetryAt?' · Next retry '+new Date(wait.nextRetryAt).toLocaleString():''}</Typography>)}{operations.data.additionalAgentWaits>0&&<Typography variant="caption">{operations.data.additionalAgentWaits} more Agent waits are recorded in the run evidence.</Typography>}{['provider_attention','provider_unavailable'].includes(operations.data.state)&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({branchId:execution.branchId,tab:'executions',executionId:execution.id,global:'providers'})}>Open Provider Settings</Button>}</>}
+   {!execution.runtimeData&&op&&<><Typography variant="body2" color="text.secondary">{op.counts.mapItems?op.counts.mapSettled+' of '+op.counts.mapItems+' For Each items settled · ':''}{op.counts.completed} {op.counts.completed===1?'Step':'Steps'} completed · {op.counts.running} running · {op.counts.retrying} retrying · {actionsCurrent?`${op.counts.waitingHuman} waiting for review`:'Review status refreshing'}</Typography>{op.additionalAgentWaits>0&&<Typography variant="caption">{op.additionalAgentWaits} more Agent waits are recorded in the run evidence.</Typography>}{op.state==='provider_attention'&&!waits.some(wait=>agentWaits.some(agent=>agent.requestId===wait.requestId&&agent.state==='provider_attention'))&&<Button sx={{alignSelf:'start'}} href={providerSettings}>Open Provider Settings</Button>}</>}
    {operations.error&&<Alert severity="warning" action={<Button onClick={()=>void operations.refetch()}>Retry Status</Button>}>Run status could not refresh. {operations.error.message}</Alert>}
    {cancel.error&&<Alert severity="error">{cancel.error.message}</Alert>}
   </Stack>
+  <Paper component="section" aria-label="Results" variant="outlined" sx={{p:2,minWidth:0}}>
+   <Stack spacing={1}>
+    <Typography variant="h6">Results</Typography>
+    {[...publications.values()].map(result=><Stack key={result.sha256} direction="row" gap={1} alignItems="center">
+     <Button size="small" href={resultHref(result.sha256)} download>{result.label}</Button>
+     {result.reused&&<Chip size="small" label="Reused"/>}
+    </Stack>)}
+    {[...files.values()].map(file=><Button key={file.href} size="small" sx={{alignSelf:'start'}}
+     href={productApiPath(file.href)} download>{file.label}</Button>)}
+  {ordinaryResult&&<Box sx={{maxHeight:300,overflow:'auto'}}>{bundleMatch?<>
+   {bundle.isPending&&!bundle.data&&<Typography role="status">Loading result…</Typography>}
+   {bundle.error&&<Alert severity="error" action={<Button onClick={()=>void bundle.refetch()}>Retry Result</Button>}>The joined result could not be loaded. {bundle.error.message}</Alert>}
+   {bundle.data&&<ChatMessageBody text={bundle.data.content}/>}
+  </>:<>
+   {detail.executionOutputTruncated&&(fullOutput.isPending||fullOutput.isFetching)&&<Typography role="status">{fullOutput.data?'Updating result…':'Loading complete result…'}</Typography>}
+   {detail.executionOutputTruncated&&fullOutput.error&&<Alert severity="error" action={<Button onClick={()=>void fullOutput.refetch()}>Retry Result</Button>}>{fullOutput.data?'Result could not refresh. Showing the last loaded text.':'The complete result could not be loaded; the preview is shown.'} {fullOutput.error.message}</Alert>}
+   <ChatMessageBody text={detail.executionOutputTruncated&&fullOutput.data?fullOutput.data.output??'(Empty result)':execution.output||'(Empty result)'} collapseLongMessage={false}/>
+  </>}</Box>}
+
+
+    {resultSteps.slice(0,showAllResults?undefined:5).map(step=><Box key={step.id} sx={{minWidth:0,overflowWrap:'anywhere'}}>
+     <Button size="small" onClick={event=>openStep(step,event.currentTarget)}>{stepLabel(step.stepId)}</Button>
+     <Typography variant="body2" sx={{whiteSpace:'pre-wrap'}}>{step.result?.output}</Typography>
+    </Box>)}
+    {resultSteps.length>5&&<Button sx={{alignSelf:'start'}} onClick={()=>setShowAllResults(value=>!value)}>{showAllResults?'Show Fewer Step Outputs':'Show All Loaded Step Outputs'}</Button>}
+    {!publications.size&&!files.size&&!ordinaryResult&&!resultSteps.length&&<Typography color="text.secondary">
+     {onMoreResults?'No output in the loaded steps.':ongoing?'No output produced yet.':'No output was produced.'}
+    </Typography>}
+    {onMoreResults&&<Button sx={{alignSelf:'start'}} disabled={loadingMoreResults} onClick={onMoreResults}>{loadingMoreResults?'Loading Older Steps…':'Load Older Steps And Outputs'}</Button>}
+   </Stack>
+  </Paper>
   {interventionUnconfirmed&&!intervention&&act.variables&&<Alert severity="warning" action={<Button onClick={()=>open({action:act.variables!.action})}>Reconcile Decision Submission</Button>}>Decision unconfirmed · reopen exact submission before another decision</Alert>}
   {execution.parentExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:execution.parentExecutionId})}>Open Parent Run</Button>}
   {stopping?<Alert severity={stopping.blocked?'warning':'info'}>{stopping.blocked??`${stopping.outcome==='skipped'?'Skip':stopping.outcome==='merged'?'Merge':'Stop'} accepted. Waiting for this Run's provider work to finish stopping; it will show as ${stopping.outcome==='skipped'?'Skipped':stopping.outcome==='merged'?'Merged':'Canceled'} automatically.`}</Alert>
-   :waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:execution.waitReason&&<Alert severity="info">{execution.waitReason}</Alert>}
+   :waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:ongoing&&execution.waitReason&&headline.status!=='running'&&<Alert severity="info">{execution.waitReason}</Alert>}
   {execution.checkpointInvocation?.durability === 'failed' && <Alert severity="warning">Saving the Run checkpoint failed. The scheduler will retry the save. Check local storage if the failure persists.</Alert>}
   {(execution.budgetWait||detail.waits?.some(wait=>wait.kind==='execution_budget'))&&<Alert severity="warning" action={onBudgetSettings?<Button onClick={()=>onBudgetSettings(execution.budgetWait?.branchId??detail.waits?.find(wait=>wait.kind==='execution_budget')?.branchId)}>Budget Settings</Button>:undefined}>Waiting for automatic execution budget · manual runs exempt</Alert>}
   {execution.budgetExhausted&&<Alert severity={execution.state==='failed'?'error':'warning'}><Typography fontWeight={650}>Workflow Traversal Limit Reached</Typography><Typography>{detail.decisions?.find(decision=>decision.kind==='limit_exhausted')?.message??'Inspect the run decisions and completed Steps before restarting any work.'}</Typography></Alert>}
@@ -174,26 +280,28 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   {!execution.runtimeData&&pendingDecisions.map(decision=><DecisionCard key={decision.id} decision={decision} onRetentionChange={retainDecisionForm} onResolved={()=>{retainDecisionForm(decision,false);refresh()}}/>)}
   {(waitingGates.length>1||Boolean(gateSearch))&&<TextField size="small" label="Find Waiting Decision" value={gateSearch} onChange={event=>setGateSearch(event.target.value)} sx={{maxWidth:340}}/>}
   {waitingGates.filter(item=>!gateSearch.trim()||((item.gate.prompt+' '+(definition?.steps.find(node=>node.id===item.step.stepId)?.label??item.step.stepId)).toLowerCase().includes(gateSearch.trim().toLowerCase()))).map(({gate,step})=><Gate key={gate.id+':'+gate.revision} gate={gate} disabled={!actionsCurrent} refreshing={!actionsCurrent} label={definition?.steps.find(node=>node.id===step.stepId)?.label??step.stepId} onChanged={refresh}/>)}
-  {attentionAttempts.map(({attempt,step,current})=>{const node=definition?.steps.find(node=>node.id===step.stepId),unknown=attempt.state==='outcome_unknown'||attempt.requestOutcomeUnknown,snapshotRetry=attempt.state==='prepared'&&!unknown&&(attempt as typeof attempt&{snapshotRetryAvailable?:boolean}).snapshotRetryAvailable===true;return <Paper key={attempt.id} variant="outlined" sx={{p:2,borderColor:unknown?'warning.main':'error.main'}}><Stack spacing={1}><Typography fontWeight={650}>{node?nodeName(node):step.stepId} · {unknown?'Outcome Needs Reconciliation':snapshotRetry?'Copy Preparation Needs Retry':current?'Step Failed':'Earlier Step Failure'}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{attempt.error||(attempt.scriptEvidence?branchScriptFailureSummary(attempt.scriptEvidence.code,attempt.scriptEvidence.error):undefined)||attempt.result?.output||step.result?.output||(unknown?'The operation may already have changed files or external systems. Inspect and reconcile its effects before retrying.':'The Step did not complete successfully.')}</Typography>{attempt.retryBlockedReason&&<Typography variant="body2" color="text.secondary">{attempt.retryBlockedReason}</Typography>}{attempt.childExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:attempt.childExecutionId})}>Open {attempt.calledBranch?.name??'Called Workflow'} Run</Button>}<Stack direction="row" gap={1} flexWrap="wrap"><Button onClick={()=>inspectStep(step)}>Inspect Details</Button>{current&&!attempt.retryBlockedReason&&(attempt.state!=='prepared'||snapshotRetry)&&<><Button disabled={!actionsCurrent} onClick={()=>open({action:'retry',attemptId:attempt.id,unknown,snapshotRetry})}>{snapshotRetry?'Retry Preparing Copy':unknown?'Retry Anyway':'Retry Step'}</Button>{node?.kind==='script'&&attempt.state==='outcome_unknown'&&<Button disabled={!actionsCurrent} onClick={()=>open({action:'resolve_script',attemptId:attempt.id,unknown:true})}>Mark Observed Result</Button>}</>}</Stack></Stack></Paper>})}
+  {attentionAttempts.map(({attempt,step,current})=>{const node=definition?.steps.find(node=>node.id===step.stepId),unknown=attempt.state==='outcome_unknown'||attempt.requestOutcomeUnknown,snapshotRetry=attempt.state==='prepared'&&!unknown&&(attempt as typeof attempt&{snapshotRetryAvailable?:boolean}).snapshotRetryAvailable===true;return <Paper key={attempt.id} variant="outlined" sx={{p:2,borderColor:unknown?'warning.main':'error.main'}}><Stack spacing={1}><Typography fontWeight={650}>{node?nodeName(node):step.stepId} · {unknown?'Outcome Needs Reconciliation':snapshotRetry?'Copy Preparation Needs Retry':current?'Step Failed':'Earlier Step Failure'}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{attempt.error||(attempt.scriptEvidence?branchScriptFailureSummary(attempt.scriptEvidence.code,attempt.scriptEvidence.error):undefined)||attempt.result?.output||step.result?.output||(unknown?'The operation may already have changed files or external systems. Inspect and reconcile its effects before retrying.':'The Step did not complete successfully.')}</Typography>{attempt.retryBlockedReason&&<Typography variant="body2" color="text.secondary">{attempt.retryBlockedReason}</Typography>}{attempt.childExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:attempt.childExecutionId})}>Open {attempt.calledBranch?.name??'Called Workflow'} Run</Button>}<Stack direction="row" gap={1} flexWrap="wrap"><Button onClick={event=>openStep(step,event.currentTarget)}>Inspect Details</Button>{current&&!attempt.retryBlockedReason&&(attempt.state!=='prepared'||snapshotRetry)&&<><Button disabled={!actionsCurrent} onClick={()=>open({action:'retry',attemptId:attempt.id,unknown,snapshotRetry})}>{snapshotRetry?'Retry Preparing Copy':unknown?'Retry Anyway':'Retry Step'}</Button>{node?.kind==='script'&&attempt.state==='outcome_unknown'&&<Button disabled={!actionsCurrent} onClick={()=>open({action:'resolve_script',attemptId:attempt.id,unknown:true})}>Mark Observed Result</Button>}</>}</Stack></Stack></Paper>})}
   {actions.hasNextPage&&<Button sx={{alignSelf:'start'}} disabled={actions.isFetchingNextPage} onClick={()=>void actions.fetchNextPage({cancelRefetch:false})}>{actions.isFetchingNextPage?'Loading…':'Load More Decisions And Failures'}</Button>}
-  {ongoing&&<BranchLiveOutputs targets={detail.liveOutputs??[]} labels={Object.fromEntries((definition?.steps??[]).map(step=>[step.id,step.label??step.id]))}/>}
-  {execution.output!==undefined&&<Paper variant="outlined" sx={{p:2}}><Typography fontWeight={650} mb={1}>{ongoing?'Output So Far':'Result'}</Typography>{bundleMatch?<>
-   {bundle.isPending&&!bundle.data&&<Typography role="status">Loading result…</Typography>}
-   {bundle.error&&<Alert severity="error" action={<Button onClick={()=>void bundle.refetch()}>Retry Result</Button>}>The joined result could not be loaded. {bundle.error.message}</Alert>}
-   {bundle.data&&<ChatMessageBody text={bundle.data.content}/>}
-  </>:<>
-   {detail.executionOutputTruncated&&(fullOutput.isPending||fullOutput.isFetching)&&<Typography role="status">{fullOutput.data?'Updating result…':'Loading complete result…'}</Typography>}
-   {detail.executionOutputTruncated&&fullOutput.error&&<Alert severity="error" action={<Button onClick={()=>void fullOutput.refetch()}>Retry Result</Button>}>{fullOutput.data?'Result could not refresh. Showing the last loaded text.':'The complete result could not be loaded; the preview is shown.'} {fullOutput.error.message}</Alert>}
-   <ChatMessageBody text={detail.executionOutputTruncated&&fullOutput.data?fullOutput.data.output??'(Empty result)':execution.output||'(Empty result)'} collapseLongMessage={false}/>
-  </>}</Paper>}
-
-  <Box component="section" aria-label="Steps"><Typography variant="h6" mb={1}>Steps</Typography><Stack component="ol" spacing={0} sx={{listStyle:'none',m:0,p:0}}>{detail.steps.slice(-5).map(step=>{const node=definition?.steps.find(node=>node.id===step.stepId);return <Stack component="li" key={step.id} direction="row" gap={1} alignItems="center" sx={{py:1.25,borderBottom:'1px solid',borderColor:'divider'}}><Box sx={{flex:1,minWidth:0}}><Typography fontWeight={600} sx={{overflowWrap:'anywhere'}}>{node?nodeName(node):step.stepId}</Typography><Typography variant="caption" color="text.secondary">Visit {step.invocation}</Typography></Box><SemanticStatus status={step.state==='completed'?'completed':step.state==='failed'?'failed':step.state==='running'?'running':step.state==='outcome_unknown'?'needs_attention':'waiting'} label={step.state.replaceAll('_',' ')}/><Button size="small" onClick={()=>inspectStep(step)}>Details</Button></Stack>})}</Stack>{!detail.steps.length&&<Typography color="text.secondary">No Step activity has been recorded yet.</Typography>}{(detail.steps.length>5||detail.nextCursor)&&<Stack spacing={.5}><Typography variant="caption" color="text.secondary">Recent Step activity · full invocation evidence: Technical Details</Typography><Button sx={{alignSelf:'start'}} onClick={()=>{setTechnicalOpen(true);requestAnimationFrame(()=>technicalDetails.current?.scrollIntoView({block:'start'}))}}>Inspect All Step Activity</Button></Stack>}</Box>
+  <Box component="section" aria-label="Steps">
+   <Typography variant="h6" mb={1}>Steps</Typography>
+   <Stack component="ol" spacing={0} sx={{listStyle:'none',m:0,p:0}}>
+    {(showAllSteps?detail.steps:detail.steps.slice(-5)).map(step=><Stack component="li" key={step.id} direction="row" gap={1}
+     alignItems="center" flexWrap="wrap" sx={{py:1.25,borderBottom:'1px solid',borderColor:'divider'}}>
+     <Typography fontWeight={600} sx={{flex:1,minWidth:0,overflowWrap:'anywhere'}}>{stepLabel(step.stepId)}{step.invocation>1?` · Visit ${step.invocation}`:''}</Typography>
+     <SemanticStatus {...stepStatus(step)}/>
+     <Button size="small" onClick={event=>openStep(step,event.currentTarget)} aria-label={`Details for ${stepLabel(step.stepId)}`}>Details</Button>
+    </Stack>)}
+   </Stack>
+   {!detail.steps.length&&<Typography color="text.secondary">No step activity has been recorded yet.</Typography>}
+   {detail.steps.length>5&&<Button onClick={()=>setShowAllSteps(value=>!value)}>{showAllSteps?'Show Recent Steps':'Show All Loaded Steps'}</Button>}
+  </Box>
   {ongoing&&!stopping&&<Stack direction="row" gap={1} flexWrap="wrap"><Button disabled={!actionsCurrent} onClick={()=>open({action:'skip'})}>Skip Run</Button><Button disabled={!actionsCurrent} onClick={()=>open({action:'merge'})}>Merge Into Another Run</Button></Stack>}
   {runLinks}
   <Box component="details" ref={technicalDetails} open={technicalOpen} onToggle={event=>setTechnicalOpen(event.currentTarget.open)} sx={{borderTop:1,borderColor:'divider',pt:1,'& > summary':{cursor:'pointer',minHeight:44,display:'flex',alignItems:'center',gap:1,'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main'}}}}>
    <Typography component="summary" color="text.secondary" fontWeight={600}>Technical Details<ExpandMoreIcon sx={{ml:'auto',transform:technicalOpen?'rotate(180deg)':undefined}}/></Typography>
    {technicalOpen&&<Stack spacing={2} sx={{pt:1,minWidth:0}}>
     {evidenceControls}
+    {ongoing&&<BranchLiveOutputs targets={detail.liveOutputs??[]} labels={Object.fromEntries((definition?.steps??[]).map(step=>[step.id,step.label??step.id]))}/>}
   <Stack spacing={1}>
    <BranchHistoryReview key={execution.id} branchId={execution.branchId} executionId={execution.id} enabled={authorityFresh&&!execution.runtimeData} onChanged={refresh}/>
    <BranchGroupReview key={`group:${execution.id}`} detail={detail} definition={definition} enabled={authorityFresh&&!execution.runtimeData} onChanged={refresh}/>
@@ -218,7 +326,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   {definition&&<Accordion disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Run Graph</AccordionSummary><AccordionDetails><BranchGraph definition={definition} selected={selected} onSelect={id=>{setSelected(id);setSelectedInvocation(detail.steps.find(step=>step.stepId===id)?.id??'');if(definition.controls.some(control=>control.id===id))requestAnimationFrame(()=>document.getElementById('branch-control-detail')?.scrollIntoView({block:'nearest'}))}} steps={detail.steps} controlStates={graphControlStates}/></AccordionDetails></Accordion>}
   {selectedControl&&<Paper id="branch-control-detail" variant="outlined" sx={{p:2}} aria-live="polite"><Typography fontWeight={650}>{selectedControl.label??selectedControl.id} · {graphControlStates[selectedControl.id]??'Not Run'}</Typography>{selectedControl.kind==='map'&&<><Typography variant="body2">{detail.maps?.filter(map=>map.mapId===selectedControl.id).length??0} For Each invocation(s). Each item's input, retry history, and result are below.</Typography>{detail.maps?.filter(map=>map.mapId===selectedControl.id).map((map,index)=><Button key={map.id} onClick={()=>document.getElementById(`branch-map-${map.id}`)?.scrollIntoView({block:'start'})}>Inspect Invocation {index+1} · {map.itemCount} Item{map.itemCount===1?'':'s'}</Button>)}</>}{selectedDecisions.length?selectedDecisions.map(decision=><Typography key={decision.id} variant="body2" sx={{mt:1}}>{decision.message}</Typography>):selectedControl.kind!=='map'&&<Typography variant="body2" color="text.secondary">No decision in loaded evidence · load older pages if available</Typography>}</Paper>}
   <Accordion disableGutters onChange={(_,expanded)=>{if(expanded)setShowFullInput(true)}}><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Run Input</AccordionSummary><AccordionDetails>{fullInput.isPending&&detail.executionInputTruncated&&<Typography variant="caption">Loading full input…</Typography>}{fullInput.error&&<Alert severity="error">{fullInput.error.message}</Alert>}<Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:300,overflow:'auto'}}>{(fullInput.data?.input??execution.input)||'(Empty input)'}</Typography></AccordionDetails></Accordion>
-  {inspectedSteps.map(step=>{const node=definition?.steps.find(n=>n.id===step.stepId),full=selectedInvocation===step.id?stepEvidence.data:undefined,loadedAttempts=detail.attempts.filter(a=>a.stepExecutionId===step.id),attempts=full?.attempts??loadedAttempts,mapItem=detail.mapItems?.find(item=>item.pathId===step.pathId),sealed=full?.sealedResult??detail.sealedResults?.find(item=>item.stepExecutionId===step.id);return <Accordion id={`branch-step-${step.id}`} tabIndex={-1} key={step.id} expanded={selectedInvocation===step.id} onChange={(_,expanded)=>{setSelected(expanded?step.stepId:'');setSelectedInvocation(expanded?step.id:'')}} disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}><Stack direction="row" spacing={1} alignItems="center"><Typography>{node?nodeName(node):step.stepId}{mapItem?` [${mapItem.index+1}]`:''}</Typography><Chip size="small" label={step.state}/></Stack></AccordionSummary><AccordionDetails><Stack spacing={2}>
+  {inspectedSteps.map(step=>{const node=definition?.steps.find(n=>n.id===step.stepId),full=selectedInvocation===step.id?stepEvidence.data:undefined,loadedAttempts=detail.attempts.filter(a=>a.stepExecutionId===step.id),attempts=full?.attempts??loadedAttempts,mapItem=detail.mapItems?.find(item=>item.pathId===step.pathId),sealed=full?.sealedResult??detail.sealedResults?.find(item=>item.stepExecutionId===step.id);return <Accordion id={`branch-step-${step.id}`} tabIndex={-1} key={step.id} expanded={selectedInvocation===step.id} onChange={(_,expanded)=>{setSelected(expanded?step.stepId:'');setSelectedInvocation(expanded?step.id:'')}} disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}><Stack direction="row" spacing={1} alignItems="center"><Typography>{node?nodeName(node):step.stepId}{mapItem?` [${mapItem.index+1}]`:''}</Typography><SemanticStatus {...stepStatus(step)}/></Stack></AccordionSummary><AccordionDetails><Stack spacing={2}>
    {detail.largeEvidenceOmitted&&selectedInvocation===step.id&&stepEvidence.isPending&&<Typography variant="caption">Loading full Step evidence…</Typography>}{stepEvidence.error&&selectedInvocation===step.id&&<Alert severity="error">{stepEvidence.error.message}</Alert>}{full&&<Typography variant="body2" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:260,overflow:'auto'}}>Step input: {full.input}</Typography>}
    {mapItem&&<Typography variant="body2">For Each item {mapItem.index+1} · Input: {mapItem.input}</Typography>}{sealed&&<Typography variant="caption" color="text.secondary">Final result {sealed.id.slice(0,8)} · terminal attempt {sealed.terminalAttemptId.slice(0,8)} · hash {sealed.contentHash.slice(0,12)}</Typography>}
    {attempts.map(attempt=><Box key={attempt.id}><Typography variant="body2" fontWeight={600}>Traversal {step.invocation} · Attempt {attempt.number} · {attempt.state}{attempt.purpose==='recovery'?' · Recovery Agent':''}</Typography>{attempt.calledBranch&&<Button href={`/branches?branch=${attempt.calledBranch.id}`}>Branch: {attempt.calledBranch.name}</Button>}{attempt.childExecutionId&&<Button href={`/branches?execution=${attempt.childExecutionId}`}>Child {attempt.childExecutionId.slice(0,8)} · {attempt.childExecution?.state??'Open Execution'}</Button>}{attempt.outcome&&<Alert severity="warning">{attempt.outcome.kind}{attempt.outcome.limit?` · ${attempt.outcome.limit}: limit ${attempt.outcome.configured}, attempted ${attempt.outcome.observed}`:''}</Alert>}{attempt.scriptEvidence&&<Paper variant="outlined" sx={{p:2,mt:1}}><Typography fontWeight={650}>{attempt.scriptEvidence.runtime??'Node.js'} · Exit code: {attempt.scriptEvidence.code??'Not Recorded'}</Typography>{attempt.scriptEvidence.cwd&&<Typography variant="body2">Working directory: {attempt.scriptEvidence.cwd}</Typography>}<Typography variant="caption">Attempt {attempt.number} · {new Date(attempt.scriptEvidence.finishedAt??attempt.updatedAt??execution.updatedAt).toLocaleString()}</Typography>{attempt.scriptEvidence.error&&<Alert severity="error">{attempt.scriptEvidence.error}</Alert>}{(['stderr','stdout'] as const).map(stream=><Box key={stream} mt={1}><Typography fontWeight={600}>{stream==='stderr'?'Error Output (Stderr)':'Output (Stdout)'}</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:13}}>{attempt.scriptEvidence?.[stream]||'(No output recorded)'}</Typography></Box>)}</Paper>}{attempt.error&&<Alert severity="warning" sx={{mt:1}}>{attempt.error}</Alert>}{attempt.availableAt&&attempt.state==='prepared'&&<Typography variant="caption">Eligible after {new Date(attempt.availableAt).toLocaleString()}</Typography>}{attempt.result?.output!==undefined&&<Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:260,overflow:'auto',mt:1}}>{attempt.result.output}</Typography>}</Box>)}
@@ -241,9 +349,30 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
     <TextField select label="Keep This Execution" value={target} disabled={interventionLocked} onChange={e=>{if(interventionLocked)return;setTarget(e.target.value);setCommandKey(createClientId())}}><MenuItem value="">Select Execution</MenuItem>{target&&!executions.some(e=>e.id===target)&&<MenuItem value={target}>Previously Selected Run {target.slice(0,8)}</MenuItem>}{executions.map(e=><MenuItem key={e.id} value={e.id}>{new Date(e.createdAt).toLocaleString()} · {e.state}</MenuItem>)}</TextField>
     {mergeTargets.hasNextPage&&<Button disabled={mergeTargets.isFetchingNextPage||act.isPending} onClick={()=>void mergeTargets.fetchNextPage({cancelRefetch:false})}>{mergeTargets.isFetchingNextPage?'Loading…':'Load Older Runs'}</Button>}
    </Stack>}
-   {intervention?.unknown&&<><Alert severity="warning"><Stack spacing={0.5}><Typography>Outcome unknown · earlier operation may have succeeded</Typography><Typography>Warning · retry may duplicate file changes or external effects</Typography><Typography>Before retry/result · inspect process evidence + reconcile effects</Typography></Stack></Alert><Button disabled={act.isPending} onClick={()=>{const action=attentionAttempts.find(item=>item.attempt.id===intervention?.attemptId),attempt=action?.attempt??detail.attempts.find(a=>a.id===intervention?.attemptId),step=action?.step??detail.steps.find(item=>item.id===attempt?.stepExecutionId);setIntervention(undefined);if(step)inspectStep(step)}}>Inspect Evidence Before Deciding</Button><FormControlLabel control={<Switch disabled={interventionLocked} checked={reconciled} onChange={(_,value)=>{if(interventionLocked)return;setReconciled(value);setCommandKey(createClientId())}}/>} label="I have reconciled the earlier attempt’s effects"/></>}
+   {intervention?.unknown&&<><Alert severity="warning"><Stack spacing={0.5}><Typography>Outcome unknown · earlier operation may have succeeded</Typography><Typography>Warning · retry may duplicate file changes or external effects</Typography><Typography>Before retry/result · inspect process evidence + reconcile effects</Typography></Stack></Alert><Button disabled={act.isPending} onClick={()=>{const action=attentionAttempts.find(item=>item.attempt.id===intervention?.attemptId),attempt=action?.attempt??detail.attempts.find(a=>a.id===intervention?.attemptId),step=action?.step??detail.steps.find(item=>item.id===attempt?.stepExecutionId);setIntervention(undefined);if(step)inspectEvidence(step)}}>Inspect Evidence Before Deciding</Button><FormControlLabel control={<Switch disabled={interventionLocked} checked={reconciled} onChange={(_,value)=>{if(interventionLocked)return;setReconciled(value);setCommandKey(createClientId())}}/>} label="I have reconciled the earlier attempt’s effects"/></>}
    {intervention?.action==='resolve_script'&&<><TextField disabled={interventionLocked} label="Observed Output" multiline minRows={4} value={result} onChange={e=>{if(interventionLocked)return;setResult(e.target.value);setCommandKey(createClientId())}}/><FormControlLabel control={<Switch disabled={interventionLocked} checked={failed} onChange={(_,value)=>{if(interventionLocked)return;setFailed(value);setCommandKey(createClientId())}}/>} label="The observed result was a failure"/></>}
    {intervention.action!=='skip'&&<TextField disabled={interventionLocked} label="Reason For This Decision" multiline minRows={2} value={reason} onChange={e=>{if(interventionLocked)return;setReason(e.target.value);setCommandKey(createClientId())}}/>}
   </Stack></ConfirmDialog>}
- </Stack>;
+ </Stack>
+ {summaryStep&&<Paper component="aside" id="branch-summary-step" tabIndex={-1} aria-label="Step details" variant="outlined"
+  sx={{p:2,minWidth:0,alignSelf:'start',gridRow:1,[sideBySide]:{gridColumn:2,position:'sticky',top:0,maxHeight:'min(75vh, 100%)',overflow:'auto'}}}>
+  <Stack spacing={1.5}>
+   <Stack direction="row" alignItems="start" justifyContent="space-between" gap={1}>
+    <Typography variant="h6" sx={{overflowWrap:'anywhere'}}>{stepLabel(summaryStep.stepId)}</Typography>
+    <Button size="small" onClick={()=>{setSummaryStepId('');stepOpener.current?.focus()}}>Close</Button>
+   </Stack>
+   <Box><SemanticStatus {...stepStatus(summaryStep)}/></Box>
+   {summaryStep.publishedResult&&<Stack direction="row" alignItems="center" gap={1}>
+    <Button size="small" href={resultHref(summaryStep.publishedResult.sha256)} download>{summaryStep.publishedResult.label}</Button>
+    {summaryStep.publishedResult.reused&&<Chip size="small" label="Reused"/>}
+   </Stack>}
+   {summaryStep.state==='completed'&&!summaryStep.publishedResult&&(stepOutput.data?.result?.output??summaryStep.result?.output)&&
+    <ChatMessageBody text={stepOutput.data?.result?.output??summaryStep.result?.output??''}/>}
+   {stepOutput.isFetching&&<Typography variant="body2" role="status">Loading step output…</Typography>}
+   {stepOutput.error&&<Alert severity="warning" action={<Button onClick={()=>void stepOutput.refetch()}>Retry</Button>}>Could not load the full step output.</Alert>}
+   {summaryStep.state==='failed'&&<Typography sx={{overflowWrap:'anywhere'}}>{summaryStep.result?.output||'This step failed. Inspect Technical Details for attempt evidence.'}</Typography>}
+   <Button sx={{alignSelf:'start'}} onClick={()=>inspectEvidence(summaryStep)}>Inspect Technical Details</Button>
+  </Stack>
+ </Paper>}
+ </Box>;
 }

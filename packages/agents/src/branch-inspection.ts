@@ -12,12 +12,19 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
   else {
    if(e.state==='queued')waits.push(e.budgetWait?{kind:'execution_budget',branchId:e.branchId,message:'Accepted and saved. Waiting for this Branch’s automatic execution budget; no workflow work has started.'}:{kind:'capacity',message:'Accepted. Waiting for workflow capacity to start.'});
    const attempts=rows(`SELECT a.*,s.step_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
-    WHERE s.execution_id=? AND a.state IN ('prepared','leased','running','waiting','outcome_unknown') ORDER BY a.rowid LIMIT 100`,e.id);
+    WHERE s.execution_id=? AND s.state NOT IN ('completed','failed','canceled')
+      AND a.state IN ('prepared','leased','running','waiting','outcome_unknown')
+      AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)
+      ORDER BY a.rowid LIMIT 100`,e.id);
    for(const a of attempts){
     const step=d.steps.find(n=>n.id===a.step_id);if(!step)continue;
-    const add=(wait:BranchWaitDto)=>waits.push({...wait,stepId:step.id});
+    const add=(wait:BranchWaitDto)=>waits.push({...wait,stepId:step.id,stepExecutionId:a.step_execution_id});
     if(a.state==='outcome_unknown'){add({kind:'reconciliation',message:`“${name(step.id)}” has an unknown outcome. Its external effect may already have happened; a retry can duplicate it. Inspect process evidence and reconcile the effect before choosing a retry or recording the observed result.`});continue;}
-    if(a.available_at&&a.available_at>new Date().toISOString()){add({kind:'retry',message:`“${name(step.id)}” is waiting for its retry time.`,availableAt:a.available_at});continue;}
+    if(a.state==='prepared'&&a.number>1&&a.available_at&&a.available_at>new Date().toISOString()){
+     const previous=row('SELECT error,result_json FROM branch_attempts WHERE step_execution_id=? AND number=?',a.step_execution_id,a.number-1);
+     const reason=previous?.error??(previous?.result_json?JSON.parse(previous.result_json).output:undefined);
+     add({kind:'retry',message:`“${name(step.id)}” will retry automatically.`,availableAt:a.available_at,...(reason?{reason}:{})});continue;
+    }
     if(row("SELECT id FROM branch_gates WHERE attempt_id=? AND state='waiting'",a.id)){add({kind:'approval',message:`“${name(step.id)}” is waiting for your decision.`});continue;}
     if(step.kind==='branch_call'&&a.purpose==='step'){
      const target=b.branches?.[step.branchRef],branch=target?row('SELECT id,name,enabled FROM branches WHERE id=?',target):undefined;
