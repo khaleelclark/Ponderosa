@@ -37,7 +37,7 @@ function deliveryLabel(
 ): string {
   if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold || receipt.settingsTransitionHold ? ' Context refresh also could not safely continue.' : ''}`;
   if (receipt.contextRecoveryRequired) return `The reply from ${recipientName} is pending while its session is restored. Your message is retained.`;
-  if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued; you can try again.`;
+  if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued. Try delivery again to restore context.`;
   if (receipt.settingsTransitionHold === "review_required") return `Ponderosa could not verify the context handoff for ${recipientName}. Your original message is held; review the Agent’s activity before recovery.`;
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
   if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;

@@ -94,6 +94,12 @@ export class EngineAuthStatusCache {
     return () => this.authentication.get(id) === initial;
   }
 
+  refresh(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
+    const current = this.entries.get(id);
+    if (current && !current.pending) current.expiresAt = 0;
+    return this.get(id, load);
+  }
+
   invalidate(id: string): void {
     // Recheck cannot release a diagnostic/cleanup slot that is still owned.
     const current = this.entries.get(id);

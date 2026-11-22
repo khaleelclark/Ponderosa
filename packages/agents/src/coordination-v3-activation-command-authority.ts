@@ -110,6 +110,7 @@ export class CoordinationV3ActivationCommandAuthority {
     idempotencyKey: string;
     expectedRolloverAttemptId?: string;
     now?: string;
+    reserveContextRecovery?: () => void;
   }): RetryMessageDeliveryResponse {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
     const now = input.now ?? new Date().toISOString();
@@ -194,10 +195,11 @@ export class CoordinationV3ActivationCommandAuthority {
       };
       const settingsHold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[original.id]).get(original.id);
       if (settingsHold) {
-        if (!settingsHold.retryable || held || input.expectedRolloverAttemptId) return {
+        if ((!settingsHold.retryable && !input.reserveContextRecovery) || held || input.expectedRolloverAttemptId) return {
           accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
         };
-        retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
+        if (input.reserveContextRecovery) input.reserveContextRecovery();
+        else retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
         const result: Omit<RetryMessageDeliveryResponse,"replayed">={
           accepted:true,state:'queued',activationId:original.id,targetAgentId:original.agent_id,
         };

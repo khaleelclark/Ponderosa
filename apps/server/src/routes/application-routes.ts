@@ -88,7 +88,7 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
-  Omit<Parameters<typeof registerQueuedMessageRoutes>[1],
+  Omit<Parameters<typeof registerQueuedMessageRoutes>[1], "prepareDeliveryContextRetry" |
     "projectDeletionInProgress" | "conversationDeletionInProgress" |
     "agentDeletionInProgress" | "removeRuntimeArtifactReservation"> &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
@@ -433,6 +433,7 @@ registerConversationDeliveryRoutes(app, {
 });
 
 registerQueuedMessageRoutes(app, {
+  prepareDeliveryContextRetry: (boundary, activationId) => providerCommands.prepareDeliveryContextRetry(boundary, activationId),
   authoritativeCommunicationDocument,
   deliveryReceiptsForCommunications,
   store,

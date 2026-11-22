@@ -67,7 +67,11 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
         AND json_type(handoff.payload_json,'$.settingsTransition')='object'
         AND json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')=rollover.source_run_id
         AND NOT EXISTS(SELECT 1 FROM activation_sources released
-          WHERE released.source_kind='settings_transition_release' AND released.source_id=rollover.id)
+          WHERE released.source_kind='settings_transition_release' AND released.source_id=rollover.id
+            AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery
+              WHERE recovery.agent_id=rollover.agent_id
+                AND json_extract(recovery.progress_json,'$.reconstructionPredecessorRolloverId')=rollover.id
+                AND json_extract(recovery.progress_json,'$.deliveryRetryActivationId')=released.activation_id))
     )))`;
 }
 

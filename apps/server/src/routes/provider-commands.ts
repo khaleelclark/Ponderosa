@@ -1,3 +1,5 @@
+import { localMemoryFor } from "../local-memory.js";
+import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { chatArchiveBlocksAgent } from "@ponderosa/agents";
 import { registerNativeHistoryRoutes } from "./native-history.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
@@ -230,10 +232,14 @@ const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store
   support:engineId=>engines.get(engineId)?.adapter.contextRecoverySupport,
   blocker:agentId=>{
     const agent=store.getAgent(agentId),activeRecovery=coordinationV3.contextRecovery.active(agentId);
-    const packet=activeRecovery?.progress?.reconstructionRolloverId
-      ?store.getProviderInput(activeRecovery.sourceRunId,true):store.acceptedProviderSessionInput(agentId,true);
+    const predecessorId=activeRecovery?.progress?.deliveryRetryActivationId
+      ?activeRecovery.progress.reconstructionPredecessorRolloverId:undefined;
+    const reconstructionSource=predecessorId ? coordinationV3.contextRollover(predecessorId)?.sourceRunId:activeRecovery?.sourceRunId;
+    const packet=activeRecovery?.progress?.reconstructionRolloverId && reconstructionSource
+      ?store.getProviderInput(reconstructionSource,true):store.acceptedProviderSessionInput(agentId,true);
     const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
     if(!agent||!contract||packet?.exactSystemPrompt===undefined||contract.engineId!==agent.activeEngine||
+        (predecessorId && contract.contractHash!==activeRecovery?.toolContractHash) ||
         contract.workingCopyId!==agent.workingCopy.id||contract.cwd!==agent.workingCopy.rootPath||agent.workingCopy.state!=="ready")
       return {kind:"context_unavailable",message:"The exact saved session or working folder is unavailable. Review Agent activity and settings before recovery."};
     const source=coordinationV3.contextRecovery.active(agentId)?.sourceRunId??store.uncertainProviderContextRecoveryBoundary(agentId)?.sourceRunId;
@@ -450,6 +456,82 @@ const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store
 };
 registerContextRecoveryRoutes(app,recoveryContext);
 
+async function deliveryRetryMemoryGuard(
+  agent: NonNullable<ReturnType<AgentStore["getAgent"]>>,
+  boundary: Parameters<typeof coordinationV3.contextRecovery.requestDeliveryRetry>[0],
+  handoff: NonNullable<ReturnType<typeof coordinationV3.contextRecovery.interruptedSettingsHandoff>>,
+) {
+  const memory = localMemoryFor(app);
+  const { authorizationOriginRunId: origin, authorizationSignatureHash: signature, sourceRunId } = handoff;
+  const blocked = () => new ContextRecoveryConflictError('Earlier memory access could not be verified. Check the Agent’s memory access before trying delivery again.');
+  if (memory && origin && signature) {
+    const args = [agent.id, agent.conversationId, origin, sourceRunId, boundary.sourceRunId, signature] as const;
+    if (!await memory.validateTransitionReads(...args)) throw blocked();
+    return () => { if (!memory.transitionAuthorizationStillValid(...args)) throw blocked(); };
+  }
+  const sessionOrigin = store.providerSessionOriginRunId(agent.id, boundary.providerSessionId);
+  const guard = () => {
+    if (origin || signature || !sessionOrigin || hasKnownRetainedMemory(store, agent.id, sessionOrigin, sourceRunId, boundary.providerSessionId) ||
+        memory?.legacyPossibleGlobalRevocation(agent.id, agent.conversationId, sessionOrigin)) throw blocked();
+  };
+  guard();
+  return guard;
+}
+
+async function prepareDeliveryContextRetry(
+  boundary: Parameters<typeof coordinationV3.contextRecovery.requestDeliveryRetry>[0],
+  activationId: string,
+) {
+  const current = coordinationV3.contextRecovery.active(boundary.agentId);
+  if (current && (current.progress?.deliveryRetryActivationId !== activationId ||
+      current.projectId !== boundary.projectId || current.sourceRunId !== boundary.sourceRunId ||
+      current.sourceFence !== boundary.sourceFence)) return undefined;
+  const handoff = coordinationV3.contextRecovery.interruptedSettingsHandoff(boundary, activationId);
+  if (!handoff) return undefined;
+
+  const agent = store.getAgent(boundary.agentId);
+  if (!agent || workspace.getPreferences().providerAvailability[agent.activeEngine] === false)
+    throw new ContextRecoveryConflictError('Enable the Agent’s provider in Settings, then try delivery again.');
+  if (current && activeContextRecoveries.has(agent.id)) return () => {};
+  if (recoveryContext.unavailable(agent.id, boundary.projectId))
+    throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
+  if (workspace.listDecisions({ projectId: boundary.projectId, agentId: agent.id, status: 'pending' }).length)
+    throw new ContextRecoveryConflictError('Resolve the Agent’s pending decision, then try delivery again.');
+
+  const engine = engines.get(agent.activeEngine);
+  if (engine?.authStatus && recoveryContext.blocker?.(agent.id)?.kind === 'authentication') {
+    try { await engineAuthStatuses.refresh(agent.activeEngine, engine.authStatus); }
+    catch { /* The blocker below distinguishes unknown evidence from successful verification. */ }
+  }
+  const blocker = recoveryContext.blocker?.(agent.id);
+  if (blocker) throw new ContextRecoveryConflictError(blocker.message);
+  const assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, boundary, handoff);
+  if (recoveryContext.unavailable(agent.id, boundary.projectId)) {
+    if (current && activeContextRecoveries.has(agent.id)) return () => {};
+    throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
+  }
+
+  // The delivery authority commits this reservation with the Retry receipt.
+  return () => {
+    assertMemoryCurrent();
+    const existing = coordinationV3.contextRecovery.active(agent.id);
+    if (existing?.progress?.deliveryRetryActivationId === activationId &&
+        existing.sourceRunId === boundary.sourceRunId && existing.sourceFence === boundary.sourceFence) {
+      if (activeContextRecoveries.has(agent.id)) return;
+      coordinationV3.contextRecovery.assertReconstruction(agent.id, existing.id, existing.progress.reconstructionRolloverId);
+      coordinationV3.contextRecovery.advanceOperation(agent.id, existing.id, 'reserved', 'reserved', {
+        maintenanceAttempts: 0, nextMaintenanceAt: undefined,
+      });
+      return;
+    }
+    const observed = store.uncertainProviderContextRecoveryBoundary(agent.id);
+    if (observed?.sourceRunId !== boundary.sourceRunId || observed.sourceFence !== boundary.sourceFence ||
+        observed.providerSessionId !== boundary.providerSessionId || observed.toolContractHash !== boundary.toolContractHash)
+      throw new ContextRecoveryConflictError('The saved session changed. Reload the conversation and check delivery status.');
+    coordinationV3.contextRecovery.requestDeliveryRetry(boundary, activationId);
+  };
+}
+
 // A bounded native attempt without usable telemetry cannot repair itself by
 // polling. Reserve the exact canonical boundary once, then retire its generation.
 const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderContextRecoveryRequest)=>{
@@ -475,6 +557,14 @@ const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderConte
     workingCopies.assertRunAdmission(agentId,copy);
     ({agent,current}=assertCurrent());
     if(copy.id!==agent.workingCopy.id||copy.rootPath!==agent.workingCopy.rootPath)throw new ContextRecoveryConflictError('Recovery working folder changed');
+    let assertMemoryCurrent: (() => void) | undefined;
+    if (current.progress?.deliveryRetryActivationId) {
+      const handoff = coordinationV3.contextRecovery.interruptedSettingsHandoff(current, current.progress.deliveryRetryActivationId);
+      if (!handoff) throw new ContextRecoveryConflictError('Interrupted settings handoff changed before delivery recovery');
+      assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, current, handoff);
+      ({agent,current}=assertCurrent());
+      assertMemoryCurrent();
+    }
     let rolloverId=current.progress?.reconstructionRolloverId;
     if(!rolloverId){
       const ids=store.acceptedProviderSessionCommunicationEventIds(agentId);
@@ -497,6 +587,7 @@ const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderConte
     await providerProcessAuthority.terminateAgents(new Set([agentId]),'canonical recovery generation retirement');
     store.sqlite.transaction(()=>{
       assertCurrent();
+      assertMemoryCurrent?.();
       if(providerProcessAuthority.count({agentId})!==0||persistentRuntimeForTermination(agentId))
         throw new ContextRecoveryConflictError('Old recovery runtime or children remain');
       coordinationV3.contextRecovery.completeReconstruction(agentId,recovery.id,rolloverId!);
@@ -515,9 +606,9 @@ context.contextRecoveryMaintenance.recovering=agentId=>{
   const agent=store.getAgent(agentId),recovery=coordinationV3.contextRecovery.active(agentId),
     boundary=recovery??store.uncertainProviderContextRecoveryBoundary(agentId);
   if(!agent||!boundary||isClosed()||chatArchiveBlocksAgent(store.sqlite, agentId)||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
-      engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction"||
+      (!recovery?.progress?.deliveryRetryActivationId && engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction")||
       recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length||
-      !coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))return false;
+      !(recovery?.progress?.deliveryRetryActivationId || coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId})))return false;
   return recovery?.progress?.phase==='context_accepted'||Boolean(recovery?.progress?.nativeInvoked && (recovery.progress.maintenanceAttempts??0)<12)||
     !recovery?.progress?.nativeInvoked&&(recovery?.progress?.maintenanceAttempts??0)<3;
 };
@@ -539,6 +630,12 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
     const progress=recovery.progress;
     if(progress?.nextMaintenanceAt&&Date.parse(progress.nextMaintenanceAt)>Date.now())continue;
     const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery);
+    if(progress?.deliveryRetryActivationId){
+      if((progress.maintenanceAttempts??0)>=3||recoveryContext.blocker?.(agentId)||
+         workspace.listDecisions({projectId:agent.projectId,agentId,status:'pending'}).length)continue;
+      await reconstructRecovery(recovery);
+      continue;
+    }
     if(!pendingInput&&!progress?.automaticMaintenance&&!progress?.reconstructionRolloverId&&providerProcessAuthority.count({agentId})===0)continue;
     if(!pendingInput&&!progress?.nativeInvoked)continue;
     if(recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length)continue;
@@ -573,8 +670,9 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
         const recovery=coordinationV3.contextRecovery.active(agentId),progress=recovery?.progress;
         if(recovery&&progress){const attempts=Math.min(12,(progress.maintenanceAttempts??0)+1);
           coordinationV3.contextRecovery.advanceOperation(agentId,recovery.id,progress.phase,progress.phase,
-            {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});}
-        else failedRead=true;
+            {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});
+          if(progress.deliveryRetryActivationId && attempts===3)recoveryChanged(agentId);
+        } else failedRead=true;
       }catch{failedRead=true;}
     }
   }
@@ -1278,5 +1376,5 @@ app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string
   try { return store.getWorkItemPage(request.params.id, { limit, cursor: request.query.cursor }); }
   catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" }); }
 });
-return { stopRun, hasActiveOperation: (id: string) => activeAgentProviderCommands.has(id) || activeContextRecoveries.has(id) || nativeControlActive(id) };
+return { stopRun, prepareDeliveryContextRetry, hasActiveOperation: (id: string) => activeAgentProviderCommands.has(id) || activeContextRecoveries.has(id) || nativeControlActive(id) };
 }

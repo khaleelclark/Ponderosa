@@ -22,7 +22,7 @@ import type {
   SteerQueuedMessageResponse,
 } from "@ponderosa/core";
 import { canonicalizeProviderText } from "@ponderosa/core";
-import { CoordinationIdempotencyConflictError } from "@ponderosa/agents";
+import { ContextRecoveryConflictError, CoordinationIdempotencyConflictError } from "@ponderosa/agents";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { AssetError } from "../assets.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
@@ -104,6 +104,7 @@ export interface QueuedMessageRouteDependencies {
   ) => void;
   publishMessageDeliveryChanged: (agentId: string) => void;
   notifyScheduler: () => void;
+  prepareDeliveryContextRetry: ReturnType<typeof import("./provider-commands.js").registerProviderCommandRoutes>["prepareDeliveryContextRetry"];
 }
 
 const MAX_TEXT_LENGTH = 64 * 1024;
@@ -709,10 +710,22 @@ export function registerQueuedMessageRoutes(
       }
       const recoveryBoundary=coordinationV3.contextRecovery.active(agent.id)??store.uncertainProviderContextRecoveryBoundary(agent.id);
       const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(activationId,agent.id,projectId) as {scope_key:string}|undefined;
-      if(recoveryBoundary && scope?.scope_key===recoveryBoundary.scopeKey && ["pending","retry_pending"].includes(activation.state)) {
-        return reply.code(409).send({code:"context_recovery_required",error:"The earlier session was interrupted. Your message is saved. Recover the Agent before continuing.",retryable:false});
+      let result: RetryMessageDeliveryResponse;
+      try {
+        let reserveContextRecovery: (() => void) | undefined;
+        if(recoveryBoundary && scope?.scope_key===recoveryBoundary.scopeKey && ["pending","retry_pending"].includes(activation.state)) {
+          if (!expectedRolloverAttemptId) reserveContextRecovery = await dependencies.prepareDeliveryContextRetry(recoveryBoundary, activationId);
+          if (!reserveContextRecovery) {
+            return reply.code(409).send({code:"context_recovery_required",error:"The earlier session was interrupted. Your message is saved. Recover the Agent before continuing.",retryable:false});
+          }
+        }
+        result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId, reserveContextRecovery });
+      } catch(error) {
+        if(error instanceof ContextRecoveryConflictError)
+          return reply.code(409).send({code:"context_recovery_required",error:error.message});
+        if(error instanceof CoordinationIdempotencyConflictError) return reply.code(409).send({error:error.message});
+        throw error;
       }
-      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (!result.accepted || !result.targetAgentId) {
         const status = result.rejectionReason === "not_found" ? 404 : 409;
         return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);

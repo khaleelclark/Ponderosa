@@ -603,26 +603,69 @@ test('revoking a read memory during a same-model guidance handoff prevents trans
 });
 
 
-test('an interrupted prompt handoff remains held without replay after restart',{timeout:90000},async t=>{
+test('Retry recovers an interrupted prompt handoff after restart without replay',{timeout:90000},async t=>{
  let store,native;
+ let billingMode='subscription';
  await withFixture(t,async f=>{
   const chat=await f.createChat('Interrupted prompt handoff'),agent=await f.createIdleAgent(chat,'Worker');
   await f.send(agent.id,'Preserve the original objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
   f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Guidance changed for this task.'}));
-  await f.send(agent.id,'The original queued task remains.');
+  const attachment=f.ok(await f.api('POST',`/api/agents/${agent.id}/attachments`,Buffer.from('Original saved attachment'),{
+    'content-type':'application/octet-stream','x-ponderosa-filename':'original-feedback.txt','x-ponderosa-media-type':'text/plain',
+  }));
+  const sent=await f.send(agent.id,'The original queued task remains.',{attachmentIds:[attachment.id]});
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'prompt handoff',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'handoff submitted',20000);
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_run_activations a ON a.run_id=i.run_id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND i.state='acknowledged' AND json_extract(x.payload_json,'$.rolloverId')=?").get(rollover.id),'handoff acknowledged',20000);
+  billingMode='api';
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").get(rollover.id).n,1);
   assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%The original queued task remains.%'));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
-  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=?').get(agent.id).n,0,'An interrupted technical handoff stays with rollover authority, not automatic native compaction');
- },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=?').get(agent.id).n,0,'the handoff stays held until the operator retries');
+  const receipt=(await f.detail(agent.id)).messages.find(message=>message.communicationEventId===sent.communicationEventId)?.deliveryReceipts?.[0];
+  const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
+  assert.ok(boundary,'the interrupted handoff has an exact retained-session boundary');
+  assert.equal(receipt?.settingsTransitionHold,'retry_available');
+  assert.equal(receipt.canRetry,true);
+  const target=`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`;
+  const coordinator=new CoordinationV3Store(store.sqlite);
+  assert.equal(coordinator.contextRecovery.interruptedSettingsHandoff(boundary,receipt.activationId)?.id,rollover.id);
+  store.sqlite.exec('SAVEPOINT handoff_work');
+  try {
+    store.sqlite.prepare(`INSERT INTO events(agent_id,seq,type,payload_json,created_at)
+      SELECT ?,coalesce(max(seq),0)+1,'work_start',?,? FROM events WHERE agent_id=?`)
+      .run(agent.id,JSON.stringify({type:'work_start',kind:'command',executionId:boundary.sourceRunId}),new Date().toISOString(),agent.id);
+    assert.equal(coordinator.contextRecovery.interruptedSettingsHandoff(boundary,receipt.activationId),undefined,'observed tool work requires review');
+  } finally {store.sqlite.exec('ROLLBACK TO handoff_work; RELEASE handoff_work');}
+  const blocked=await f.api('POST',target,{idempotencyKey:'retry-provider-mismatch'});
+  assert.equal(blocked.status,409);
+  assert.match(blocked.body.error,/Recheck provider sign-in/);
+  assert.equal(coordinator.contextRecovery.active(agent.id),undefined);
+  billingMode='subscription';
+  const retry=await f.api('POST',target,{idempotencyKey:'retry-original'});
+  assert.equal(retry.status,202,JSON.stringify(retry.body));
+  const turns=await until(async()=>{
+    const requests=(await native.requests()).filter(x=>x.method==='turn/start');return requests.length>=3?requests:undefined;
+  },'saved delivery starts with recovered context',20000);
+  assert.equal(turns.length,3,'no second handoff turn');
+  assert.notEqual(turns[2].params.threadId,turns[1].params.threadId);
+  assert.ok(JSON.stringify(turns[2]).includes('The original queued task remains.'));
+  assert.ok(JSON.stringify(turns[2]).includes('original-feedback.txt'));
+  assert.equal(turns.filter(turn=>JSON.stringify(turn).includes('The original queued task remains.')).length,1);
+  await native.sendTool('ponderosa_message',{text:'Feedback received.'});await f.settled(agent.id,[boundary.sourceRunId]);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(receipt.activationId).n,1);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=? AND state='dismissed' AND json_extract(progress_json,'$.phase')='canonical_reconstructed'").get(agent.id).n,1);
+  const replay=await f.api('POST',target,{idempotencyKey:'retry-original'});
+  assert.equal(replay.status,202);
+  assert.equal(replay.body.replayed,true);
+  assert.equal((await f.api('POST',target,{idempotencyKey:'different-retry'})).status,409);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,3);
+ },{providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
 

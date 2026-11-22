@@ -586,13 +586,7 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.retryHeldSettingsTransitionRequest(input);
   }
 
-  retryMessageDelivery(input: {
-    projectId: string;
-    activationId: string;
-    idempotencyKey: string;
-    expectedRolloverAttemptId?: string;
-    now?: string;
-  }): RetryMessageDeliveryResponse {
+  retryMessageDelivery(input: Parameters<CoordinationV3ActivationCommandAuthority["retryMessageDelivery"]>[0]): RetryMessageDeliveryResponse {
     return this.activationCommandAuthority.retryMessageDelivery(input);
   }
 
