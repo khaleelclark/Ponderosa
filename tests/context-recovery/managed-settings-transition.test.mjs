@@ -603,11 +603,12 @@ test('revoking a read memory during a same-model guidance handoff prevents trans
 });
 
 
-test('Retry recovers an interrupted prompt handoff after restart without replay',{timeout:90000},async t=>{
+for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry recovers an interrupted prompt handoff after restart without replay (memory ${memoryMode})`,{timeout:90000},async t=>{
  let store,native;
  let billingMode='subscription';
  await withFixture(t,async f=>{
   const chat=await f.createChat('Interrupted prompt handoff'),agent=await f.createIdleAgent(chat,'Worker');
+  if(memoryMode==='revoked')f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
   await f.send(agent.id,'Preserve the original objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
@@ -634,7 +635,9 @@ test('Retry recovers an interrupted prompt handoff after restart without replay'
   assert.equal(receipt.canRetry,true);
   const target=`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`;
   const coordinator=new CoordinationV3Store(store.sqlite);
-  assert.equal(coordinator.contextRecovery.interruptedSettingsHandoff(boundary,receipt.activationId)?.id,rollover.id);
+  const handoff=coordinator.contextRecovery.interruptedSettingsHandoff(boundary,receipt.activationId);
+  assert.equal(handoff?.id,rollover.id);
+  assert.equal(Boolean(handoff.authorizationSignatureHash),memoryMode!=='disabled');
   store.sqlite.exec('SAVEPOINT handoff_work');
   try {
     store.sqlite.prepare(`INSERT INTO events(agent_id,seq,type,payload_json,created_at)
@@ -647,6 +650,28 @@ test('Retry recovers an interrupted prompt handoff after restart without replay'
   assert.match(blocked.body.error,/Recheck provider sign-in/);
   assert.equal(coordinator.contextRecovery.active(agent.id),undefined);
   billingMode='subscription';
+  if(memoryMode==='retired'||memoryMode==='revoked'){
+   const memory=localMemoryFor(f.app), validate=memory.transitionAuthorizationStillValid.bind(memory);
+   memory.transitionAuthorizationStillValid=(...args)=>Boolean(store.resumeSessionState(agent.id))&&validate(...args);
+   assert.equal((await f.api('POST',target,{idempotencyKey:'retry-before-restart'})).status,202);
+   const retired=await until(()=>{
+    const progress=coordinator.contextRecovery.active(agent.id)?.progress;
+    return progress?.reconstructionRolloverId&&progress.maintenanceAttempts===3&&progress;
+   },'retired recovery with exhausted attempts',20000);
+   assert.ok(retired.reconstructionRolloverId);
+   assert.equal(store.resumeSessionState(agent.id),undefined);
+   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+   await f.reopen();
+   if(memoryMode==='revoked'){
+    f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
+    const denied=await f.api('POST',target,{idempotencyKey:'retry-after-revocation'});
+    assert.equal(denied.status,409);
+    assert.match(denied.body.error,/memory access could not be verified/);
+    assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(receipt.activationId).n,0);
+    return;
+   }
+  }
   const retry=await f.api('POST',target,{idempotencyKey:'retry-original'});
   assert.equal(retry.status,202,JSON.stringify(retry.body));
   const turns=await until(async()=>{
@@ -665,7 +690,8 @@ test('Retry recovers an interrupted prompt handoff after restart without replay'
   assert.equal(replay.body.replayed,true);
   assert.equal((await f.api('POST',target,{idempotencyKey:'different-retry'})).status,409);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,3);
- },{providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+ },{providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:memoryMode==='disabled'?undefined:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'retry_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
 

@@ -466,8 +466,33 @@ async function deliveryRetryMemoryGuard(
   const blocked = () => new ContextRecoveryConflictError('Earlier memory access could not be verified. Check the Agent’s memory access before trying delivery again.');
   if (memory && origin && signature) {
     const args = [agent.id, agent.conversationId, origin, sourceRunId, boundary.sourceRunId, signature] as const;
-    if (!await memory.validateTransitionReads(...args)) throw blocked();
-    return () => { if (!memory.transitionAuthorizationStillValid(...args)) throw blocked(); };
+    const retirementResetSequence = () => {
+      const recovery = coordinationV3.contextRecovery.active(agent.id);
+      const rolloverId = recovery?.progress?.reconstructionRolloverId;
+      if (!recovery || !rolloverId || store.resumeSessionState(agent.id)) return undefined;
+      if (recovery.sourceRunId !== boundary.sourceRunId || recovery.sourceFence !== boundary.sourceFence ||
+          recovery.providerSessionId !== boundary.providerSessionId || !recovery.progress?.deliveryRetryActivationId) throw blocked();
+      coordinationV3.contextRecovery.assertReconstruction(agent.id, recovery.id, rolloverId);
+      // Retirement changes the signature itself. Exclude its one reset only when
+      // the durable reconstruction owns that generation and no later reset occurred.
+      const resets = store.sqlite.prepare(`
+        SELECT e.seq, json_extract(e.payload_json,'$.reason') AS reason,
+          (SELECT json_extract(prior.payload_json,'$.sessionId') FROM events prior
+           WHERE prior.agent_id=e.agent_id AND prior.seq<e.seq
+             AND prior.type IN ('session','session_snapshot','context_rollover_session_accepted')
+           ORDER BY prior.seq DESC LIMIT 1) AS session_id
+        FROM events e JOIN context_rollovers r ON r.id=? AND r.agent_id=e.agent_id
+        WHERE e.type='session_reset' AND e.created_at>=r.created_at
+        ORDER BY e.seq DESC LIMIT 2`).all(rolloverId) as {seq:number;reason:string;session_id:string|null}[];
+      const reset = resets[0];
+      if (resets.length !== 1 || reset?.reason !== 'request_context_rollover' ||
+          reset.session_id !== boundary.providerSessionId) throw blocked();
+      return reset.seq;
+    };
+    if (!await memory.validateTransitionReads(...args, retirementResetSequence())) throw blocked();
+    return () => {
+      if (!memory.transitionAuthorizationStillValid(...args, false, retirementResetSequence())) throw blocked();
+    };
   }
   const sessionOrigin = store.providerSessionOriginRunId(agent.id, boundary.providerSessionId);
   const guard = () => {
