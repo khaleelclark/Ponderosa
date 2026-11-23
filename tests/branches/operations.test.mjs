@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
 import {AgentStore,CoordinationV3Store,BranchStore,readBranchRunCounts} from '@ponderosa/agents';
+import {CoordinationV3Scheduler} from '../../apps/server/dist/coordination-v3-scheduler.js';
 import {branchOperationalSummary} from '../../apps/server/dist/branch-operations.js';
 import {previewBranchExecutionActions} from '../../apps/server/dist/branch-detail-preview.js';
 import {registerBranchRoutes} from '../../apps/server/dist/routes/branches.js';
@@ -347,5 +348,112 @@ test('a saved document and its reuse share one download while the exact downstre
  assert.equal(terminal.steps.find(step=>step.stepId==='save').publishedResult.sha256,digest);
  const failed=(await app.inject({url:route+'/actions'})).json();
  assert.equal(failed.items.find(item=>item.kind==='attempt').attempt.error,'Provider retry timed out');
+ f.pass();
+});
+
+test('a held overdue retry reports its exact step and resumes the same Request after reopening, once',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const requestId=attempt.requestId;
+ const old=f.coordination.leaseNextRun({workerId:'pre-send'});
+ assert.equal(f.coordination.failRun({...old,workerId:'pre-send',sameRunResumable:false,retryDelayMs:0}),'retry');
+ const activationId=f.store.sqlite.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?").get(requestId).activation_id;
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending',available_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(activationId);
+ f.store.sqlite.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','test-hold')").run(activationId);
+ assert.equal(f.coordination.peekNextRunnable(),undefined);
+ const reopened=new AgentStore(f.root);
+ const coordination=new CoordinationV3Store(reopened.sqlite),branches=new BranchStore(reopened.sqlite,coordination);
+ const current=branches.detail(f.execution.id);
+ assert.equal(current.execution.effectiveStatus,'needs_attention');
+ const app=Fastify();
+ registerBranchRoutes(app,{store:reopened,coordination,branches,installations:{setPublisher(){}},sources:{},notify(){}});
+ try{
+  const summary=(await app.inject('/api/branch-executions/'+f.execution.id+'/operations')).json();
+  assert.equal(summary.state,'blocked');
+  const wait=summary.agentWaits[0];
+  assert.equal(wait.state,'context_blocked');
+  assert.equal(wait.stepExecutionId,attempt.stepExecutionId);
+  assert.equal(wait.nextRetryAt,undefined);
+  assert.equal(wait.contextRetryActivationId,activationId);
+  const url='/api/branch-executions/'+f.execution.id+'/steps/'+attempt.stepExecutionId+'/retry-context';
+  const payload={requestId,activationId,expectedRevision:current.execution.revision,commandKey:'held-step'};
+  assert.equal((await app.inject({method:'POST',url,payload:{...payload,activationId:'stale'}})).statusCode,409);
+  for(let i=0;i<2;i++)assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(coordination.peekNextRunnable().activationId,activationId);
+  const resumed=coordination.leaseNextRun({workerId:'resumed-step'});
+  assert.deepEqual(resumed.activations.map(activation=>activation.id),[activationId]);
+  coordination.markRunStarted(resumed.runId,resumed.fencingToken);
+  coordination.preparePromptInjection({...resumed,prompt:'Run the original step'});
+  coordination.markPromptSubmitted(resumed);
+  coordination.acknowledgePromptInjection(resumed);
+  coordination.updateRequest({requestId,updateId:'verified-result',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Verified saved result'}});
+  coordination.completeRun(resumed.runId,resumed.fencingToken);
+  branches.advance();
+  const completed=branches.detail(f.execution.id);
+  assert.equal(completed.attempts[0].id,attempt.id);
+  assert.equal(completed.steps[0].result.output,'Verified saved result');
+  assert.equal(reopened.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,1);
+ }finally{await app.close();reopened.close()}
+ f.pass();
+});
+
+test('an unacknowledged provider send does not make a held Branch Request retryable',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const lease=f.coordination.leaseNextRun({workerId:'controlled-scheduler'});
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Review this file'});
+ f.coordination.markPromptSubmitted(lease);
+ const activationId=lease.activations[0].id,db=f.store.sqlite,stamp=new Date().toISOString();
+ const scope=db.prepare('SELECT scope_key FROM agent_activations WHERE id=?').get(activationId).scope_key;
+ db.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(activationId);
+ db.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','test-hold')").run(activationId);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+   threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+   source_run_id,source_activation_ids_json,replacement_run_id,scope_key,created_at,updated_at,terminal_at)
+   VALUES('failed-rollover',?,?,'failed','old-session','old-session',100,50,1,'event','[]','[]',?,'[]',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,lease.runId,lease.runId,scope,stamp,stamp,stamp);
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+   VALUES('handoff',?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled','handoff',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,JSON.stringify({settingsTransition:{activationId}}),stamp,stamp,stamp,scope);
+ db.prepare("INSERT INTO activation_sources VALUES('handoff','context_rollover','failed-rollover')").run();
+ const summary=await branchOperationalSummary(db,f.branches.execution(f.execution.id),async()=>healthy,true,f.coordination);
+ assert.equal(summary.state,'needs_reconciliation');
+ assert.equal(summary.agentWaits[0].state,'context_uncertain');
+ assert.equal(summary.agentWaits[0].label,'Step outcome unconfirmed');
+ assert.equal(summary.agentWaits[0].contextRetryActivationId,undefined);
+ assert.equal(f.coordination.retryHeldSettingsTransitionRequest({projectId:f.project.id,requestId:attempt.requestId,idempotencyKey:'ambiguous',expectedActivationId:activationId}).accepted,false);
+ f.pass();
+});
+
+
+test('Branch provider admission rechecks after async preflight and leases the same work once',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const original=f.coordination.peekNextRunnable();
+ let ready=true,preflight=0,dispatches=0;
+ const scheduler=new CoordinationV3Scheduler(f.coordination,async lease=>{
+  dispatches++;
+  assert.deepEqual(lease.activations.map(activation=>activation.id),[original.activationId]);
+  f.coordination.markPromptSubmitted(lease);
+  f.coordination.acknowledgePromptInjection(lease);
+  return {accepted:true};
+ },{workerId:'provider-race',
+  blockedAgentIds:()=>ready?[]:[f.agent.id],
+  prepareRunAdmission:async excluded=>{
+   const candidate=f.coordination.peekNextRunnable({excludedAgentIds:excluded});
+   await Promise.resolve();
+   if(++preflight===1)ready=false;
+   return candidate?.activationId??null;
+  },
+  revalidateRunAdmission:()=>ready});
+ await scheduler.drainOnce();
+ assert.equal(dispatches,0);
+ assert.equal(f.coordination.peekNextRunnable().activationId,original.activationId);
+ ready=true;
+ await scheduler.drainOnce();
+ await scheduler.drainOnce();
+ assert.equal(dispatches,1);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,1);
  f.pass();
 });

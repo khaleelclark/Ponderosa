@@ -177,6 +177,7 @@ export { BranchTriggerStore } from "./branch-trigger-store.js";
 export type * from "./branch-trigger-types.js";
 export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
 
+export {settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from "./coordination-v3-settings-transition-hold.js";
 export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordination-v3-request-lineage.js";
 
 export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,BRANCH_EFFECTIVE_STATUSES,branchStartedRequestRunSql,readBranchRunCounts,readBranchEffectiveStatuses,readBranchWorkingStepCount} from "./branch-run-status.js";

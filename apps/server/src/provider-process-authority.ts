@@ -138,14 +138,15 @@ export class ProviderProcessAuthority {
     return removed;
   }
 
-  count(scope: { projectId?: string; agentId?: string; runId?: string; purpose?: string } = {}): number {
+  count(scope: { projectId?: string; agentId?: string; runId?: string; purpose?: string } = {}, exceptId?: string): number {
     const clauses: string[] = [];
     const params: string[] = [];
     if (scope.projectId) { clauses.push("project_id = ?"); params.push(scope.projectId); }
     if (scope.agentId) { clauses.push("agent_id = ?"); params.push(scope.agentId); }
     if (scope.runId) { clauses.push("run_id = ?"); params.push(scope.runId); }
     if (scope.purpose) { clauses.push("purpose = ?"); params.push(scope.purpose); }
-    const nativeCount = [...this.nativeHandles.values()].filter(({scope: owned}) =>
+    if (exceptId) { clauses.push("id <> ?"); params.push(exceptId); }
+    const nativeCount = [...this.nativeHandles.values()].filter(({id, scope: owned}) => id !== exceptId &&
       Object.entries(scope).every(([key, value]) => owned[key as keyof ProviderProcessScope] === value)).length;
     return nativeCount + (this.sqlite.prepare(`SELECT COUNT(*) AS count FROM provider_process_authority${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}`)
       .get(...params) as { count: number }).count;

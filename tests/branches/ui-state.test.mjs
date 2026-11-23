@@ -1443,7 +1443,9 @@ test('repeating busy policy preserves legacy absence, explicit choice and Undo w
 test('new repeating schedules default to Run Latest while one-time schedules carry no busy policy',async()=>{
  const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'},f=await branchTriggerDraftFixture('schedule',once);
  assert.equal(renderToStaticMarkup(f.render()).includes('When Already Running'),false,'One-time schedules have no busy policy control');assert.equal(f.calls.length,0);
- f.input('scheduleKind','interval');assert.equal(f.config.whenRunning,'run_latest');f.input('scheduleKind','once');assert.equal(Object.hasOwn(f.config,'whenRunning'),false);
+ assert.equal(Object.hasOwn(f.config,'whenRunning'),false);
+ f.input('scheduleKind','interval');assert.equal(f.config.whenRunning,'run_latest');
+ assert.doesNotMatch(renderToStaticMarkup(f.render()),/Existing one-time schedule/u);
  f.input('scheduleKind','cron');assert.equal(f.config.whenRunning,'run_latest');f.unmount();
  const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
  const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),matches=[];
@@ -1618,7 +1620,7 @@ test('Run input stays raw, validates canonical code points and exposes unpublish
  const f=await workflowRunFixture(t),s=f.scope;f.render();s.openRun();f.render();f.field().onChange({target:{value:'😀'.repeat(10_001)}});f.render();assert.equal(f.button('Run Published Workflow').disabled,true);assert.match(f.field().helperText,/10,000/);assert.equal(s.submitRun(),undefined);assert.equal(f.requests.length,0);
  s.input='e\u0301'.repeat(10_000);f.render();assert.equal(f.field().error,false,'Validation uses the existing server normalization contract');
  const verified=s.current;s.current=undefined;s.selectedBranch.isPending=true;f.render();assert.match(f.render(),/Checking workflow availability/);assert.doesNotMatch(f.render(),/Save Workflow before running/);s.selectedBranch.isPending=false;s.current=verified;
- s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Save Workflow before running/);assert.equal(f.button('Run Workflow').disabled,true);assert.equal(f.requests.length,0);
+ s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Save Workflow before running/);assert.equal(f.button('Run once').disabled,true);assert.equal(f.requests.length,0);
  s.current={...s.current,versionId:'v1',enabled:false};f.render();assert.match(f.render(),/Enable it in Workflow trigger settings/);assert.equal(f.button('Run Published Workflow').disabled,true);f.button('Open Workflow').onClick();assert.equal(s.runOpen,false);
 });
 

@@ -661,6 +661,8 @@ export interface EngineAuthStatus {
 export interface EngineProbeOptions {
   /** One validated sign-in observation reused within this explicit check. */
   authObservation?: EngineAuthStatus;
+  onRuntimeTeardown?: () => void;
+  proactiveAuthRefresh?: boolean;
   onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
   signal?: AbortSignal;
 }

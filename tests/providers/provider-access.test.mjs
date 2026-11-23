@@ -1108,3 +1108,44 @@ test('UI035: provider status changes wake once per settled probe and never grant
   assert.equal(probes, 1, 'Woken scheduler passes reuse the fresh result instead of probing again');
   assert.deepEqual(changed, ['codex'], 'Cached reads cannot re-trigger the wake (no scheduler loop)');
 });
+
+test('Codex proactive refresh shares one probe while verification is fresh and blocks intake at hard expiry',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-01-01T00:00:00Z')});
+ const app=Fastify({logger:false}),auth=new EngineAuthStatusCache();
+ const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='codex');
+ const refreshes=new Map(),receipts=new Set();
+ let enabled=true,deny=false,reads=0,complete;
+ registration.isInstalled=()=>true;
+ registration.authStatus=async options=>{
+  reads++;
+  if(!options?.proactiveAuthRefresh)return {authenticated:true};
+  receipts.add('current-probe');refreshes.set('codex','current-probe');
+  return new Promise(resolve=>{complete=value=>{receipts.delete('current-probe');refreshes.delete('codex');resolve(value)}});
+ };
+ const plane=createEngineControlPlane({engines:new Map([['codex',registration]]),store:{listAgents:()=>[]},workspace:{getPreferences:()=>({})},
+  engineAuthStatuses:auth,engineAvailability:{get(){},denial(){return deny?{detail:'Credentials expired',failureCategory:'authentication'}:undefined}},providerUsage:{},
+  providerEnabled:()=>enabled,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,
+  deletingProjectIds:new Set(),isClosed:()=>false,runningAuthRefreshes:refreshes,
+  providerProcessAuthority:{count({purpose},except){return purpose.includes('authentication')?[...receipts].filter(id=>id!==except).length:0;}}});
+ try{
+  assert.equal((await plane.runtimeStatus('codex',registration)).intakeReady,true);
+  const original=auth.snapshot('codex').observedAt;
+  t.mock.timers.tick(25_000);
+  const fresh=await Promise.all([plane.runtimeStatus('codex',registration),plane.runtimeStatus('codex',registration)]);
+  assert.ok(fresh.every(status=>status.intakeReady));assert.equal(reads,2);
+  assert.equal(auth.snapshot('codex').observedAt,original);
+  assert.equal(plane.runtimeAdmissionBlocker('codex',registration),undefined);
+  receipts.add('retained-cleanup');
+  assert.equal(plane.runtimeAdmissionBlocker('codex',registration).kind,'provider_unavailable');
+  receipts.delete('retained-cleanup');
+  deny=true;assert.equal((await plane.runtimeStatus('codex',registration)).intakeReady,false);deny=false;
+  enabled=false;assert.equal(plane.runtimeAdmissionBlocker('codex',registration).kind,'provider_disabled');enabled=true;
+  t.mock.timers.tick(5000);
+  assert.equal(plane.runtimeAdmissionBlocker('codex',registration).kind,'authentication_unknown');
+  const pending=plane.runtimeStatus('codex',registration);
+  complete({authenticated:false});
+  assert.equal((await pending).intakeReady,false);
+  assert.equal(plane.runtimeAdmissionBlocker('codex',registration).kind,'authentication_required');
+  assert.equal(reads,2);
+ }finally{await app.close()}
+});

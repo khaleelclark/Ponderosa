@@ -89,6 +89,15 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   return previous&&(previous.revision>incoming.revision||
     previous.revision===incoming.revision&&previous.observedAt>incoming.observedAt)?previous:incoming;
  },refetchInterval:query=>shouldPollOperations(execution.state,query.state.data)?5000:false});
+ const [recoveryKeys]=useState(()=>new Map<string,string>());
+ const retryContext=useMutation({mutationFn:(wait:BranchOperationalSummaryDto['agentWaits'][number])=>{
+  const activationId=wait.contextRetryActivationId!;
+  const commandKey=recoveryKeys.get(activationId)??createClientId();
+  recoveryKeys.set(activationId,commandKey);
+  return requestJson(`/api/branch-executions/${execution.id}/steps/${wait.stepExecutionId}/retry-context`,{
+   method:'POST',body:JSON.stringify({requestId:wait.requestId,activationId,expectedRevision:execution.revision,commandKey})
+  });
+ },onSettled:()=>operations.refetch()});
  const ongoing=['queued','running','waiting'].includes(execution.state);
  const op=operations.data?.revision===execution.revision?operations.data:undefined;
  useEffect(()=>{
@@ -146,7 +155,9 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const headline=execution.runtimeData?{status:'waiting' as const,label:'Imported Runtime Data Held'}
   :stopping||!ongoing?fallback
   :execution.budgetWait?{status:'waiting' as const,label:'Waiting For Budget'}
+  :op?.state==='blocked'&&op.agentWaits.some(wait=>wait.state==='context_blocked')?{status:'needs_attention' as const,label:'Blocked'}
   :manualWait?{status:'needs_attention' as const,label:'Needs Attention'}
+  :op?.agentWaits.some(wait=>wait.state==='context_recovering')?{status:'waiting' as const,label:'Waiting'}
   :fallback.status==='needs_attention'?fallback
   :op?branchExecutionStatus({...execution,effectiveStatus:op.state==='queued'?'queued':op.counts.running?'running':'waiting'})
   :fallback;
@@ -211,13 +222,17 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   if(operational?.state==='agent_running')return null;
   const manual=operational&&['provider_attention','waiting_human','needs_reconciliation'].includes(operational.state)
    || ['approval','reconciliation','disabled_branch'].includes(wait.kind);
-  const retryAt=operational?.nextRetryAt??wait.availableAt;
-  return <Alert key={i} severity={manual?'warning':'info'}>
+  const held=operational?.state==='context_blocked'||operational?.state==='context_uncertain';
+  const retryAt=held||operational?.state==='context_recovering'?undefined:operational?.nextRetryAt??wait.availableAt;
+  return <Alert key={i} severity={manual||held?'warning':'info'}>
    <Typography fontWeight={600}>{operational&&wait.stepId?`${stepLabel(wait.stepId)} · ${operational.label}`:wait.message}</Typography>
    {(operational?.reason??wait.reason)&&<Typography variant="body2">{operational?.reason??wait.reason}</Typography>}
    {retryAt?<Typography variant="body2">Retry eligible {new Date(retryAt).toLocaleString()}.</Typography>
     :operational?.state==='retry_pending'&&operational.label!=='Retry scheduled'&&<Typography variant="body2">An automatic retry is pending.</Typography>}
-   {!manual&&<Typography variant="body2">No action needed.</Typography>}
+   {!manual&&!held&&<Typography variant="body2">No action needed.</Typography>}
+   {held&&operational?.contextRetryActivationId&&<Button disabled={!authorityFresh||retryContext.isPending} onClick={()=>retryContext.mutate(operational)}>Retry step</Button>}
+   {held&&retryContext.error&&retryContext.variables?.requestId===operational?.requestId&&<Typography color="error">{retryContext.error.message}</Typography>}
+   {held&&!operational?.contextRetryActivationId&&detail.steps.some(item=>item.id===operational?.stepExecutionId)&&<Button onClick={()=>{const step=detail.steps.find(item=>item.id===operational?.stepExecutionId);if(step)inspectEvidence(step)}}>Inspect step evidence</Button>}
    {operational?.state==='provider_attention'&&<Button href={providerSettings}>Open Provider Settings</Button>}
    {wait.executionId?<Button href={branchRoutePath({tab:'executions',executionId:wait.executionId})}>Open Blocking Execution</Button>
     :wait.branchId?<Button href={branchRoutePath({branchId:wait.branchId,tab:'workflow'})}>{'Open Workflow'}</Button>:null}

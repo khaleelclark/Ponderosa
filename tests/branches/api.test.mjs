@@ -464,7 +464,18 @@ for(const [kind,sourceConfig] of [
   const app=f.ok(await f.api('GET','/api/branches/assistant')).app;
   const {BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
   const definition=branches.version(app.branchId,app.versionId).definition,bindings=branches.localConfiguration(app.branchId);
-  f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:app.branchId,expectedVersionId:app.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{...bindings,directories:{...bindings.directories,workspace:f.root},triggers:sourceConfig?{source:{sourceConfig,enabled:true}}:{}}}));
+  const deploy={chatId:'',branchId:app.branchId,expectedVersionId:app.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{...bindings,directories:{...bindings.directories,workspace:f.root},triggers:sourceConfig?{source:{sourceConfig,enabled:true}}:{}}};
+  if(sourceConfig?.scheduleKind==='once'){
+   assert.match((await f.api('POST','/api/branches/preview',deploy)).body.error,/Start manually or a recurring schedule/);
+   assert.match((await f.api('POST','/api/branches/deploy',deploy)).body.error,/Start manually or a recurring schedule/);
+   const legacy=branches.deploy(deploy,undefined,{sourceConfig,nextFireAt:sourceConfig.at});
+   const original=branches.trigger(app.branchId);
+   const equivalent={...deploy,idempotencyKey:randomUUID(),expectedVersionId:legacy.versionId,
+    bindings:{...deploy.bindings,triggers:{source:{enabled:true,sourceConfig:{...sourceConfig,at:'2098-12-31T19:00:00.000-05:00'}}}}};
+   f.ok(await f.api('POST','/api/branches/deploy',equivalent));
+   assert.equal(branches.trigger(app.branchId).nextFireAt,original.nextFireAt);
+   assert.equal(branches.trigger(app.branchId).id,original.id);
+  }else f.ok(await f.api('POST','/api/branches/deploy',deploy));
   const url=`/api/branches/output-apps/${app.agentId}`,read=async()=>f.ok(await f.api('GET',url));
   const save=async(automatic,extra={})=>{const current=await read();return f.api('PUT',url+'/schedule',{expectedVersionId:current.versionId,expectedSettingsRevision:current.settingsRevision,automatic,...extra});};
   const before=await read(),original=branches.trigger(app.branchId),versionId=before.versionId,bindingRevisionId=before.bindingRevisionId;

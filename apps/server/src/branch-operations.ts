@@ -1,5 +1,6 @@
+import type {CoordinationV3Store} from "@ponderosa/agents";
 import type Database from "better-sqlite3";
-import {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchWorkingStepCount,requestSourceLineageBody} from "@ponderosa/agents";
+import {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchWorkingStepCount,requestSourceLineageBody,settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from "@ponderosa/agents";
 import type { BranchExecutionDto, BranchOperationalSummaryDto } from "@ponderosa/core";
 
 type Row = Record<string, any>;
@@ -21,6 +22,7 @@ export async function branchOperationalSummary(
   execution: Pick<BranchExecutionDto, "id" | "state" | "budgetWait"> & Partial<Pick<BranchExecutionDto, "revision">>,
   providerStatus?: ProviderStatus,
   includeAgentWaits = true,
+  coordination?: CoordinationV3Store,
 ): Promise<BranchOperationalSummaryDto> {
   const now = new Date().toISOString();
   const running = readBranchWorkingStepCount(db,execution.id,now);
@@ -53,22 +55,35 @@ export async function branchOperationalSummary(
         CROSS JOIN activation_sources source ON source.activation_id=activation.id
         WHERE activation.agent_id=r.recipient_agent_id AND activation.project_id=r.project_id
           AND activation.scope_key=CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.recipient_agent_id END
-          AND activation.state='retry_pending'
+          AND activation.state IN ('pending','retry_pending')
       ),${requestSourceLineageBody('branch_retry_sources')}
         SELECT activation.id FROM request_source_lineage source
         JOIN agent_activations activation ON activation.id=source.activation_id
         WHERE source.request_id=r.id AND activation.agent_id=r.recipient_agent_id
-          AND activation.state='retry_pending' ORDER BY activation.available_at,activation.id LIMIT 1) retry_id
+          AND activation.state IN ('pending','retry_pending')
+          ORDER BY ${settingsTransitionActivationHoldSql('activation')} DESC,
+            (activation.state='retry_pending') DESC,activation.available_at,activation.id LIMIT 1) retry_id
     FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
     JOIN coordination_requests r ON r.id=a.request_id LEFT JOIN agents ag ON ag.id=r.recipient_agent_id
     WHERE s.execution_id=:executionId AND :activeExecution=1 AND a.state='waiting'
       AND s.state NOT IN ('completed','failed','canceled')
       AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)
   ), evidence AS (
-    SELECT waits.*,retry.available_at retry_at,retry.provider_failure_category,
+    SELECT waits.*,retry.project_id,CASE WHEN retry.state='retry_pending' THEN retry.available_at END retry_at,retry.provider_failure_category,
       CASE WHEN request_state IN ('outcome_unknown','superseded','recipient_unavailable') THEN 'needs_reconciliation'
         WHEN request_state='awaiting_answer' THEN 'waiting_human'
         WHEN request_state='waiting_dependency' THEN 'waiting_dependency'
+        WHEN ${settingsTransitionRecoveryInProgressSql('retry')} THEN 'context_recovering'
+        WHEN retry.id IS NOT NULL AND ${settingsTransitionActivationHoldSql('retry')} THEN
+          CASE WHEN EXISTS(SELECT 1 FROM context_rollovers rollover
+            JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id
+            JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+            WHERE rollover.project_id=retry.project_id AND rollover.agent_id=retry.agent_id AND rollover.scope_key=retry.scope_key
+              AND json_extract(handoff.payload_json,'$.settingsTransition.activationId')=retry.id
+              AND (rollover.state='outcome_unknown' OR rollover.state='failed' AND rollover.replacement_run_id IS NOT NULL)
+              AND NOT EXISTS (SELECT 1 FROM activation_sources released WHERE released.activation_id=retry.id
+                AND released.source_kind='settings_transition_release' AND released.source_id=rollover.id)
+          ) THEN 'context_uncertain' ELSE 'context_blocked' END
         WHEN attached_run THEN 'agent_running' WHEN active_run THEN 'agent_busy'
         ELSE 'waiting_agent' END base_state
     -- A held unknown outcome is never a scheduled retry, whatever stale activation remains.
@@ -81,7 +96,7 @@ export async function branchOperationalSummary(
   const groups = db.prepare(`${waitCte} SELECT engine_id,base_state,COUNT(*) total,
     retry_at IS NOT NULL retry_pending,provider_failure_category FROM evidence
     GROUP BY engine_id,base_state,retry_at IS NOT NULL,provider_failure_category`).all(bindings) as Row[];
-  const engineIds=[...new Set(groups.map(row=>row.engine_id).filter((id):id is string=>typeof id==='string'))];
+  const engineIds=[...new Set(groups.filter(row=>row.base_state==='waiting_agent').map(row=>row.engine_id).filter((id):id is string=>typeof id==='string'))];
   const engines=new Map(await Promise.all(engineIds.map(async id=>{
     try{return [id,await providerStatus?.(id)] as const;}
     catch{return [id,{authentication:'error' as const,intakeReady:false}] as const;}
@@ -91,6 +106,9 @@ export async function branchOperationalSummary(
     let state:BranchOperationalSummaryDto['agentWaits'][number]['state']=a.base_state;
     let label=state==='needs_reconciliation'?'Agent result unknown':state==='waiting_human'?'Agent needs an answer':state==='waiting_dependency'?'Agent waiting on another task':state==='agent_running'?'Agent work in progress':state==='agent_busy'?'Agent busy - queued':'Waiting for Agent';
     let reason:string|undefined=state==='agent_busy'?'Another Run is active for this Agent.':undefined;
+    if(state==='context_uncertain')return {state,label:'Step outcome unconfirmed',reason:'The earlier attempt may have run. Check its results and any changes it could have made.'};
+    if(state==='context_blocked')return {state,label:'Session recovery required',reason:'Ponderosa could not finish restoring the session. This step is on hold.'};
+    if(state==='context_recovering')return {state,label:'Restoring session',reason:'Ponderosa is restoring context for this step.'};
     const retryScheduled=Boolean(a.retry_at||a.retry_pending);
     let nextRetryAt:string|undefined;
     if(state==='waiting_agent'){
@@ -98,6 +116,9 @@ export async function branchOperationalSummary(
       else if(provider?.resourceAdmission?.state==='held'){state='provider_unavailable';label='Waiting for host resources';reason=provider.availabilityDetail||'Accepted work remains queued until host resources recover.';}
       else if(provider?.installed===false){state='provider_attention';label='Provider installation required';reason='Install the provider CLI on the Ponderosa host, then select Recheck Sign-In in Provider Settings.';}
       else if(provider?.authentication==='unauthenticated'){state='provider_attention';label='Provider sign-in required';reason='Sign in on the Ponderosa host, then select Recheck Sign-In in Provider Settings. The step can resume when sign-in is verified.';}
+      else if(provider?.availabilityCategory==='authentication'){
+        state='provider_attention';label='Provider access needs attention';reason='The provider rejected the last access attempt. Recheck Sign-In in Provider Settings.';
+      }
       else if(provider?.authentication==='checking'){
         if(retryScheduled){state='retry_pending';nextRetryAt=a.retry_at;}
         label='Checking provider sign-in';reason='The check is pending; accepted work remains queued.';
@@ -110,10 +131,18 @@ export async function branchOperationalSummary(
     }
     return {state,label,...(reason?{reason}:{}),...(nextRetryAt?{nextRetryAt}:{})};
   };
-  const classifiedWaits=waitingAttempts.map(a=>({requestId:a.request_id as string,agentId:a.agent_id as string,
-    stepId:a.step_id as string,stepExecutionId:a.step_execution_id as string,agentName:a.agent_title||'Agent',engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...classify(a)}));
+  const classifiedWaits=waitingAttempts.map(a=>{
+    const status=classify(a);
+    const hold=status.state==='context_blocked'
+      ? coordination?.settingsTransitionRequestHold({projectId:a.project_id,requestId:a.request_id})
+      : undefined;
+    return {requestId:a.request_id as string,agentId:a.agent_id as string,
+      stepId:a.step_id as string,stepExecutionId:a.step_execution_id as string,agentName:a.agent_title||'Agent',
+      engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...status,
+      ...(hold?.retryable&&hold.activationId===a.retry_id?{contextRetryActivationId:hold.activationId}:{})};
+  });
   const classifications=groups.map(group=>({...classify(group),total:Number(group.total)}));
-  const unknown=Number(attempts.unknown??0)+classifications.filter(row=>row.state==='needs_reconciliation').reduce((n,row)=>n+row.total,0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
+  const unknown=Number(attempts.unknown??0)+classifications.filter(row=>row.state==='needs_reconciliation'||row.state==='context_uncertain').reduce((n,row)=>n+row.total,0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
   const humanRequests=classifications.filter(row=>row.state==='waiting_human').reduce((n,row)=>n+row.total,0);
   const totalWaits=classifications.reduce((n,row)=>n+row.total,0);
   const counts={completed:Number(steps.completed??0),running,retrying,failed:Number(steps.failed??0),
@@ -127,6 +156,8 @@ export async function branchOperationalSummary(
   else if (execution.state === "skipped") { state = "skipped"; label = "Skipped"; }
   else if (execution.state === "merged") { state = "merged"; label = "Merged into another execution"; }
   else if (unknown) { state = "needs_reconciliation"; label = "Needs reconciliation"; }
+  else if (classifications.some(wait => wait.state === "context_blocked")) { state = "blocked"; label = "Session recovery required"; }
+  else if (classifications.some(wait => wait.state === "context_recovering")) { state = "waiting_agent"; label = "Restoring session"; }
   else if (classifications.some(wait => wait.state === "provider_attention")) { state = "provider_attention"; label = "Provider needs attention"; }
   else if (classifications.some(wait => wait.state === "provider_unavailable")) { state = "provider_unavailable"; label = "Provider unavailable"; }
   else if (pendingGates || humanRequests) { state = "waiting_human"; label = "Waiting on a person"; }

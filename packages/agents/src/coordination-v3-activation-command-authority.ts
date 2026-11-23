@@ -75,22 +75,25 @@ export class CoordinationV3ActivationCommandAuthority {
     const authorized=row.scope_key===this.runtimeScopeAuthority.coordinationScopeKey(row.conversation_id,row.agent_id) &&
       this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(input.projectId,row.agent_id,row.scope_key);
     const otherHold=this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
-      AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')`).get(row.id);
+      AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')
+      UNION ALL
+      SELECT 1 FROM scheduler_run_activations attached JOIN provider_process_authority owned ON owned.run_id=attached.run_id
+      WHERE attached.activation_id=? LIMIT 1`).get(row.id,row.id);
     return {activationId:row.id,retryable:rows.length===1 && held.length===1 && authorized &&
       row.request_state==='open' && !row.superseded_by_request_id && ['pending','retry_pending'].includes(row.activation_state) && hold.retryable && !otherHold};
   }
 
-  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;now?:string}):
+  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;expectedActivationId?:string;now?:string}):
     {accepted:boolean;replayed:boolean;activationId?:string;targetAgentId?:string} {
     if(!input.idempotencyKey.trim())throw Error('Request retry idempotency key is required');
     const now=input.now??new Date().toISOString();
     return this.sqlite.transaction(()=>{
-      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId});
+      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId,...(input.expectedActivationId?{expectedActivationId:input.expectedActivationId}:{})});
       const replay=this.idempotentReplay<{accepted:boolean;activationId?:string;targetAgentId?:string}>(
         input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash);
       if(replay)return {...replay,replayed:true};
       const match=this.settingsTransitionRequestHold(input);
-      if(!match?.retryable)return {accepted:false,replayed:false};
+      if(!match?.retryable || input.expectedActivationId && match.activationId!==input.expectedActivationId)return {accepted:false,replayed:false};
       const row=this.sqlite.prepare('SELECT agent_id FROM agent_activations WHERE id=? AND project_id=?').get(match.activationId,input.projectId) as {agent_id:string}|undefined;
       if(!row)return {accepted:false,replayed:false};
       const hold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[match.activationId],"request").get(match.activationId);

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
+import {settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from './coordination-v3-settings-transition-hold.js';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
 /** Bound the shared source map by live scheduler authority before mapping
@@ -122,7 +123,15 @@ function classifiedBranchRunsCte(scope:string):string {
   ),${workingSteps}, attention_runs AS (
     SELECT DISTINCT current.execution_id FROM current_branch_attempts current
     LEFT JOIN coordination_requests request ON request.id=current.request_id
-    WHERE current.state='outcome_unknown' OR current.state='waiting' AND request.state IN ('outcome_unknown','superseded','recipient_unavailable')
+    WHERE current.state='outcome_unknown' OR current.state='waiting' AND (
+      request.state IN ('outcome_unknown','superseded','recipient_unavailable') OR
+      request.state IN ('open','in_progress') AND EXISTS (
+        SELECT 1 FROM activation_sources source JOIN agent_activations activation ON activation.id=source.activation_id
+        WHERE source.source_kind='request' AND source.source_id=request.id
+          AND activation.agent_id=request.recipient_agent_id AND activation.project_id=request.project_id
+          AND activation.state IN ('pending','retry_pending') AND ${settingsTransitionActivationHoldSql('activation')}
+          AND NOT ${settingsTransitionRecoveryInProgressSql('activation')}
+      ))
   ), retry_runs AS (
     SELECT DISTINCT current.execution_id FROM current_branch_attempts current
     WHERE current.state='prepared' AND current.available_at>:now
@@ -130,7 +139,9 @@ function classifiedBranchRunsCte(scope:string):string {
         JOIN activation_sources source ON source.source_kind='request' AND source.source_id=request.id
         JOIN agent_activations activation ON activation.id=source.activation_id
         WHERE request.id=current.request_id AND request.state IN ('open','in_progress')
-          AND activation.state='retry_pending' AND activation.available_at>:now)
+          AND activation.state='retry_pending' AND activation.available_at>:now
+          AND NOT ${settingsTransitionActivationHoldSql('activation')}
+          AND NOT ${settingsTransitionRecoveryInProgressSql('activation')})
   ), classified AS (
     SELECT run.id,run.branch_id,CASE
       WHEN run.cancel_requested=1 THEN CASE WHEN ${branchStopBlockedSql('run.id')} THEN 'needs_attention' ELSE 'stopping' END

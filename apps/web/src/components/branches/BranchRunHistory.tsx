@@ -75,7 +75,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
      </TextField>
      {triggerEvents}
      {read?<WorkspaceQueryError active={active} read={read}/>:error&&<Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Run history unavailable. {error.message}</Alert>}
-     {loading&&!runs.length?<Stack role="status" aria-label="Loading Run History"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!runs.length?<Stack><Typography color="text.secondary">{filter?'No Runs match this filter.':'No Runs yet. Use Run Workflow to begin.'}</Typography>{filter&&<Button sx={{alignSelf:'start'}} onClick={()=>onFilter('')}>Clear Filter</Button>}</Stack>:null}
+     {loading&&!runs.length?<Stack role="status" aria-label="Loading Run History"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!runs.length?<Stack><Typography color="text.secondary">{filter?'No Runs match this filter.':'No Runs yet. Use Run once to begin.'}</Typography>{filter&&<Button sx={{alignSelf:'start'}} onClick={()=>onFilter('')}>Clear Filter</Button>}</Stack>:null}
     </Stack>
     <List aria-label="Workflow Runs" disablePadding sx={{mt:1}}>{retained&&renderRun(retained,true)}{runs.map(run=>renderRun(run))}</List>
     {hasMore&&<Button disabled={loadingMore} onClick={onMore} sx={{mt:1,flexShrink:0}}>{loadingMore?'Loading…':'Load Older Runs'}</Button>}

@@ -215,7 +215,7 @@ export interface BranchOperationalSummaryDto {
   state: "queued" | "running" | "waiting_agent" | "waiting_human" | "retrying" | "provider_unavailable" | "provider_attention" | "needs_reconciliation" | "blocked" | "completed" | "failed" | "canceled" | "skipped" | "merged";
   label: string; observedAt: string;
   counts: { completed:number; running:number; retrying:number; failed:number; waitingAgent:number; waitingHuman:number; needsReconciliation:number; mapItems:number; mapSettled:number };
-  agentWaits: Array<{requestId:string;stepId:string;stepExecutionId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation";label:string;since:string;reason?:string;nextRetryAt?:string}>;
+  agentWaits: Array<{requestId:string;stepId:string;stepExecutionId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation"|"context_blocked"|"context_recovering"|"context_uncertain";label:string;since:string;reason?:string;nextRetryAt?:string;contextRetryActivationId?:string}>;
   additionalAgentWaits: number;
 }
 /** Bounded Home metadata; full inputs, outputs and audit history stay in execution inspection. */

@@ -57,6 +57,7 @@ async function containedAuthCommand(
       finished = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
+      options.onRuntimeTeardown?.();
       const probeSucceeded = !error && !terminate;
       try {
         // close() is an observed no-op after natural exit and exact tree

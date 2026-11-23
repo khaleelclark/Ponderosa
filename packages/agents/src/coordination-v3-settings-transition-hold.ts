@@ -75,6 +75,17 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
     )))`;
 }
 
+/** True only while a handoff owns recovery for this exact queued Activation. */
+export function settingsTransitionRecoveryInProgressSql(activation:string):string {
+  return `EXISTS(SELECT 1 FROM context_rollovers rollover
+    JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id
+    JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+    WHERE rollover.project_id=${activation}.project_id AND rollover.agent_id=${activation}.agent_id
+      AND rollover.scope_key=${activation}.scope_key
+      AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+      AND json_extract(handoff.payload_json,'$.settingsTransition.activationId')=${activation}.id)`;
+}
+
 export type SettingsTransitionDeliveryHold = {
   retryable: boolean;
   rolloverId?: string;

@@ -264,6 +264,7 @@ interface CoordinationSchedulerContext {
   communicationArtifactAccess: ArtifactAuthority["communicationArtifactAccess"];
   projectCommunicationArtifact: ArtifactAuthority["projectCommunicationArtifact"];
   providerProcessAuthority: ProviderProcessAuthority;
+  runtimeAdmissionBlocker: ReturnType<typeof import("./engine-control-plane.js").createEngineControlPlane>["runtimeAdmissionBlocker"];
   workflowOperations?: WorkflowOperations;
 }
 
@@ -777,6 +778,12 @@ return new CoordinationV3Scheduler(
       const safe=await requestSettingsTransition({...notices,opts,engines,
         engineAuthStatuses:context.engineAuthStatuses,cachedModelOptions:context.cachedModelOptions,excludedAgentIds,candidate});
       return safe?(candidate?.activationId??null):null;
+    },
+    revalidateRunAdmission: activationId => {
+      const owner = store.sqlite.prepare('SELECT agent_id FROM agent_activations WHERE id=?').get(activationId) as {agent_id:string}|undefined;
+      const agent = owner && store.getAgent(owner.agent_id);
+      const registration = agent && engines.get(agent.activeEngine);
+      return Boolean(agent && registration && !context.runtimeAdmissionBlocker(agent.activeEngine, registration));
     },
     onMessageDeliveryChanged: publishMessageDeliveryChanged,
   },

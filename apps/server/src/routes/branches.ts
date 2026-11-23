@@ -147,7 +147,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     const row=store.sqlite.prepare('SELECT configuration_revision revision FROM branches WHERE id=?').get(id) as {revision:number};
     return {...row,configuration,secretStatus:Object.fromEntries(Object.keys(secretBindings??{}).map(key=>[key,'configured']))};
   };
-  function validateLocal(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration){
+  function validateLocal(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration,allowPackagedOnce=false){
     input={...input,definition:validateBranchDefinition(input.definition)};
     input.bindings=validateBranchBindings(input.bindings,input.definition);
     if(input.chatId)throw new Error('Branch ownership is independent of a working Chat');
@@ -176,6 +176,17 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
         const parsed = triggerSourceConfig(input.definition.trigger.kind, resolveBranchParameterReferences(local.sourceConfig,input.definition,configuration));
         const current = input.branchId ? branches.trigger(input.branchId) : undefined;
         const previous = input.branchId ? branches.localConfiguration(input.branchId)?.triggers?.[input.definition.trigger.configRef] : undefined;
+        if(input.definition.trigger.kind==='schedule'&&'scheduleKind'in parsed&&parsed.scheduleKind==='once'){
+          const saved=current?.sourceConfig;
+          if(current?.sourceKind!=='schedule'||!saved||!('scheduleKind'in saved)||saved.scheduleKind!=='once'||Date.parse(saved.at)!==Date.parse(parsed.at)){
+            if(allowPackagedOnce){
+              const normalized=normalizeTriggerSourceConfig('schedule',parsed);
+              return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:true};
+            }
+            throw new BranchValidationError('Choose Start manually or a recurring schedule before publishing.',{section:'settings',field:'trigger'});
+          }
+          return {sourceConfig:saved,nextFireAt:current.nextFireAt,resetSchedule:false,enabledOverride:local.enabled&&current.enabled};
+        }
         const same = current?.sourceKind === input.definition.trigger.kind && previous && stableJson(previous.sourceConfig) === stableJson(local.sourceConfig) && stableJson(current.sourceConfig)===stableJson(parsed);
         const cadence=(value:import('@ponderosa/core').TriggerSourceConfig)=>{const {whenRunning,...timing}=value as import('@ponderosa/core').TriggerSourceConfig & {whenRunning?:string};return timing};
         const sameCadence=current?.sourceKind==='schedule'&&input.definition.trigger.kind==='schedule'&&previous&&
@@ -185,7 +196,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current!.enabled:false}:{})};
   }
   context.installations.setPublisher((input,configuration)=>{
-    const trigger=validateLocal(input,configuration);
+    const trigger=validateLocal(input,configuration,true);
     return branches.deploy(input,new Date().toISOString(),trigger,configuration);
   },()=>sources.refresh());
   // Provision metadata on first server start, even before the Assistant page is opened.
@@ -703,6 +714,35 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     try { const result = branches.intervene(request.params.id, request.body); notify(); return result; }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Intervention failed' }); }
   });
+  app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>('/api/branch-executions/:id/steps/:stepExecutionId/retry-context', (request,reply)=>{
+    try{
+      const input=validatedObject(request.body,'Step recovery');
+      exactObjectFields(input,['requestId','activationId','expectedRevision','commandKey'],'Step recovery');
+      const {requestId,activationId,expectedRevision,commandKey}=input;
+      if(typeof requestId!=='string'||typeof activationId!=='string'||!Number.isSafeInteger(expectedRevision)
+        ||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Invalid step recovery');
+      const result=store.sqlite.transaction(()=>{
+        const target=store.sqlite.prepare(`SELECT r.project_id FROM branch_step_executions s
+          JOIN branch_executions e ON e.id=s.execution_id
+          JOIN branch_attempts a ON a.step_execution_id=s.id
+          JOIN branch_paths p ON p.id=s.path_id AND p.step_execution_id=s.id
+          JOIN coordination_requests r ON r.id=a.request_id
+          WHERE s.id=? AND e.id=? AND e.revision=? AND e.cancel_requested=0 AND e.state IN ('queued','running','waiting')
+            AND s.state='waiting' AND a.state='waiting' AND a.cancel_requested=0 AND r.id=?
+            AND NOT EXISTS(SELECT 1 FROM branch_commands cmd WHERE cmd.execution_id=e.id AND cmd.command_key='portable-runtime-data')
+            AND NOT EXISTS (SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)`)
+          .get(request.params.stepExecutionId,request.params.id,expectedRevision,requestId) as {project_id:string}|undefined;
+        if(!target)throw Error('This step changed. Refresh the run to see the current status.');
+        const recovered=context.coordination.retryHeldSettingsTransitionRequest({
+          projectId:target.project_id,requestId,idempotencyKey:commandKey,expectedActivationId:activationId,
+        });
+        if(!recovered.accepted)throw Error('This step is still held. Ponderosa could not verify that retry is safe.');
+        return recovered;
+      })();
+      notify();
+      return {accepted:result.accepted};
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Step recovery failed'});}
+  });
   app.delete<{ Params: { id: string } }>('/api/branches/:id', async (request, reply) => {
     try { const result=await context.installations.delete(request.params.id); await sources.refresh();notify();return reply.code(result.pending?202:200).send(result); }
     catch (error) { return reply.code(409).send({ error: describeBranchDeletionFailure(error) }); }
@@ -721,7 +761,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   });
   app.get<{ Params: { id: string } }>("/api/branch-executions/:id/operations", async (request, reply) => {
     const execution=branches.execution(request.params.id);
-    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus):reply.code(404).send({error:"Execution not found"});
+    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus,true,context.coordination):reply.code(404).send({error:"Execution not found"});
   });
   app.get<{Params:{id:string};Querystring:{cursor?:string}}>('/api/branch-executions/:id/actions',async(request,reply)=>{
     try{const page=branches.currentActions(request.params.id,request.query.cursor,context.workspace);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}

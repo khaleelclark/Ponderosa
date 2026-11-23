@@ -47,6 +47,7 @@ import type {
 } from "./app-contracts.js";
 
 interface EngineControlPlaneContext {
+  runningAuthRefreshes?: ReadonlyMap<string, string>;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmission;
   engines: ReadonlyMap<string, EngineRegistration>;
   store: AgentStore;
@@ -148,7 +149,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   };
   const diagnosticCleanupPending = (id: string): boolean =>
     ["authentication", "availability"].some((kind) =>
-      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }) > 0);
+      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }, kind === "authentication" ? context.runningAuthRefreshes?.get(id) : undefined) > 0);
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
@@ -194,6 +195,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
+      if (id === "codex" && registration.authStatus && providerEnabled(id) && resources?.state !== "held") {
+        engineAuthStatuses.refreshBeforeExpiry(id, () => registration.authStatus!({ proactiveAuthRefresh: true }));
+      }
       auth = registration.authStatus
         ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && resources?.state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };

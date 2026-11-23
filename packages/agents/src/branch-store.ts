@@ -2643,6 +2643,8 @@ export class BranchStore {
     const attempt=this.row(`SELECT a.*,s.path_id,p.step_execution_id AS current_step,p.fork_invocation_id
       FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id WHERE a.id=?`,attemptId);
     const request=attempt?.request_id?this.coordination.getRequest(attempt.request_id):undefined;
+    if(request&&this.coordination.settingsTransitionRequestHold({projectId:request.projectId,requestId:request.id}))
+      return 'The original Agent Request is held for session recovery.';
     const unknown=attempt?.state==='outcome_unknown'||request?.state==='outcome_unknown';
     if(!attempt||(attempt.state!=='failed'&&!unknown&&!this.snapshotRetryAvailable(execution.id,attempt)))return 'Only a failed or uncertain attempt can be retried.';
     if(attempt.current_step!==attempt.step_execution_id||this.row('SELECT 1 FROM branch_attempts WHERE step_execution_id=? AND number>?',attempt.step_execution_id,attempt.number))return 'This Step has already advanced; start a new execution.';
@@ -3725,6 +3727,8 @@ export class BranchStore {
           return;
         }
         const request = attempt.request_id ? this.coordination.getRequest(attempt.request_id) : undefined;
+        if(input.action==='retry'&&request&&this.coordination.settingsTransitionRequestHold({projectId:request.projectId,requestId:request.id}))
+          throw Error('The original Agent Request is held for session recovery.');
         const unknown = attempt.state === "outcome_unknown" || request?.state === "outcome_unknown";
         if (attempt.state !== "failed" && !unknown) throw new Error("Only failed or outcome-unknown attempts accept intervention");
         if (unknown && (input.externalEffectsReconciled !== true || attempt.process_identity_json)) throw new Error("Reconcile external effects and drain process authority before intervention");
