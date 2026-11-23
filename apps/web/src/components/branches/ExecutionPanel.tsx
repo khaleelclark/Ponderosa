@@ -35,6 +35,37 @@ function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:Branc
   <Stack direction="row" spacing={1}><Button variant="contained" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate(gate.purpose==='recovery'?'retry':'approve')}>{resolve.isPending?'Saving Decision…':gate.purpose==='recovery'?'Retry Step':text!==gate.proposal?'Approve Edited Text':'Approve'}</Button><Button color="error" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate('reject')}>Reject</Button></Stack>
  </Stack></Paper>;
 }
+type SavedResult = {available:false}|{available:true;sourceRunId:string;text:string;outputHash:string};
+function SavedResultReview({execution,stepExecutionId,disabled,onChanged}:{execution:BranchExecutionDto;stepExecutionId:string;disabled:boolean;onChanged():void}):JSX.Element|null {
+ const path=`/api/branch-executions/${execution.id}/steps/${stepExecutionId}/saved-result`;
+ const candidate=useQuery({queryKey:['branch-saved-result',execution.id,execution.revision,stepExecutionId],queryFn:()=>requestJson<SavedResult>(path)});
+ const [review,setReview]=useState(false);
+ const [commandKey]=useState(createClientId);
+ const recover=useMutation({mutationFn:(disposition:'completed'|'blocked')=>{
+  const saved=candidate.data;
+  if(!saved?.available)throw Error('The saved result is unavailable.');
+  return requestJson(path,{method:'POST',body:JSON.stringify({commandKey,expectedRevision:execution.revision,
+   sourceRunId:saved.sourceRunId,outputHash:saved.outputHash,disposition})});
+ },onSuccess:()=>{setReview(false);onChanged()}});
+ const saved=candidate.data;
+ if(!saved?.available)return null;
+ return <>
+  <Button disabled={disabled} onClick={()=>setReview(true)}>Review saved result</Button>
+  <Dialog open={review} onClose={()=>{if(!recover.isPending)setReview(false)}} fullWidth maxWidth="sm">
+   <DialogTitle>Use the result from the finished step</DialogTitle>
+   <DialogContent>
+    <Typography>The Agent finished and saved this response. You can keep it as the step result or record that the step was blocked.</Typography>
+    <Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:300,overflow:'auto'}}>{saved.text}</Typography>
+    {recover.error&&<Alert severity="error">{recover.error.message}</Alert>}
+   </DialogContent>
+   <DialogActions>
+    <Button disabled={recover.isPending} onClick={()=>setReview(false)}>Close</Button>
+    <Button disabled={disabled||recover.isPending} onClick={()=>recover.mutate('blocked')}>Record as blocked</Button>
+    <Button variant="contained" disabled={disabled||recover.isPending} onClick={()=>recover.mutate('completed')}>Use saved result</Button>
+   </DialogActions>
+  </Dialog>
+ </>;
+}
 /** Presentation-only state retained while the Branch workspace stays open. */
 export interface ExecutionPanelViewState {
  selected:string;
@@ -230,6 +261,8 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    {retryAt?<Typography variant="body2">Retry eligible {new Date(retryAt).toLocaleString()}.</Typography>
     :operational?.state==='retry_pending'&&operational.label!=='Retry scheduled'&&<Typography variant="body2">An automatic retry is pending.</Typography>}
    {!manual&&!held&&<Typography variant="body2">No action needed.</Typography>}
+   {operational?.state==='context_blocked'&&!operational.contextRetryActivationId&&
+    <SavedResultReview execution={execution} stepExecutionId={operational.stepExecutionId} disabled={!authorityFresh} onChanged={refresh}/>}
    {held&&operational?.contextRetryActivationId&&<Button disabled={!authorityFresh||retryContext.isPending} onClick={()=>retryContext.mutate(operational)}>Retry step</Button>}
    {held&&retryContext.error&&retryContext.variables?.requestId===operational?.requestId&&<Typography color="error">{retryContext.error.message}</Typography>}
    {held&&!operational?.contextRetryActivationId&&detail.steps.some(item=>item.id===operational?.stepExecutionId)&&<Button onClick={()=>{const step=detail.steps.find(item=>item.id===operational?.stepExecutionId);if(step)inspectEvidence(step)}}>Inspect step evidence</Button>}

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtempSync,rmSync,readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -455,5 +456,57 @@ test('Branch provider admission rechecks after async preflight and leases the sa
  await scheduler.drainOnce();
  assert.equal(dispatches,1);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,1);
+ f.pass();
+});
+
+test('a held report can record the exact finished Branch result once across restart',async t=>{
+ const f=fixture(t);
+ f.branches.advance();
+ const {requestId,stepExecutionId}=f.branches.detail(f.execution.id).attempts[0];
+ const source=f.coordination.leaseNextRun({workerId:'original'});
+ const output='Saved shortlist';
+ const executionId='original-provider-execution';
+ f.coordination.markRunStarted(source.runId,source.fencingToken);
+ f.coordination.preparePromptInjection({...source,prompt:'Original request'});
+ f.coordination.recordProviderInput({executionId,schedulerRunId:source.runId,fencingToken:source.fencingToken,
+  agentId:f.agent.id,projectId:f.project.id,prompt:'Original request',sourceManifest:{}});
+ f.coordination.markPromptSubmitted(source);
+ f.coordination.acknowledgePromptInjection(source);
+ f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:output});
+ f.coordination.completeRun(source.runId,source.fencingToken);
+ const report=f.coordination.leaseNextRun({workerId:'report-only'});
+ const reportId=report.activations[0].id;
+ f.coordination.markRunStarted(report.runId,report.fencingToken);
+ f.coordination.preparePromptInjection({...report,prompt:'Report only'});
+ f.coordination.recordProviderInput({executionId:'report-provider-execution',schedulerRunId:report.runId,
+  fencingToken:report.fencingToken,agentId:f.agent.id,projectId:f.project.id,prompt:'Report only',sourceManifest:{}});
+ assert.equal(f.coordination.failRun({...report,workerId:'report-only',sameRunResumable:false,retryDelayMs:0}),'retry');
+ f.store.sqlite.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','held-report')").run(reportId);
+ const opened=new AgentStore(f.root);
+ const coordination=new CoordinationV3Store(opened.sqlite),branches=new BranchStore(opened.sqlite,coordination);
+ const app=Fastify();
+ registerBranchRoutes(app,{store:opened,coordination,branches,installations:{setPublisher(){}},sources:{},notify(){}});
+ const url='/api/branch-executions/'+f.execution.id+'/steps/'+stepExecutionId+'/saved-result';
+ try{
+  const candidate=(await app.inject(url)).json();
+  assert.deepEqual(candidate,{available:true,sourceRunId:source.runId,text:output,
+   outputHash:createHash('sha256').update(output).digest('hex')});
+  const {sourceRunId,outputHash}=candidate;
+  const payload={commandKey:'recover-shortlist',expectedRevision:branches.execution(f.execution.id).revision,
+   sourceRunId,outputHash,disposition:'completed'};
+  assert.equal((await app.inject({method:'POST',url,payload:{...payload,outputHash:'0'.repeat(64)}})).statusCode,409);
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  const afterCommand=new AgentStore(f.root);
+  try{
+   const restarted=new BranchStore(afterCommand.sqlite,new CoordinationV3Store(afterCommand.sqlite));
+   restarted.advance();
+   assert.equal(restarted.execution(f.execution.id).state,'completed');
+   assert.equal(restarted.detail(f.execution.id).steps[0].result.output,output);
+  }finally{afterCommand.close()}
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE request_id=?').get(requestId).n,1);
+  assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,2);
+  assert.equal(coordination.peekNextRunnable(),undefined);
+ }finally{await app.close();opened.close()}
  f.pass();
 });

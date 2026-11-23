@@ -1,4 +1,4 @@
-import {nextIntervalTime} from "@ponderosa/core";
+import {nextIntervalTime,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength} from "@ponderosa/core";
 import {localMemoryFor} from '../local-memory.js';
 import {packageExportDownloads,workingFolderOmissions} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
@@ -713,6 +713,29 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.post<{ Params: { id: string }; Body: BranchIntervention }>('/api/branch-executions/:id/intervene', async (request, reply) => {
     try { const result = branches.intervene(request.params.id, request.body); notify(); return result; }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Intervention failed' }); }
+  });
+  const savedResultPath='/api/branch-executions/:id/steps/:stepExecutionId/saved-result';
+  app.get<{Params:{id:string;stepExecutionId:string}}>(savedResultPath,(request)=>{
+    const {id,stepExecutionId}=request.params;
+    const saved=branches.savedResultCandidate(id,stepExecutionId);
+    if(!saved)return {available:false};
+    const text=store.getRunOutputText(saved.agentId,saved.outputSeq)?.text;
+    if(!text?.trim()||unicodeCodePointLength(normalizeCanonicalText(text))>INLINE_TEXT_MAX_CODE_POINTS)return {available:false};
+    return {available:true,sourceRunId:saved.sourceRunId,text,outputHash:createHash('sha256').update(text).digest('hex')};
+  });
+  app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>(savedResultPath,(request,reply)=>{
+    try{
+      const input=validatedObject(request.body,'Saved result review');
+      exactObjectFields(input,['commandKey','expectedRevision','sourceRunId','outputHash','disposition'],'Saved result review');
+      const {commandKey,expectedRevision,sourceRunId,outputHash,disposition}=input;
+      if(typeof commandKey!=='string'||typeof expectedRevision!=='number'||!Number.isSafeInteger(expectedRevision)||
+        typeof sourceRunId!=='string'||typeof outputHash!=='string'||!/^[0-9a-f]{64}$/.test(outputHash)||
+        (disposition!=='completed'&&disposition!=='blocked'))throw Error('Invalid saved result review');
+      const result=branches.recoverSavedResult(request.params.id,request.params.stepExecutionId,
+        {commandKey,expectedRevision,sourceRunId,outputHash,disposition},(agent,seq)=>store.getRunOutputText(agent,seq)?.text);
+      notify();
+      return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Could not record the saved result'});}
   });
   app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>('/api/branch-executions/:id/steps/:stepExecutionId/retry-context', (request,reply)=>{
     try{

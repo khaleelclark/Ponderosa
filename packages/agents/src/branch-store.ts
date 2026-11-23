@@ -3598,6 +3598,78 @@ export class BranchStore {
       return detail;
     })();
   }
+  savedResultCandidate(executionId:string,stepExecutionId:string):{requestId:string;agentId:string;sourceRunId:string;reportId:string;outputSeq:number}|undefined {
+    const execution=this.execution(executionId);
+    if(!execution||!['queued','running','waiting'].includes(execution.state))return;
+    const stepRow=this.row('SELECT step_id FROM branch_step_executions WHERE id=? AND execution_id=?',stepExecutionId,executionId);
+    const step=this.definition(execution).steps.find(item=>item.id===stepRow?.step_id);
+    if(step?.kind!=='agent'||step.requireUserCommunication)return;
+    const rows=this.rows(`SELECT request.id AS requestId,request.recipient_agent_id AS agentId,
+        source.id AS sourceRunId,report.id AS reportId,
+        (SELECT max(output.first_seq) FROM run_output_segments output
+         WHERE output.agent_id=source.agent_id AND output.execution_id=packet.execution_id
+           AND output.event_type='text') AS outputSeq
+      FROM branch_executions execution JOIN branch_step_executions step ON step.execution_id=execution.id
+      JOIN branch_paths path ON path.id=step.path_id AND path.step_execution_id=step.id
+      JOIN branch_attempts attempt ON attempt.step_execution_id=step.id
+      JOIN coordination_requests request ON request.id=attempt.request_id
+      JOIN activation_sources report_link ON report_link.source_kind='request' AND report_link.source_id=request.id
+      JOIN agent_activations report ON report.id=report_link.activation_id AND report.project_id=request.project_id
+        AND report.agent_id=request.recipient_agent_id AND report.kind='coordination_request'
+      JOIN scheduler_runs source ON source.id=json_extract(report.payload_json,'$.resultRepair.sourceRunId')
+        AND source.project_id=report.project_id AND source.agent_id=report.agent_id AND source.scope_key=report.scope_key
+      JOIN provider_inputs packet ON packet.scheduler_run_id=source.id AND packet.agent_id=source.agent_id
+      WHERE execution.id=? AND step.id=? AND execution.cancel_requested=0 AND attempt.cancel_requested=0
+        AND step.state='waiting' AND attempt.state='waiting' AND request.state IN ('open','in_progress')
+        AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=step.id AND newer.number>attempt.number)
+        AND json_extract(report.payload_json,'$.requestId')=request.id
+        AND source.status='completed' AND source.terminal_at IS NOT NULL AND source.prompt_injection_state='injected'
+        AND report.state IN ('pending','retry_pending') AND EXISTS(SELECT 1 FROM activation_sources hold
+          WHERE hold.activation_id=report.id AND hold.source_kind='settings_transition_reservation_wait')
+        AND EXISTS(SELECT 1 FROM scheduler_run_activations original
+          JOIN activation_sources origin ON origin.activation_id=original.activation_id
+          JOIN agent_activations original_activation ON original_activation.id=original.activation_id
+          WHERE original.run_id=source.id AND original.consumed_at IS NOT NULL
+            AND origin.source_kind='request' AND origin.source_id=request.id
+            AND json_extract(original_activation.payload_json,'$.resultRepair') IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM activation_sources other_link JOIN agent_activations other ON other.id=other_link.activation_id
+          WHERE other_link.source_kind='request' AND other_link.source_id=request.id AND other.id<>report.id
+            AND other.state IN ('pending','retry_pending','leased','running'))
+        AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations attachment JOIN scheduler_runs run ON run.id=attachment.run_id
+          WHERE attachment.activation_id=report.id AND (run.terminal_at IS NULL OR ${runExitUnprovenSql('run.id','run.prompt_injection_state')}))
+        AND NOT EXISTS(SELECT 1 FROM context_rollovers rollover
+          JOIN activation_sources link ON link.source_kind='context_rollover' AND link.source_id=rollover.id
+          JOIN agent_activations handoff ON handoff.id=link.activation_id
+          WHERE json_extract(handoff.payload_json,'$.settingsTransition.activationId')=report.id
+            AND (rollover.terminal_at IS NULL OR EXISTS(SELECT 1 FROM scheduler_run_activations held
+              JOIN scheduler_runs run ON run.id=held.run_id WHERE held.activation_id=handoff.id
+                AND (run.terminal_at IS NULL OR ${runExitUnprovenSql('run.id','run.prompt_injection_state')}))))
+      LIMIT 2`,executionId,stepExecutionId);
+    if(rows.length!==1||!Number.isSafeInteger(rows[0]?.outputSeq))return;
+    return rows[0] as ReturnType<BranchStore['savedResultCandidate']>;
+  }
+
+  recoverSavedResult(executionId:string,stepExecutionId:string,input:{commandKey:string;expectedRevision:number;
+    sourceRunId:string;outputHash:string;disposition:'completed'|'blocked'},readOutput:(agentId:string,seq:number)=>string|undefined,
+    now=new Date().toISOString()):BranchExecutionDetailDto {
+    return this.command(executionId,input.commandKey,{stepExecutionId,...input},()=>{
+      const execution=this.execution(executionId);
+      if(execution?.revision!==input.expectedRevision)throw Error('This run changed. Refresh before using its saved result.');
+      const saved=this.savedResultCandidate(executionId,stepExecutionId);
+      if(!saved||saved.sourceRunId!==input.sourceRunId)throw Error('This step no longer has a recoverable saved result.');
+      const output=readOutput(saved.agentId,saved.outputSeq);
+      if(output===undefined||createHash('sha256').update(output).digest('hex')!==input.outputHash)throw Error('The saved result changed.');
+      const text=branchText(output);
+      if(!text.trim())throw Error('The saved result is empty.');
+      const result=this.coordination.recordReviewedBranchResult({requestId:saved.requestId,
+        updateId:`branch-result-recovery:${payloadHash({executionId,stepExecutionId,key:input.commandKey})}`,
+        kind:input.disposition,text,sourceRunId:saved.sourceRunId,outputSeq:saved.outputSeq,outputHash:input.outputHash,now});
+      if(result.state!==input.disposition)throw Error('The recovered result could not be recorded.');
+      this.run("UPDATE agent_activations SET state='cancelled',terminal_at=?,updated_at=? WHERE id=?",now,now,saved.reportId);
+      this.checkpoint(executionId,`saved-result:${saved.requestId}`,'saved_agent_result_recovered',
+        {requestId:saved.requestId,sourceRunId:saved.sourceRunId,outputSeq:saved.outputSeq,outputHash:input.outputHash,disposition:input.disposition},now);
+    },now);
+  }
   resolveGate(id: string, input: BranchGateResolution, now = new Date().toISOString()): BranchExecutionDetailDto {
     const gate = this.row("SELECT g.*, s.execution_id, s.path_id, s.step_id, s.input_text FROM branch_gates g JOIN branch_step_executions s ON s.id = g.step_execution_id WHERE g.id = ?", id);
     if (!gate) throw new Error("Gate not found");

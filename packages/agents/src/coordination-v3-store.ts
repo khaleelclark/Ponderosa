@@ -1050,6 +1050,10 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.agentSnapshot(agentId);
   }
 
+  recordReviewedBranchResult(input: Parameters<CoordinationV3RequestAuthority["recordReviewedBranchResult"]>[0]): RequestUpdateV3Result {
+    return this.requestAuthority.recordReviewedBranchResult(input);
+  }
+
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
     return this.requestAuthority.updateRequest(input);
   }
