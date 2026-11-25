@@ -167,6 +167,10 @@ const ROUTE_REGISTRY = {
       } else if (route.view) query.set("view", route.view);
       if (route.view === "technical" && route.technicalFocusId)
         query.set("focus", route.technicalFocusId);
+      if (route.chatReturn) {
+        query.set("returnChat", route.chatReturn.conversationId);
+        query.set("returnView", route.chatReturn.view);
+      }
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
     },
     scope: "project",

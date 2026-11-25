@@ -122,6 +122,7 @@ export function AgentDetail({
   onOpenAgentSettings,
   onOpenCommunicationSource,
   onOpenMaster,
+  onBackToChat,
   onOpenArtifact,
   onOpenReview,
   onOpenBrowser,
@@ -956,6 +957,7 @@ export function AgentDetail({
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
         onOpenChat={onOpenMaster}
+        onBackToChat={onBackToChat}
         onOpenAgent={onOpenAgent}
         paused={Boolean(pause)}
         accessRestricted={pause?.reason === "access_restricted"}

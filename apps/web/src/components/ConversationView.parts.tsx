@@ -143,6 +143,7 @@ function ConversationMessageComponent({
     <ChatMessageFrame
       message={{
         id: `master-message-${message.id}`,
+        historyOrderKey: message.canonicalOrderKey,
         author: fromManager
           ? message.role === "user"
             ? { kind: "operator", profile: operatorProfile }

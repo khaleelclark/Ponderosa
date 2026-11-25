@@ -3,8 +3,9 @@ import type {
   ConversationMessageDto,
   TeamOperationalEventDto,
 } from "@ponderosa/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { api } from "../api";
+import { conversationScrollKey, readChatScrollPosition } from "../chatState";
 import { compactDefined } from "../collections";
 import { loadRetainedData } from "../retainedData";
 import {
@@ -33,10 +34,19 @@ interface OlderCollaborationHistory {
   operationHasMore: boolean;
 }
 
+export interface ConversationHistorySnapshot {
+  conversationId: string;
+  activeView: ConversationActiveView;
+  olderMain?: OlderMainHistory;
+  olderCollaboration?: OlderCollaborationHistory;
+}
+
 export function useConversationHistory(
   conversationId: string,
   activeView: ConversationActiveView,
   detailQuery: ReturnType<typeof useConversation>,
+  historySnapshot: MutableRefObject<ConversationHistorySnapshot | undefined>,
+  focusMessageId?: string,
 ) {
   // Team Chat is a comparatively expensive operational projection. Keep it
   // dormant while ordinary Chat is visible; React Query fetches the latest page
@@ -46,9 +56,12 @@ export function useConversationHistory(
     100,
     activeView === "collaboration",
   );
-  const [olderMain, setOlderMain] = useState<OlderMainHistory>();
-  const [olderCollaboration, setOlderCollaboration] =
-    useState<OlderCollaborationHistory>();
+  const saved = historySnapshot.current?.conversationId === conversationId ? historySnapshot.current : undefined;
+  const [olderMain, setOlderMain] = useState(saved?.olderMain);
+  const [olderCollaboration, setOlderCollaboration] = useState(saved?.olderCollaboration);
+  useLayoutEffect(() => {
+    historySnapshot.current = { conversationId, activeView, olderMain, olderCollaboration };
+  }, [conversationId, activeView, olderMain, olderCollaboration, historySnapshot]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState<string>();
   useEffect(() => setOlderError(undefined), [activeView, conversationId]);
@@ -212,7 +225,35 @@ export function useConversationHistory(
     }
   };
 
+  const [readingAnchors] = useState(() => ({
+    main: readChatScrollPosition(conversationScrollKey(conversationId, "main")).anchor,
+    collaboration: readChatScrollPosition(conversationScrollKey(conversationId, "collaboration")).anchor,
+  }));
+  const restoredViews = useRef(new Set<ConversationActiveView>());
+  const anchor = activeView === "main" || activeView === "collaboration" ? readingAnchors[activeView] : undefined;
+  const restoringTeam = activeView === "collaboration";
+  const activeQuery = restoringTeam ? collaborationQuery : detailQuery;
+  const activeMessages = restoringTeam ? collaborationMessages : messages;
+  const activeHistory = restoringTeam ? collaborationHistory : mainHistory;
+  const canRestore = anchor && !focusMessageId && !restoredViews.current.has(activeView);
+  const canLoadEarlier = activeHistory.hasMore && Boolean(activeHistory.cursor);
+  const restoringReadingPosition = Boolean(canRestore && (!activeQuery.data || (canLoadEarlier &&
+    !activeMessages.some(message => `master-message-${message.id}` === anchor.messageId ||
+      (message.canonicalOrderKey && message.canonicalOrderKey < anchor.orderKey)))));
+
+  useEffect(() => {
+    if (!anchor) return;
+    if (!restoringReadingPosition) {
+      restoredViews.current.add(activeView);
+    } else if (activeQuery.data && !loadingOlder && !olderError) {
+      // Rehydrate contiguous pages through the saved row, just as scrolling up would.
+      void loadOlderHistory();
+    }
+  });
+
   return {
+    readingAnchors,
+    restoringReadingPosition,
     agents,
     collaborationHistory,
     collaborationLayoutKey,

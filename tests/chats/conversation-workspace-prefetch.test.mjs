@@ -39,7 +39,7 @@ const turn=()=>new Promise(setImmediate);
 function shell(f,route){
  const result=key=>new QueryObserver(f.client,{queryKey:key,enabled:false}).getCurrentResult();
  const imports={
-  react:{useCallback:fn=>fn,useMemo:fn=>fn()},
+  react:{useCallback:fn=>fn,useMemo:fn=>fn(),useRef:current=>({current})},
   '@mui/material':{Alert:'Alert',Box:'Box',Button:'Button',LinearProgress:'LinearProgress',useMediaQuery:()=>false},
   '@mui/material/styles':{useTheme:()=>({breakpoints:{down:()=>''}})},
   '@mui/material/utils':{useEventCallback:fn=>fn},

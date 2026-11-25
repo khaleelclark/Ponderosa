@@ -356,7 +356,7 @@ export function TabbedWorkspaceFrame<T extends string>({
       </IconButton>
     </Tooltip>;
     const retainedActions = collapsedActions !== undefined || compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
-      {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : collapsedActions === undefined ? actions : collapsedActions}
+      {statusBeforePrimaryActions ? null : status}{collapsedActions === undefined ? (actionsInMobileTabs ? null : actions) : collapsedActions}
     </Stack> : null;
     return <CompactWorkspaceHeader icon={icon} title={title} titleControl={titleControl} hideIcon={compact} singleRow={collapsedSingleRow}
       status={statusBeforePrimaryActions ? status : undefined}

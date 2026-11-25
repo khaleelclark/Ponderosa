@@ -1,5 +1,6 @@
 import type { CommunicationAttachmentDto, OperatorProfileDto } from "@ponderosa/core";
 import type { ReactNode } from "react";
+import type { ChatReadingAnchor } from "../../chatState";
 
 type ChatAuthor =
   | { kind: "operator"; profile?: OperatorProfileDto }
@@ -18,6 +19,7 @@ export interface ChatHistoryPage {
 export interface ChatFollowLatest {
   kind: "latest";
   storageKey?: string;
+  readingPosition?: { anchor?: ChatReadingAnchor; loading: boolean };
   /** Distance from the bottom that still counts as actively following.
    * Chat tolerates a small reading offset; dense audit surfaces can require a
    * nearly exact bottom position to avoid pulling the operator's viewport. */
@@ -32,6 +34,7 @@ export interface ChatMessagePresentation {
   id: string;
   author: ChatAuthor;
   createdAt: string;
+  historyOrderKey?: string;
   body: ReactNode;
   /** Context rendered immediately above the author row. */
   beforeHeader?: ReactNode;

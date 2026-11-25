@@ -44,6 +44,7 @@ export interface AgentDetailProps {
     channel: Extract<AgentMessageChannel, "main" | "collaboration">,
   ): void;
   onOpenMaster(conversationId: string): void;
+  onBackToChat?(): void;
   onOpenArtifact(artifactId: string): void;
   onOpenReview(path?: string, executionId?: string): void;
   onOpenBrowser(runId: string): void;

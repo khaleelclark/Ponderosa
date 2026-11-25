@@ -30,6 +30,7 @@ import {
   AgentHeaderRelationships,
   type AgentHeaderChat,
 } from "./HeaderRelationshipLinks";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { useAgentRunClock } from "./useAgentRunClock";
 import type { WorkspaceConnectionStatus } from "../hooks/useWorkspaceStream";
@@ -40,14 +41,14 @@ export const AGENT_DETAIL_TABS: Array<{
   label: string;
   icon: JSX.Element;
 }> = [
-  { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon /> },
+  { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon fontSize="small" /> },
+  { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon fontSize="small" /> },
   {
     value: "artifacts",
     label: "Files & Results",
-    icon: <Inventory2OutlinedIcon />,
+    icon: <Inventory2OutlinedIcon fontSize="small" />,
   },
-  { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
+  { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon fontSize="small" /> },
 ];
 
 function AgentRunState({
@@ -157,6 +158,7 @@ interface AgentDetailHeaderProps {
   transcriptTitle: string;
   onOpenProject(): void;
   onOpenChat(conversationId: string): void;
+  onBackToChat?(): void;
   onOpenAgent(agentId: string): void;
   paused?:boolean;
   accessRestricted?:boolean;
@@ -190,6 +192,7 @@ export function AgentDetailHeader({
   transcriptTitle,
   onOpenProject,
   onOpenChat,
+  onBackToChat,
   onOpenAgent,
   paused, accessRestricted,
   onExportPackage,
@@ -209,8 +212,17 @@ export function AgentDetailHeader({
     {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back To Chat</Button>}
   </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
+  const backToChat = onBackToChat && <Tooltip title="Back to Chat" disableInteractive>
+    <Button aria-label="Back to Chat" onClick={onBackToChat} size="small"
+      sx={{gap: 0.5, whiteSpace:"nowrap", minWidth:{xs:44,sm:"auto"}, minHeight:{xs:44,sm:36}}}>
+      <ArrowBackIcon fontSize="small" />
+      <Box component="span" sx={{display:{xs:"none",sm:"inline"}}}>Back to Chat</Box>
+    </Button>
+  </Tooltip>;
   return (
     <TabbedWorkspaceFrame
+      collapsedIconTabs
+      collapsedActions={backToChat}
       compactMobile
       actionsInMobileTabs
       icon={<SmartToyOutlinedIcon />}
@@ -275,6 +287,7 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
+          {backToChat}
           <ChatOverflowMenu
             label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}

@@ -37,7 +37,7 @@ export function useChatScroll(
   },[]);
   const preserveAnchor=useCallback(()=>{
     const region=scrollRef.current,anchor=readingAnchor.current;
-    if(!region||followLatest.current)return;
+    if(!region?.clientHeight||followLatest.current)return;
     if(anchor?.node.isConnected&&region.contains(anchor.node)){
       const delta=anchor.node.getBoundingClientRect().top-region.getBoundingClientRect().top-anchor.offset;
       if(Math.abs(delta)>.5){adjustedTop.current=Math.max(0,region.scrollTop+delta);region.scrollTop=adjustedTop.current;adjustedTop.current=region.scrollTop;}
@@ -47,12 +47,19 @@ export function useChatScroll(
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (!element) return;
+    // Hidden Chat tabs have no scroll geometry. Restore when their layout becomes visible.
+    if (!element?.clientHeight || follow.readingPosition?.loading) return;
     if (follow.storageKey && restoredStorageKey.current !== follow.storageKey) {
       restoredStorageKey.current = follow.storageKey;
       const saved = readScrollPosition(follow.storageKey);
       if (saved !== undefined) {
-        element.scrollTop = saved;
+        const anchor = follow.readingPosition?.anchor;
+        const target = anchor && element.querySelector<HTMLElement>(
+          `#${CSS.escape(anchor.messageId)} .chat-message-body`,
+        );
+        element.scrollTop = anchor && target
+          ? element.scrollTop + target.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset
+          : saved;
         followLatest.current = isChatNearBottom(
           element,
           follow.bottomThreshold,
@@ -78,6 +85,8 @@ export function useChatScroll(
   }, [
     follow.bottomThreshold,
     follow.storageKey,
+    follow.readingPosition?.anchor,
+    follow.readingPosition?.loading,
     layoutKey,
   ]);
 
@@ -97,13 +106,14 @@ export function useChatScroll(
     )
       return;
     const observer = new ResizeObserver(() => {
+      if (!element.clientHeight || follow.readingPosition?.loading) return;
       if (followLatest.current) scrollChatToBottom(element);
       else preserveAnchor();
     });
     observer.observe(content);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [follow.followResizes,preserveAnchor]);
+  }, [follow.followResizes, follow.readingPosition?.loading, preserveAnchor]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -137,7 +147,7 @@ export function useChatScroll(
 
   const onScroll = useCallback(() => {
     const element = scrollRef.current;
-    if (!element) return;
+    if (!element?.clientHeight || follow.readingPosition?.loading) return;
     revealChatScrollbar(element);
     const atLatest = isChatNearBottom(element, follow.bottomThreshold);
     // A queued event can still report the old bottom before smooth navigation
@@ -151,10 +161,18 @@ export function useChatScroll(
     setShowScrollToLatest(!followLatest.current);
     captureAnchor();
     follow.onPositionChange?.(element, followLatest.current);
-    if (follow.storageKey) writeChatState(follow.storageKey, String(element.scrollTop));
+    if (follow.storageKey) {
+      const reading = follow.readingPosition && readingAnchor.current;
+      const row = reading?.node.closest<HTMLElement>("article[id][data-history-order-key]");
+      writeChatState(follow.storageKey, reading && row?.dataset.historyOrderKey ? JSON.stringify({
+        top: element.scrollTop,
+        anchor: { messageId: row.id, orderKey: row.dataset.historyOrderKey, offset: reading.offset },
+      }) : String(element.scrollTop));
+    }
   }, [
     follow.bottomThreshold,
     follow.storageKey,
+    follow.readingPosition,
     follow.onPositionChange,
     captureAnchor,
   ]);

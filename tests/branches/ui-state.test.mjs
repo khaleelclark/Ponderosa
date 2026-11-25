@@ -70,6 +70,8 @@ test('a conflicting Branch folder move retries against current membership withou
 test('Branch nested routes preserve the selected Chat, execution and exact message focus across reload',()=>{
  const route={branchId:'b',tab:'chats',executionId:'e',chatId:'c',workspace:{kind:'conversation',projectId:'p',conversationId:'c',focusMessageId:'a#Build-Coordinator?ü'}};
  assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(route),'https://example.test').search),{...route,workspace:{...route.workspace,urlDriven:true}});
+ const agentRoute={...route,workspace:{kind:'agent',projectId:'p',agentId:'a',view:'artifacts',chatReturn:{conversationId:'c',view:'collaboration'}}};
+ assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(agentRoute),'https://example.test').search),{...agentRoute,workspace:{...agentRoute.workspace,urlDriven:true}});
  assert.equal(parseBranchRoute('?workspace=https://outside.test/projects/p').workspace,undefined);
 });
 

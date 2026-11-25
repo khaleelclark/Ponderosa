@@ -53,9 +53,35 @@ export function writeChatState(key: string, value: string): boolean {
   }
 }
 
-export function readScrollPosition(key: string): number | undefined {
+export interface ChatReadingAnchor {
+  messageId: string;
+  orderKey: string;
+  offset: number;
+}
+
+export function conversationScrollKey(conversationId: string, view: "main" | "collaboration"): string {
+  return chatStateKey("scroll", `conversation.${conversationId}.${view}`);
+}
+
+export function readChatScrollPosition(key: string): { top?: number; anchor?: ChatReadingAnchor } {
   const raw = readChatState(key);
-  if (raw === undefined) return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? value : undefined;
+  if (raw === undefined) return {};
+  const top = Number(raw);
+  if (Number.isFinite(top) && top >= 0) return { top };
+  try {
+    const saved = JSON.parse(raw);
+    if (!Number.isFinite(saved?.top) || saved.top < 0) return {};
+    const anchor = saved.anchor;
+    return {
+      top: saved.top,
+      anchor: typeof anchor?.messageId === "string" && typeof anchor.orderKey === "string" &&
+        Number.isFinite(anchor.offset) ? anchor : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function readScrollPosition(key: string): number | undefined {
+  return readChatScrollPosition(key).top;
 }
