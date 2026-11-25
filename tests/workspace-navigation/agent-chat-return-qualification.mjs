@@ -70,7 +70,6 @@ try{
   const selectedTab=(tabs,name)=>tabs.getByRole('tab',{name,exact:true,selected:true});
   const workspaceHeader=tabs=>page.locator('[data-workspace-header]').filter({has:tabs});
   const toggle=(tabs,action)=>workspaceHeader(tabs).getByRole('button',{name:action+' Workspace Header',exact:true});
-  const back=page.getByRole('button',{name:'Back to Chat',exact:true});
   const editor=page.getByRole('textbox',{name:'Message',exact:true});
   const headings=name=>page.getByRole('heading',{name,exact:true});
   const chatRegion=page.getByRole('region',{name:'Chat Messages',exact:true});
@@ -79,6 +78,16 @@ try{
    .filter({hasText:`${team?'Team':'Chat'} entry ${index} `}).getByRole('button',{name:'Open Agent '+title+' From Name',exact:true}).first();
   const collapse=async tabs=>{if(await toggle(tabs,'Collapse').isVisible())await activate(toggle(tabs,'Collapse'));};
   const expand=async tabs=>{if(await toggle(tabs,'Expand').isVisible())await activate(toggle(tabs,'Expand'));};
+  const chatName=owner=>workspaceHeader(agentTabs).getByRole('button',{name:'Open Chat '+owner.title,exact:true});
+  const returnToChat=async owner=>{
+   await agentTabs.waitFor();
+   await expand(agentTabs);
+   const name=chatName(owner);
+   assert.equal(await name.textContent(),owner.title);
+   assert.equal(await workspaceHeader(agentTabs).getByRole('button',{name:'Back to Chat',exact:true}).count(),0);
+   await activate(name);
+  };
+  const tabOrder=()=>agentTabs.getByRole('tab').evaluateAll(items=>items.map(item=>item.getAttribute('aria-label')??item.textContent.trim()));
   const readPosition=async(region,trigger)=>{
    await trigger.scrollIntoViewIfNeeded();
    const position=await region.evaluate(node=>({top:node.scrollTop,remaining:node.scrollHeight-node.clientHeight-node.scrollTop}));
@@ -133,6 +142,8 @@ try{
     await headings(person.title).waitFor();
     await toggle(agentTabs,'Expand').waitFor();
     await selectedTab(agentTabs,'Chat').waitFor();
+    assert.equal(await chatName(owner).count(),0);
+    assert.equal(await workspaceHeader(agentTabs).getByRole('button',{name:'Back to Chat',exact:true}).count(),0);
     await page.getByText(`Message ${person.title} directly`,{exact:true}).waitFor();
     await assertDraft('');
     await editor.fill(dmDraft);
@@ -147,7 +158,15 @@ try{
     }
     await assertDraft(dmDraft);
     if(phone)await page.setViewportSize({width:390,height:844});
-    await activate(back);
+    await activate(tab(agentTabs,'Files & Results'));
+    const shortcuts=await tabOrder();
+    await expand(agentTabs);
+    await selectedTab(agentTabs,'Files & Results').waitFor();
+    assert.deepEqual(await tabOrder(),shortcuts);
+    await collapse(agentTabs);
+    await selectedTab(agentTabs,'Files & Results').waitFor();
+    assert.deepEqual(await tabOrder(),shortcuts);
+    await returnToChat(owner);
     await selectedTab(chatTabs,'Chat').waitFor();
     await checkRoute(owner,null,workflow);
     await assertDraft(draft);
@@ -169,7 +188,7 @@ try{
        assert.ok(!otherText.includes(draft)&&!otherText.includes(dmDraft));
        await page.goBack();
       }
-      await activate(back);
+      await returnToChat(owner);
       await selectedTab(chatTabs,'Chat').waitFor();
       await checkRoute(owner,null);
       await assertDraft(draft);
@@ -192,8 +211,9 @@ try{
     await headings(person.title).waitFor();
     await expand(agentTabs);
     await toggle(agentTabs,'Collapse').waitFor();
+    await activate(tab(agentTabs,'Chat'));
     await assertDraft(dmDraft);
-    await activate(back);
+    await returnToChat(owner);
     await selectedTab(chatTabs,'Team Chat').waitFor();
     await checkRoute(owner,'team',workflow);
     await assertPosition(teamRegion,teamReading);
@@ -201,7 +221,7 @@ try{
      await activate(teammate);
      await headings(person.title).waitFor();
      await page.reload();
-     await activate(back);
+     await returnToChat(owner);
      await selectedTab(chatTabs,'Team Chat').waitFor();
      await checkRoute(owner,'team',workflow);
      await teammate.waitFor();
@@ -215,7 +235,7 @@ try{
     const roster=page.getByRole('tabpanel',{name:'Agents'});
     await activate(roster.getByText(person.title,{exact:true}).first());
     await headings(person.title).waitFor();
-    await activate(back);
+    await returnToChat(owner);
     await selectedTab(chatTabs,'Agents').waitFor();
     await checkRoute(owner,'agents',workflow);
     await activate(tab(chatTabs,'Chat'));
@@ -241,7 +261,7 @@ try{
    await activate(tab(agentTabs,'Files & Results'));
    await selectedTab(agentTabs,'Files & Results').waitFor();
    await page.reload();
-   await activate(back);
+   await returnToChat(temporary);
    await selectedTab(chatTabs,'Team Chat').waitFor();
    await checkRoute(temporary,'team',branch,execution);
    assert.equal(await editor.count(),0);
@@ -250,9 +270,10 @@ try{
    await page.goto(origin+`/projects/${chat.projectId}/agents/${agent.id}?view=artifacts`);
    await headings(agent.title).waitFor();
    await selectedTab(agentTabs,'Files & Results').waitFor();
-   assert.equal(await back.count(),0);
+   await expand(agentTabs);
+   await chatName(chat).waitFor();
    assert.deepEqual(errors,[]);
-   console.log(`${phone?'390 × 844':'1440 × 900'} passed: Chat, Team Chat, Agents, independent drafts and reading positions, compact shortcuts, Branch scope, read-only execution and direct Agent link`);
+   console.log(`${phone?'390 × 844':'1440 × 900'} passed: Chat, Team Chat, Agents, independent drafts and reading positions, shared tab order and selection, Chat-name return, Branch scope, read-only execution and direct Agent link`);
   }catch(error){
    console.error('Page at failure:',page.url(),await page.locator('body').innerText().then(text=>text.slice(0,2500)));
    throw error;

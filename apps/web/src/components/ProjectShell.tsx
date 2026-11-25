@@ -339,12 +339,13 @@ export function ProjectShell({
           focusMessageId: communicationEventId,
           ...(channel === "collaboration" ? { channel } : {}),
         }),
-          onBackToChat: chatReturn ? () => navigate({
-            kind: "conversation", projectId, ...chatReturn,
-          }, { replace: true }) : undefined,
           onOpenMaster: (conversationId) => {
-          navigate({ kind: "conversation", projectId, conversationId });
-        },
+            if (chatReturn?.conversationId === conversationId) {
+              navigate({ kind: "conversation", projectId, ...chatReturn }, { replace: true });
+            } else {
+              navigate({ kind: "conversation", projectId, conversationId });
+            }
+          },
           onOpenArtifact: (artifactId) => openProjectArtifact(route.agentId, artifactId),
           onOpenReview: (path, executionId) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}), ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) }),
           onOpenBrowser: (runId) => projectBrowser.openAgent?.(route.agentId, runId),

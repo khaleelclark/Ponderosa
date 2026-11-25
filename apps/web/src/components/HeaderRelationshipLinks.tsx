@@ -52,11 +52,18 @@ export function AgentHeaderRelationships({
       direction="row"
       spacing={0.5}
       useFlexGap
-      sx={{ display: { xs: "none", sm: "flex" }, alignItems: "center", minWidth: 0, overflow: "hidden" }}
+      sx={{ alignItems: "center", minWidth: 0, maxWidth: "100%" }}
     >
       <ProjectRelationshipLink projectLabel={projectLabel} onOpenProject={onOpenProject} />
       {primaryChat ? <>
-        <Link component="button" variant="caption" aria-label={`Open Chat ${primaryChat.title}`} onClick={() => onOpenChat(primaryChat.id)} noWrap>
+        <Link
+          component="button"
+          variant="caption"
+          aria-label={`Open Chat ${primaryChat.title}`}
+          onClick={() => onOpenChat(primaryChat.id)}
+          noWrap
+          sx={{ minWidth: 0 }}
+        >
           {primaryChat.title}
         </Link>
       </> : null}
@@ -74,37 +81,6 @@ export function AgentHeaderRelationships({
         >
           +{additionalChats.length} {additionalChats.length === 1 ? "Chat" : "Chats"}
         </Link>
-      </> : null}
-    </Stack>
-
-    <Stack
-      direction="row"
-      spacing={0.5}
-      useFlexGap
-      sx={{ display: { xs: "flex", sm: "none" }, alignItems: "center", minWidth: 0, overflow: "hidden" }}
-    >
-      <ProjectRelationshipLink compact projectLabel={projectLabel} onOpenProject={onOpenProject} />
-      {primaryChat ? <>
-        {chats.length === 1 ? <Link
-          component="button"
-          variant="caption"
-          aria-label={`Open Chat ${primaryChat.title}`}
-          onClick={() => onOpenChat(primaryChat.id)}
-          noWrap
-        >
-          1 Chat
-        </Link> : <Link
-          component="button"
-          variant="caption"
-          aria-label={`Show ${chats.length} Chats`}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen || undefined}
-          aria-controls={menuOpen ? "agent-header-chat-menu" : undefined}
-          onClick={(event) => setChatMenu({ anchor: event.currentTarget, chats })}
-          noWrap
-        >
-          {chats.length} Chats
-        </Link>}
       </> : null}
     </Stack>
 
