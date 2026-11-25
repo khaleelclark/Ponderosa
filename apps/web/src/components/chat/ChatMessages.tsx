@@ -187,7 +187,7 @@ export function linkPreviewScopeForMessage(
   return activeScope;
 }
 
-function ChatLink({ href, children, previewScope, projectId, fileScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope; projectId?: string; fileScope?: WorkspaceFileOwnerDto }): JSX.Element {
+function ChatLink({ href, children, previewScope, projectId, fileScope, openWebLinksExternally = false }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope; projectId?: string; fileScope?: WorkspaceFileOwnerDto; openWebLinksExternally?: boolean }): JSX.Element {
   const projectBrowser = useProjectBrowser();
   const projectFilePreview = projectFileViewerHref(projectId, href, fileScope);
   const link = linkPresentation(href);
@@ -221,11 +221,17 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     finally { setOpening(false); }
   };
   return <>
-    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open Link To ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+    <Box className="chat-text-navigation" component="a" href={href}
+      target={!link.loopback || openWebLinksExternally ? "_blank" : undefined}
+      rel={!link.loopback || openWebLinksExternally ? "noreferrer" : undefined}
+      onClick={openWebLinksExternally ? undefined : activate}
+      onContextMenu={openWebLinksExternally ? undefined : event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }}
+      aria-label={openWebLinksExternally ? undefined : `Open Link To ${link.destination}`}
+      sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       <Box component="span" title={link.url.href} sx={{ minWidth: 0, maxWidth: "18rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{children}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
-    <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
+    {!openWebLinksExternally && <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
       <DialogTitle id="link-open-title">Open Link</DialogTitle>
       <DialogContent><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{link.url.href}</Typography>{error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}</DialogContent>
       <DialogActions>
@@ -234,7 +240,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
         {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open Live App Preview</Button> : null}
         <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open Externally</Button>
       </DialogActions>
-    </Dialog>
+    </Dialog>}
   </>;
 }
 
@@ -450,6 +456,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
   fileScope,
   projectId,
   operatorHandle,
+  openWebLinksExternally,
   compact = false,
   small = false,
 }: {
@@ -464,6 +471,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
   fileScope?: WorkspaceFileOwnerDto;
   projectId?: string;
   operatorHandle?: string;
+  openWebLinksExternally?: boolean;
   compact?: boolean;
   small?: boolean;
 }): JSX.Element {
@@ -555,7 +563,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) {
               const safeHref = renderableChatLinkHref(href);
               return safeHref
-                ? <ChatLink href={safeHref} previewScope={previewScope} fileScope={fileScope} projectId={projectId}>{label}</ChatLink>
+                ? <ChatLink href={safeHref} previewScope={previewScope} fileScope={fileScope} projectId={projectId} openWebLinksExternally={openWebLinksExternally}>{label}</ChatLink>
                 : <Box component="span">{label}</Box>;
             }
             const handle = messageTagHandle(href);
@@ -599,7 +607,7 @@ export function CommunicationDocumentCard({ document, projectId, fileScope }: { 
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown projectId={projectId} fileScope={fileScope}>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, artifactSource }: {
+export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, openWebLinksExternally, compactMarkdown = false, smallText = false, artifactSource }: {
   text: string;
   artifactSource?:Pick<MessageDto,"communicationEventId"|"conversationId"|"artifactIds">;
   collaborationRecipients?: readonly CollaborationRecipientDto[];
@@ -614,6 +622,7 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   fileScope?: WorkspaceFileOwnerDto;
   projectId?: string;
   operatorHandle?: string;
+  openWebLinksExternally?: boolean;
   compactMarkdown?: boolean;
   smallText?: boolean;
 }): JSX.Element {
@@ -630,7 +639,7 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
     <div className="MuiBox-root chat-message-content">
       <div className={`MuiBox-root chat-message-content${collapsible && !expanded ? " chat-message-content-collapsed" : ""}`}>
         <VisualizationContext.Provider value={projectId&&artifactSource?.conversationId&&artifactSource.communicationEventId?{projectId,conversationId:artifactSource.conversationId,communicationEventId:artifactSource.communicationEventId,artifactIds:artifactSource.artifactIds??[]}:undefined}>
-        <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
+        <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} openWebLinksExternally={openWebLinksExternally} compact={compactMarkdown} small={smallText}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
         </VisualizationContext.Provider>
