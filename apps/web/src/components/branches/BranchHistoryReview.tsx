@@ -58,12 +58,14 @@ export function BranchHistoryReview({branchId,executionId,enabled,onChanged}:{br
   <Dialog open={open} fullWidth maxWidth="md" disableEscapeKeyDown={locked} onClose={()=>{if(!locked){epoch.current++;setOpen(false);}}}>
    <DialogTitle>Review Saved Work</DialogTitle>
    <DialogContent><Stack spacing={2} sx={{pt:1}}>
+    <Typography>Choose a checkpoint to review a saved request or request graph.</Typography>
     {!enabled&&<Alert severity="warning">Refresh this Run before applying changes.</Alert>}
     {checkpoints.error&&<Alert severity="error" action={<Button onClick={()=>void checkpoints.refetch()}>Reload</Button>}>{checkpoints.error.message}</Alert>}
+    {checkpoints.data&&!checkpoints.data.pages.some(page=>page.length)&&!checkpoints.error&&<Typography color="text.secondary">No saved checkpoints are available for this run.</Typography>}
+    {Boolean(checkpoints.data?.pages.some(page=>page.length))&&<>
     <TextField select label="Saved Checkpoint" value={checkpoint?.id??''} disabled={locked||loadReview.isPending} onChange={event=>{reset();setCheckpoint(checkpoints.data?.pages.flat().find(item=>item.id===Number(event.target.value)));}}>
-     {checkpoints.data?.pages.flat().map(item=><MenuItem key={item.id} value={item.id}>{item.id} · {item.eligibility}{item.restoreSupported?'':' · Limited Restore'}</MenuItem>)}
+     {checkpoints.data?.pages.flat().map(item=><MenuItem key={item.id} value={item.id}>{`Checkpoint ${item.id}`} · {item.eligibility.replaceAll('_',' ')}{item.restoreSupported?'':' · Limited Restore'}</MenuItem>)}
     </TextField>
-    {checkpoints.isPending&&<Typography role="status">Loading checkpoints…</Typography>}
     {checkpoints.hasNextPage&&<Button disabled={checkpoints.isFetchingNextPage||locked} onClick={()=>void checkpoints.fetchNextPage()}>Older Checkpoints</Button>}
     <TextField select label="Action" value={action} disabled={locked||loadReview.isPending} onChange={event=>{reset();setAction(event.target.value as Action);}}>
      <MenuItem value="adopt">Start Reviewed Request</MenuItem><MenuItem value="restore" disabled={!historyActionAvailable('restore',checkpoint)}>Restore Request Graph</MenuItem><MenuItem value="rewind" disabled={!historyActionAvailable('rewind',checkpoint)}>Rewind Run With Request Graph</MenuItem>
@@ -71,21 +73,18 @@ export function BranchHistoryReview({branchId,executionId,enabled,onChanged}:{br
     {checkpoint&&!checkpoint.restoreSupported&&<Alert severity="info">Checkpoint restore/rewind unavailable · individual Request review available</Alert>}
     {action==='adopt'&&<TextField label="Source Request ID" value={requestId} disabled={locked||loadReview.isPending} onChange={event=>{reset();setRequestId(event.target.value);}}/>}
     <Button disabled={!enabled||!available||locked||loadReview.isPending||!checkpoint||action==='adopt'&&!requestId.trim()} onClick={()=>{clearReview();submit.reset();loadReview.mutate();}}>Review Current Scope</Button>
+    </>}
+    {checkpoints.isPending&&<Typography role="status">Loading checkpoints…</Typography>}
     {loadReview.error&&<Alert severity="error">{loadReview.error.message}</Alert>}
     {unconfirmed&&!submit.error&&<Alert severity="warning">Earlier submission unconfirmed · reconcile retained submission before another action</Alert>}
     {submit.error&&<Alert severity="warning">{unconfirmed?'Submission unconfirmed. Keep this dialog open; reconcile the same submission.':submit.error.message}</Alert>}
     {review&&<>
-     <Typography variant="subtitle2">Source: {branchId} · {executionId} · checkpoint {checkpoint?.id}</Typography>
-     <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Checkpoint hash: {checkpoint?.contentHash}</Typography>
      <Alert severity="info">Historical facts · evidence only · no completed-effect replay</Alert>
-     {requests.map(item=><Stack key={item.source.requestId} spacing={1}>
-      <Typography fontWeight={600}>Request {item.source.requestId} · saved {item.request.state} v{item.request.version} · current {item.current.requestState} v{item.current.requestVersion}</Typography>
-      <Typography variant="body2">Project {item.request.projectId} · Chat {item.request.conversationId} · recipient {item.request.recipientAgentId} · requester {item.request.requesterAgentId??'User'}</Typography>
-      <Typography variant="body2">Current version {item.current.versionId} · bindings {item.current.bindingRevisionId} · {item.current.bindingSha256}</Typography>
+     {requests.map(item=><Stack key={item.source.requestId} spacing={0.5}>
+      <Typography fontWeight={600}>Request · saved {item.request.state.replaceAll('_',' ')} · current {item.current.requestState?.replaceAll('_',' ')??'unavailable'}</Typography>
       <Typography variant="body2">Changed: {[item.current.versionChanged&&'workflow',item.current.bindingsChanged&&'bindings',item.current.configurationChanged&&'configuration'].filter(Boolean).join(', ')||'none'} · restrictions: {item.current.recipientRestrictions.join(', ')||'none'} · secrets: {item.current.requiredSecretRefs.join(', ')||'none'}</Typography>
-      <details><summary>Saved Evidence And Current Configuration</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify({request:item.request.payload,updates:item.updates,artifacts:item.artifacts,configuration:item.current.configuration},null,2)}</Typography></details>
      </Stack>)}
-     {review.kind==='graph'&&<details><summary>Joins And Continuations ({review.value.joins.length})</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:12}}>{JSON.stringify(review.value.joins,null,2)}</Typography></details>}
+     <details><summary>Saved Evidence And Current Configuration</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify({branchId,executionId,checkpoint,review},null,2)}</Typography></details>
      {action==='adopt'&&<>
       <TextField select label="New Work" value={mode} disabled={locked} onChange={event=>setMode(event.target.value as typeof mode)}><MenuItem value="reconcile">Reconcile Earlier Effects</MenuItem><MenuItem value="independent" disabled={requests.some(item=>item.request.state==='outcome_unknown')}>Independent Instruction</MenuItem></TextField>
       <TextField multiline minRows={2} label="Fresh Instruction" value={instruction} disabled={locked} onChange={event=>setInstruction(event.target.value)}/>
@@ -94,7 +93,7 @@ export function BranchHistoryReview({branchId,executionId,enabled,onChanged}:{br
      </>}
      <FormControlLabel control={<Checkbox checked={effects} disabled={locked} onChange={(_,value)=>setEffects(value)}/>} label="I reviewed the original scope and reconciled external effects"/>
     </>}
-    {receipt!==undefined&&<Alert severity="success"><Typography>Accepted</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></Alert>}
+    {receipt!==undefined&&<Alert severity="success"><Typography>Accepted</Typography><details><summary>Review receipt</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></details></Alert>}
    </Stack></DialogContent>
    <DialogActions><Button disabled={locked} onClick={()=>{epoch.current++;setOpen(false);}}>Close</Button>{unconfirmed?<Button onClick={apply}>Reconcile Submission</Button>:<Button variant="contained" disabled={!ready||submit.isPending||loadReview.isPending||receipt!==undefined} onClick={()=>setConfirm(true)}>Continue</Button>}</DialogActions>
   </Dialog>

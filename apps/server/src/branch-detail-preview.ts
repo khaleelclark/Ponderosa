@@ -53,9 +53,17 @@ export function previewBranchExecutionDetail(detail: BranchExecutionDetailDto): 
     sealedResults: detail.sealedResults?.map(row => ({ ...row, result: result(row.result)! })),
     mapItems: detail.mapItems?.map(row => ({ ...row, input: text(row.input), ...(row.result ? { result: result(row.result) } : {}) })),
     steps: detail.steps.map(row=>{
-      if(row.state!=='completed'||!row.sealedResultId)return previewStep(row,text);
-      const publication=branchPublishedResult(row.result?.output)?.publication, files=branchResultFiles(row.result);
-      return {...previewStep(row,text),...(publication?{publishedResult:publication}:{}),...(files.length?{resultFiles:files}:{})};
+      const output = row.result?.output;
+      const published = row.state === 'completed' && row.sealedResultId;
+      const publication = published ? branchPublishedResult(output)?.publication : undefined;
+      const files = published ? branchResultFiles(row.result) : [];
+      const step = previewStep(row, text);
+      return {...step,
+        ...(publication ? { publishedResult: publication } : {}),
+        ...(files.length ? { resultFiles: files } : {}),
+        ...(output && output === detail.execution.output ? { resultInRun: true } : {}),
+        ...(output !== step.result?.output ? { resultOutputTruncated: true } : {}),
+      };
     }),
     attempts: detail.attempts.map(row=>previewAttempt(row,text)),
     paths: detail.paths.map(row => ({ ...row, input: text(row.input), ...(row.result ? { result: result(row.result) } : {}) })),

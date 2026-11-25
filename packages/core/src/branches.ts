@@ -144,6 +144,10 @@ export interface BranchStepExecutionDto {
   state: BranchAttemptState; input: string; result?: BranchResult; sealedResultId?: string;
   publishedResult?: BranchPublishedResultDto;
   resultFiles?: BranchResultFileDto[];
+  /** Presentation of complete stored output before history text is shortened. */
+  resultInRun?: boolean;
+  resultOutputTechnical?: boolean;
+  resultOutputTruncated?: boolean;
 }
 export interface BranchPublishedResultDto {
   label: string; sha256: string; reused: boolean;
@@ -175,7 +179,8 @@ export interface BranchExecutionDetailDto {
   decisions?: BranchDecisionDto[];
   /** Large evidence is previewed here; inspect one Step to load its complete text. */
   largeEvidenceOmitted?: boolean;
-  executionOutputTruncated?: boolean; executionInputTruncated?: boolean;
+  executionOutputTruncated?: boolean;
+  executionOutputTechnical?: boolean; executionInputTruncated?: boolean;
   /** Opaque cursor for older audit rows. Each collection is independently bounded. */
   nextCursor?: string;
 }

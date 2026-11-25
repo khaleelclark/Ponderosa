@@ -309,15 +309,15 @@ function fencedCodeLanguage(children: ReactNode): string {
   return "text";
 }
 
-function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
+export function CopyableCodeBlock({ children, text, copyValue, format }: { children?: ReactNode; text?: string; copyValue?: string; format?: string }): JSX.Element {
   const notify = useMutationNotification();
-  const code = codeBlockText(children).replace(/\n$/, "");
-  const language = fencedCodeLanguage(children);
+  const code = text ?? codeBlockText(children).replace(/\n$/, "");
+  const language = format ?? fencedCodeLanguage(children);
   const highlighted = !["text", "txt", "plaintext", "none", "ponderosa"].includes(language);
 
   async function copyCode(): Promise<void> {
     try {
-      await copyText(code);
+      await copyText(copyValue ?? code);
       notify({ key: "copy-code", message: "Copied" });
     } catch {
       notify({ key: "copy-code", message: "Code could not be copied. Check your browser clipboard permissions and try again.", severity: "error" });
@@ -354,7 +354,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
           </IconButton>
         </Tooltip>
       </Stack>
-      <Box sx={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+      <Box tabIndex={text!==undefined?0:undefined} sx={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
         {highlighted ? <LazySyntaxHighlightedCode
             language={language}
             customStyle={{ margin: 0, padding: "16px 18px", minWidth: "max-content", background: "transparent", fontSize: "0.875rem", lineHeight: 1.55 }}

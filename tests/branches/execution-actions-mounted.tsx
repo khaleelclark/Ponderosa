@@ -138,7 +138,10 @@ export async function executionSkipWithoutReasonRegression():Promise<void>{
   assert(JSON.stringify(first!.body)===JSON.stringify(second!.body),'Retry resends the identical idempotent command');
   assert(host.textContent?.includes('Running'),'Skip request alone never presents Skipped before the Engine drains work');
   (Array.from(host.querySelectorAll('summary')).find(node=>node.textContent?.startsWith('Technical Details')) as HTMLElement).click();
-  await until(()=>Boolean(button('Review Saved Work')&&button('Review Resource Group')),'Technical Details did not reveal advanced reviews');
+  await until(()=>Boolean(button('Recovery options')),'Technical Details did not reveal recovery options');
+  assert(!button('Review Saved Work')&&!button('Review Resource Group'),'Recovery launchers start collapsed');
+  button('Recovery options')!.click();
+  await until(()=>Boolean(button('Review Saved Work')&&button('Review Resource Group')),'Recovery options did not reveal advanced reviews');
  }finally{
   root.unmount();await client.cancelQueries();client.clear();host.remove();globalThis.fetch=original;
  }

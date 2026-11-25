@@ -34,6 +34,8 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
  const previous=useRef(selectedId),historyScroll=useRef<HTMLDivElement>(null),detailScroll=useRef<HTMLDivElement>(null),scroll=useRef({history:0,detail:0});
  const layout=useRef<HTMLDivElement>(null),automatic=useRef<string>(),attemptedFilter=useRef<string>(),wasActive=useRef(false);
  const [desktop,setDesktop]=useState(false);
+ const returnToHistory=useRef(false);
+ const chosenRow=useRef<HTMLDivElement>(null);
  useLayoutEffect(()=>{
   const element=layout.current;if(!element)return;
   // Read the same container-query presentation that owns the columns, including
@@ -42,6 +44,12 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
   measure();const observer=new ResizeObserver(measure);observer.observe(element);return()=>observer.disconnect();
  },[]);
  useLayoutEffect(()=>{if(historyScroll.current)historyScroll.current.scrollTop=scroll.current.history;if(detailScroll.current)detailScroll.current.scrollTop=scroll.current.detail},[showHistory]);
+ useLayoutEffect(()=>{
+  if(showHistory&&returnToHistory.current){
+   chosenRow.current?.focus({preventScroll:true});
+   returnToHistory.current=false;
+  }
+ },[showHistory]);
  useEffect(()=>{if(!selectedId){if(active)setShowHistory(true);return;}if(previous.current!==selectedId){previous.current=selectedId;scroll.current.detail=0;if(detailScroll.current)detailScroll.current.scrollTop=0;if(automatic.current!==selectedId)setShowHistory(false);automatic.current=undefined}},[selectedId]);
  useEffect(()=>{
   const returning=active&&!wasActive.current;wasActive.current=active;
@@ -54,9 +62,9 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
  },[active,selectedId,desktop,loading,error,runs,filter,rememberedId,onSelect]);
  const retained=selectedRun?.id===selectedId&&!runs.some(run=>run.id===selectedId)?selectedRun:undefined;
  const hasDetails=Boolean(selectedId||runs.length||loading);
- const renderRun=(run:BranchExecutionDto,outside=false)=>{const preview=runPreview(run);return <ListItemButton key={run.id} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{if(onSelect(run.id))setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
+ const renderRun=(run:BranchExecutionDto,outside=false)=>{const preview=runPreview(run);return <ListItemButton key={run.id} ref={run.id===selectedId?chosenRow:undefined} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{if(onSelect(run.id))setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
   <Stack spacing={0.25} sx={{minWidth:0,width:'100%'}}>
-   <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.createdAt).toLocaleString()}</Typography>
+   <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.admittedAt??run.createdAt).toLocaleString()}</Typography>
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{alignItems:'center'}}>
     <SemanticStatus {...branchExecutionStatus(run)}/>
     <Typography variant="caption" color="text.secondary">{run.admissionSource==='manual'?'Manual Run':run.admissionSource==='automatic'?'Automatic Run':run.admissionSource==='call'?'Called by Workflow':'Workflow Run'}</Typography>
@@ -83,7 +91,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
     {hasMore&&<Button disabled={loadingMore} onClick={onMore} sx={{mt:1,flexShrink:0}}>{loadingMore?'Loading…':'Load Older Runs'}</Button>}
    </Box>
    <Box ref={detailScroll} onScroll={event=>{scroll.current.detail=event.currentTarget.scrollTop}} component="section" aria-label="Selected Run" sx={{display:showHistory?'none':'block',minWidth:0,minHeight:0,overflow:'auto',p:{xs:1.5,sm:2},[desktopLayout]:{display:hasDetails?'block':'none'}}}>
-    <Button startIcon={<ArrowBackIcon/>} onClick={()=>setShowHistory(true)} sx={{mb:1,minHeight:44,[desktopLayout]:{display:'none'}}}>Back to Run History</Button>
+    <Button startIcon={<ArrowBackIcon/>} onClick={()=>{returnToHistory.current=true;setShowHistory(true)}} sx={{mb:1,minHeight:44,[desktopLayout]:{display:'none'},'section:has([data-branch-step-tray]) > &':{display:'none'}}}>Back to Run History</Button>
     {selectedId?children:loading?<Stack role="status" aria-label="Loading Run Details"><Skeleton height={32}/><Skeleton height={80}/><Skeleton height={80}/></Stack>:runs.length?<Typography color="text.secondary">Choose a Run from history to view its result.</Typography>:null}
    </Box>
   </Box>

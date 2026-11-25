@@ -2692,19 +2692,41 @@ export class BranchStore {
       p.result_json path_result_json`,'branch_map_items m JOIN branch_map_invocations mi ON mi.id=m.map_invocation_id JOIN branch_paths p ON p.id=m.path_id','m','mi.execution_id');
     const nextCursor=Object.values(positions).some(n=>n>0)?Buffer.from(JSON.stringify({executionId:id,positions})).toString('base64url'):undefined;
     const definition=this.definition(execution);
-    return { execution, liveOutputs:readBranchLiveOutputs(this.sqlite,id,attempts.map(attempt=>attempt.id)), ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
+    const attemptDetails=attempts.map(row=>this.attemptDto(execution,definition,row));
+    const attemptsById=new Map(attemptDetails.map(attempt=>[attempt.id,attempt]));
+    const structuredOutput=/^\s*[\[{]/u;
+    let operatorRecordedAttempts:Set<string>|undefined;
+    const technicalScriptOutput=(output?:string,attemptId?:string):boolean=>{
+      if(!attemptId||!output||!structuredOutput.test(output))return false;
+      const evidence=attemptsById.has(attemptId)?attemptsById.get(attemptId)!.scriptEvidence:this.scriptEvidence(attemptId);
+      if(evidence?.stdout!==output||evidence.error)return false;
+      try { JSON.parse(output); } catch { return false; }
+      operatorRecordedAttempts??=new Set(this.rows(`SELECT json_extract(evidence_json,'$.attemptId') attempt_id
+        FROM branch_checkpoints WHERE execution_id=? AND kind='operator_intervention'
+        AND json_extract(evidence_json,'$.action')='resolve_script'`,id).map(row=>row.attempt_id));
+      return !operatorRecordedAttempts.has(attemptId);
+    };
+    // The root path identifies the last sealed result even when its attempt is outside this page.
+    const rootResult=execution.output&&structuredOutput.test(execution.output)&&this.row(`SELECT r.terminal_attempt_id, r.result_json
+      FROM branch_paths p JOIN branch_sealed_results r ON r.id=p.last_result_id
+      WHERE p.execution_id=? AND p.parent_path_id IS NULL`,id);
+    const executionOutputTechnical=Boolean(rootResult&&JSON.parse(rootResult.result_json).output===execution.output&&
+      technicalScriptOutput(execution.output,rootResult.terminal_attempt_id));
+    return { execution, ...(executionOutputTechnical?{executionOutputTechnical:true}:{}), liveOutputs:readBranchLiveOutputs(this.sqlite,id,attempts.map(attempt=>attempt.id)), ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
       sealedResults:sealedResults.map(r=>({id:r.id,executionId:id,pathId:r.path_id,stepExecutionId:r.step_execution_id,terminalAttemptId:r.terminal_attempt_id,result:JSON.parse(r.result_json),contentHash:r.content_hash,createdAt:r.created_at})),
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),
-      steps: steps.map(r => this.stepDto(r)), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
+      steps: steps.map(r => this.stepDto(r,technicalScriptOutput)), attempts: attemptDetails,
       resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...((r.error??this.resourceCompletionError(r))?{error:r.error??this.resourceCompletionError(r)}:{})})),
       paths: paths.map(r => ({ id: r.id, state: r.state, input: r.input_text, ...(r.node_id ? { nodeId: r.node_id } : {}), ...(r.step_execution_id?{stepExecutionId:r.step_execution_id}:{}), ...(r.parent_path_id ? { parentPathId: r.parent_path_id } : {}), ...(r.fork_invocation_id ? { forkInvocationId: r.fork_invocation_id, edgeId: r.edge_id } : {}), ...(r.last_result_id?{lastResultId:r.last_result_id}:{}), ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) })),
       gates: gates.map(r => this.gateDto(execution,definition,r)) };
   }
-  private stepDto(r:Row):BranchStepExecutionDto {
-    const sealed=this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+  private stepDto(r:Row,technicalScriptOutput?:(output?:string,attemptId?:string)=>boolean):BranchStepExecutionDto {
+    const sealed=this.row('SELECT id,terminal_attempt_id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+    const result=r.result_json?JSON.parse(r.result_json) as BranchResult:undefined;
     return {id:r.id,executionId:r.execution_id,stepId:r.step_id,pathId:r.path_id,invocation:r.invocation,state:r.state,input:r.input_text,
-      ...(r.result_json?{result:JSON.parse(r.result_json)}:{}),...(sealed?{sealedResultId:sealed.id}:{})};
+      ...(result?{result}:{}),...(sealed?{sealedResultId:sealed.id}:{}),
+      ...(technicalScriptOutput?.(result?.output,sealed?.terminal_attempt_id)?{resultOutputTechnical:true}:{})};
   }
   private gateDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):BranchGateDto {
     const step=definition.steps.find(step=>step.id===r.step_id);

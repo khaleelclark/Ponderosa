@@ -41,7 +41,7 @@ export async function branchDisclosureReviewRegression():Promise<void>{
   throw Error(`Unexpected call ${url}`);
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchDisclosureReview key={key} branchId="branch" executionId="source-run" enabled onChanged={()=>{}}/></QueryClientProvider>);
- const select=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.includes('fresh-chat')) as HTMLElement).click();await tick();};
+ const select=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.startsWith('Destination ')) as HTMLElement).click();await tick();};
  const acknowledge=async()=>{(Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('exact historical facts')) as HTMLInputElement).click();await tick();};
  try{
   render('initial');await settle();button('Review Fresh Destination').click();await settle();await select();button('Preview Disclosure').click();await settle();
@@ -67,7 +67,7 @@ export async function branchDisclosureReviewRegression():Promise<void>{
   button('Inspect Retained Command').click();await settle();assert(sent.length===4&&localStorage.getItem(storageKey)===null,'lost admission response reads canonical receipt without another activation effect');
   (Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Prepare From Saved Checkpoint') as HTMLElement).click();await tick();
   openSelect(document.querySelectorAll('[role=combobox]')[1]);await tick();
-  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='4 · cut') as HTMLElement).click();await tick();
+  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.startsWith('Checkpoint 4 ·')) as HTMLElement).click();await tick();
   (Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('reconciled original external effects')) as HTMLInputElement).click();await tick();
   button('Prepare Fresh Destination').click();await tick();button('Prepare Destination').click();await settle();
   assert(sent[4].body.checkpointId===4&&sent[4].body.expectedHash==='cut'&&sent[4].body.reconcileEffects===true,'prepare selects immutable retained checkpoint and explicit effects reconciliation');
