@@ -23,17 +23,29 @@ try{
  web=await serveFixture(f);const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
  browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,chromiumSandbox:true});
  const chatUrl=web.origin+'/branches?branch='+branch.id+'&tab=chats&chat='+chat.id;
- for(const mobile of [false,true])for(const kind of ['retained-editor','settings-first','editor-retry','direct-workflow']){
-  const cell=mobile?'phone':'desktop',row={cell,kind,status:'started',requests:[],pageErrors:[],external:[]};result.cells.push(row);let allowEditor=kind!=='editor-retry';
+ for(const mobile of [false,true])for(const kind of ['stale-startup','retained-editor','settings-first','editor-retry','direct-workflow']){
+  const cell=mobile?'phone':'desktop',row={cell,kind,status:'started',requests:[],pageErrors:[],external:[]};result.cells.push(row);let allowEditor=kind!=='editor-retry',allowStartup=kind!=='stale-startup';
   context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1365,height:768},isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
   page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',error=>row.pageErrors.push(error.message));
   page.on('request',request=>row.requests.push({method:request.method(),path:new URL(request.url()).pathname,url:request.url(),type:request.resourceType()}));
-  await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.origin!==web.origin){row.external.push(url.href);return route.abort();}if(url.pathname===editorChunk){row.editorRequests=(row.editorRequests??0)+1;if(!allowEditor){row.blockedEditorRequests=(row.blockedEditorRequests??0)+1;return route.abort('failed');}}return route.continue();});
+  await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.origin!==web.origin){row.external.push(url.href);return route.abort();}if(url.pathname===branchChunk&&!allowStartup){row.staleRequests=(row.staleRequests??0)+1;return route.fulfill({status:404,headers:{'cache-control':'no-store'}});}if(url.pathname===editorChunk){row.editorRequests=(row.editorRequests??0)+1;if(!allowEditor){row.blockedEditorRequests=(row.blockedEditorRequests??0)+1;return route.abort('failed');}}return route.continue();});
   const turnsBefore=f.turns.map(turn=>turn.turnId),picture=label=>page.screenshot({path:`${out}/${cell}-${kind}-${label}.png`});
   const tab=name=>page.getByRole('tab',{name,exact:true}).click();
   const chatReady=()=>page.getByLabel('Message',{exact:true}).waitFor();
   try{
-   if(kind==='direct-workflow'){
+   if(kind==='stale-startup'){
+    await page.goto(chatUrl);
+    const retry=page.getByRole('button',{name:'Try Again',exact:true});
+    await retry.waitFor();
+    assert.equal(row.staleRequests,1);
+    await retry.click();
+    const reload=page.getByRole('button',{name:'Reload Ponderosa',exact:true});
+    await reload.waitFor();
+    assert.equal(row.staleRequests,2);
+    allowStartup=true;
+    await reload.click();
+    await chatReady();
+   }else if(kind==='direct-workflow'){
     await page.goto(web.origin+'/branches?branch='+branch.id+'&tab=workflow');await page.getByRole('button',{name:'Add your first step',exact:true}).waitFor();
     assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),1);row.directWorkflowAvailable=true;
    }else{

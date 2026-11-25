@@ -1160,6 +1160,10 @@ if (opts.webDist) {
       const root = path.resolve(opts.webDist!);
       if (target !== root && !target.startsWith(root + path.sep)) return reply.code(404).send();
       const targetExists = await pathExists(target);
+      // An absent asset must never be returned or cached as the application shell.
+      if (!targetExists && (/^(?:static|icons|notices)(?:\/|$)/u.test(rel) || path.extname(rel))) {
+        return reply.code(404).header("Cache-Control", "no-store").send();
+      }
       const file = targetExists ? target : path.join(root, "index.html");
       if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
       const [rootReal, fileReal] = await Promise.all([fs.realpath(root), fs.realpath(file)]);

@@ -276,11 +276,15 @@ try{
 
    if(mobile)await page.setViewportSize({width:390,height:844});
    heldCanvas=holdCanvas();
-   const secondRequest=page.waitForRequest(web.origin+canvasPath);
+   const requestsOnReload=[];
+   const trackCanvas=request=>{if(request.url()===web.origin+canvasPath)requestsOnReload.push(request)};
+   page.on('request',trackCanvas);
    await page.reload({waitUntil:'domcontentloaded'});
-   await secondRequest;
-   await loading.waitFor();
-   await switchTo('Outline');
+   await outline.waitFor();
+   assert.equal(await view('Outline').getAttribute('aria-pressed'),'true');
+   assert.equal(await canvas.count(),0);
+   assert.deepEqual(requestsOnReload,[],'Reloading into Outline keeps Canvas lazy');
+   page.off('request',trackCanvas);
    await activate(matched);
    await initialName.fill('Matched input for review');
    await back.click();
@@ -299,6 +303,9 @@ try{
    assert.equal(await pendingReview.evaluate(node=>node===document.activeElement),true,'Review changes keeps focus through Canvas download');
    await page.keyboard.press('Enter');
    await inspector.getByRole('button',{name:'Publish workflow',exact:true}).waitFor();
+   await page.reload({waitUntil:'domcontentloaded'});
+   await canvas.waitFor();
+   assert.equal(await view('Canvas').getAttribute('aria-pressed'),'true');
    assert.deepEqual(pageErrors,[]);
    console.log(`PASS ${mobile?'phone 390×844':'desktop 1440×900'} dirty draft Review changes keeps focus through Canvas download and opens with Enter`);
   }finally{releaseCanvas();await context.close()}

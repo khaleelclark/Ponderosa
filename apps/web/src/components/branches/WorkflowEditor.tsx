@@ -1,4 +1,5 @@
 import {createPortal} from 'react-dom';
+import {readBrowserStorage,writeBrowserStorage} from '../../browserStorage';
 import {WorkflowOutline} from './WorkflowOutline';
 import {WorkflowCanvasFooter} from './WorkflowCanvasFooter';
 import {WorkflowInspectorPage} from './WorkflowInspectorPage';
@@ -63,7 +64,8 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const [triggerInvalid,setTriggerInvalid]=useState(false),[retainTrigger,setRetainTrigger]=useState(false);
  const startsLabel=useId();
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
- const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??'canvas');
+ const viewStorageKey=`ponderosa:workflow-view:${branchId}`;
+ const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??(branchId&&readBrowserStorage('sessionStorage',viewStorageKey)==='outline'?'outline':'canvas'));
  const canvasRegion=useRef<HTMLDivElement>(null),canvasNavigation=useRef<CanvasNavigation>(null);
  const [canvasPhase,setCanvasPhase]=useState<CanvasPhase>('loading');
  const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
@@ -155,6 +157,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   if(!next)return;
   focusViewSelector.current=true;
   setView(next);
+  if(branchId)writeBrowserStorage('sessionStorage',viewStorageKey,next);
   if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
  }} sx={{flexShrink:0,'& .MuiToggleButton-root':{minHeight:44,px:{xs:1,sm:2},textTransform:'none'}}}>
   <ToggleButton value="canvas">Canvas</ToggleButton>

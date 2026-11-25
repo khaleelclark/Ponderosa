@@ -20,13 +20,14 @@ const App = lazy(() => {
   }
   return import(/* webpackFetchPriority: "high" */ "./App");
 });
-const BranchesView=lazy(()=>import(/* webpackFetchPriority: "high" */ './components/BranchesView').then(module=>({default:module.BranchesView})));
+const loadBranchesView=()=>import(/* webpackFetchPriority: "high" */ './components/BranchesView').then(module=>({default:module.BranchesView}));
 import { loadProjectShell } from "./projectShellLoader";
 import { parseRoute } from "./routing";
 import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
 import { api } from "./api";
 import { queryKeys } from "./queryKeys";
 import { isProjectRoute } from "./routeRegistry";
+import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
@@ -89,7 +90,7 @@ function Root(): JSX.Element {
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
             <Suspense fallback={<div role="status" style={{padding:24}}>Loading Ponderosa…</div>}>
-            {isOutputAppPath(window.location.pathname)?<OutputAgentApp colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
+            {isOutputAppPath(window.location.pathname)?<OutputAgentApp colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:isBranchesPath(window.location.pathname)?<RecoverableLazyRoute load={loadBranchesView} componentProps={{colorMode,onToggleColorMode:()=>setColorMode(current=>current==='light'?'dark':'light')}}/>:<App
               colorMode={colorMode}
               onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
             />}
