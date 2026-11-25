@@ -3,13 +3,12 @@ import {AgentCreateForm} from '../../apps/web/src/components/AgentCreateDialog';
 import {queryKeys} from '../../apps/web/src/queryKeys';
 import {PublishingEffects} from '../../apps/web/src/components/branches/deployment-effects';
 import {WorkflowInspector} from '../../apps/web/src/components/branches/WorkflowInspector';
-import {createRef,useState} from 'react';
+import {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {Button,CssBaseline,ThemeProvider} from '@mui/material';
 import type {BranchDefinition} from '@ponderosa/core';
 import {WorkflowEditor} from '../../apps/web/src/components/branches/WorkflowEditor';
-import {WorkflowCanvas} from '../../apps/web/src/components/branches/WorkflowCanvas';
 import {createPonderosaTheme} from '../../apps/web/src/theme';
 
 const assert=(value:unknown,message:string)=>{if(!value)throw Error(message);};
@@ -22,7 +21,7 @@ export async function workflowVisibleConnectionsRegression():Promise<void>{
  const definition:BranchDefinition={schema:'ponderosa.branch.v1',name:'Visual regression',trigger:{kind:'manual'},entry:'inserted',steps:[script('existing','Existing Script'),script('inserted','Inserted Script')],controls:[],edges:[{id:'next',from:'inserted',to:'existing',on:'success'}],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}};
  const checkpoint=async(name:string)=>{await (window as Window&{phase2UiCheckpoint?:(name:string)=>Promise<void>}).phase2UiCheckpoint?.(name);};
  try{
-  flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><div style={{height:44}}>Guided workflow</div><div style={{height:'calc(100vh - 44px)'}}><WorkflowCanvas branchId="visual" definition={definition} bindings={{agents:{},directories:{workspace:'/unused'}}} agents={[]} selected="inserted" onSelect={()=>{}} focusRequest={0} revealRequest={0} issues={[]} onInsert={()=>{}} onDelete={()=>{}} undoRedo={{canUndo:true,canRedo:false,onUndo(){},onRedo(){}}} canvasViews={new Map()} entryButtonRef={createRef<HTMLButtonElement>()} startControl={<Button variant="outlined">Start Manually</Button>} saveControl={<Button variant="contained">Save Workflow</Button>} active/></div></ThemeProvider>));
+  flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><div style={{height:44}}>Guided workflow</div><div style={{height:'calc(100vh - 44px)'}}><WorkflowEditor branchId="visual" chatId="" existing inspectorTarget={null} inspectorActive={false} onInspectorPane={()=>{}} definition={definition} bindings={{agents:{},directories:{workspace:'/unused'}}} agents={[]} contexts={[]} engines={[]} onDefinition={()=>{}} onBindings={()=>{}} onDraft={()=>{}} onChat={()=>{}} undoRedo={{canUndo:true,canRedo:false,onUndo(){},onRedo(){}}} canvasViews={new Map([['visual',{selected:'inserted'}]])} saveControl={<Button variant="contained">Save Workflow</Button>}/></div></ThemeProvider>));
   await until(()=>host.querySelectorAll('.react-flow__edge-path').length===2&&!host.querySelector('[aria-busy="true"]'),'Both actual graph connections finish layout');
   let previous='',stable=0;await until(()=>{const signature=Array.from(host.querySelectorAll('.react-flow__edge-path')).map(path=>path.getAttribute('d')).join('|')+Array.from(host.querySelectorAll('.react-flow__edgelabel-renderer > div')).map(label=>label.getAttribute('style')).join('|');stable=signature===previous&&!host.querySelector('[aria-busy="true"]')?stable+1:0;previous=signature;return stable>=8;},'Measured graph finishes its visible layout');
   const paths=Array.from(host.querySelectorAll<SVGPathElement>('.react-flow__edge-path'));
@@ -31,6 +30,7 @@ export async function workflowVisibleConnectionsRegression():Promise<void>{
   console.log('WORKFLOW_GEOMETRY',JSON.stringify(geometry));
   assert(paths.every(path=>path.getBoundingClientRect().height>1&&path.ownerSVGElement!.getBoundingClientRect().width>0),'Phone and desktop connections retain a visible coordinate SVG');
   const fit=host.querySelector<HTMLButtonElement>('button[aria-label="Fit Workflow"]');
+  assert(fit&&!fit.disabled,'Fit remains available when the graph is arranged');
   if(fit){fit.click();try{await until(()=>{const terminal=host.querySelector<HTMLElement>('.react-flow__node-terminal'),canvas=host.querySelector<HTMLElement>('.react-flow');if(!terminal||!canvas)return false;const node=terminal.getBoundingClientRect(),view=canvas.getBoundingClientRect();return node.top>=view.top&&node.bottom<=view.bottom;},'Fit reveals the entire terminal above the toolbar');}catch(error){console.log('FIT_DIAGNOSTIC',JSON.stringify(Array.from(host.querySelectorAll('.react-flow,.react-flow__viewport,.react-flow__node-terminal')).map(node=>({classes:node.className,rect:node.getBoundingClientRect().toJSON(),style:node.getAttribute('style')}))));await checkpoint('workflow-fit-failure');throw error;}}
   await checkpoint('workflow-fit');
  }finally{root.unmount();host.remove();}

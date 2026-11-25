@@ -12,11 +12,11 @@ import {nodeKind,nodeName,removeWorkflowNode} from './model';
 import {workflowOutline,type OutlineItem} from './workflow-outline';
 import type {WorkflowUndoRedo} from './WorkflowCanvas';
 
-export function WorkflowOutline({definition,bindings,agents,issues,active,selected,onSelect,onInsert,onDelete,startControl,entryButtonRef,saveControl,undoRedo,expanded,onToggleExpanded,focusRequest,revealRequest,scrollPosition}:{
+export function WorkflowOutline({definition,bindings,agents,issues,active,selected,onSelect,onInsert,onDelete,startControl,entryButtonRef,viewSelector,saveControl,undoRedo,expanded,onToggleExpanded,focusRequest,revealRequest,scrollPosition}:{
  definition:BranchDefinition;bindings:BranchBindings;agents:AgentDto[];issues:BranchValidationIssue[];
  active:boolean;selected?:string;onSelect(id:string):void;onDelete(id:string):void;
  onInsert(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement,label?:string):void;
- startControl:ReactNode;entryButtonRef:RefObject<HTMLButtonElement>;saveControl:ReactNode;undoRedo:WorkflowUndoRedo;
+ startControl:ReactNode;entryButtonRef:RefObject<HTMLButtonElement>;viewSelector:ReactNode;saveControl:ReactNode;undoRedo:WorkflowUndoRedo;
  expanded:boolean;onToggleExpanded():void;focusRequest:number;revealRequest:number;scrollPosition:{current:number};
 }):JSX.Element {
  const items=useMemo(()=>workflowOutline(definition),[definition]);
@@ -89,7 +89,8 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
     {render(items)}
    </Stack>
   </Box>
-  <Stack direction="row" alignItems="center" gap={.5} sx={{px:1.5,pt:1,pb:'calc(8px + env(safe-area-inset-bottom, 0px))',borderTop:1,borderColor:'divider',flexWrap:'wrap'}}>
+  <Stack direction="row" alignItems="center" gap={.5} sx={{px:1.5,pt:1,pb:'calc(8px + env(safe-area-inset-bottom, 0px))',borderTop:1,borderColor:'divider',flexWrap:'wrap',flexShrink:0}}>
+   {viewSelector}
    <Tooltip title="Undo"><span><IconButton aria-label="Undo" disabled={!undoRedo.canUndo} onClick={undoRedo.onUndo} sx={{width:44,height:44}}><UndoIcon/></IconButton></span></Tooltip>
    <Tooltip title="Redo"><span><IconButton aria-label="Redo" disabled={!undoRedo.canRedo} onClick={undoRedo.onRedo} sx={{width:44,height:44}}><RedoIcon/></IconButton></span></Tooltip>
    <IconButton aria-label={expanded?'Collapse Workflow':'Expand Workflow'} aria-pressed={expanded} onClick={onToggleExpanded} sx={{width:44,height:44}}>{expanded?<CloseFullscreenIcon/>:<OpenInFullIcon/>}</IconButton>

@@ -2,10 +2,16 @@ import '../shared/workspace-resolution.mjs';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {readFile,readdir} from 'node:fs/promises';
 const {fixture}=await import('../shared/fixture.mjs');
 import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 
 const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
+const assets=new URL('../../apps/web/dist/static/js/async/',import.meta.url);
+const chunks=(await readdir(assets)).filter(name=>name.endsWith('.js'));
+const canvasChunks=(await Promise.all(chunks.map(async name=>(await readFile(new URL(name,assets),'utf8')).includes('Canvas Viewport')?name:null))).filter(Boolean);
+assert.equal(canvasChunks.length,1,'Find the production lazy Canvas script');
+const canvasPath='/static/js/async/'+canvasChunks[0];
 const f=await fixture();
 let web,browser;
 const script=(id,label)=>({id,label,kind:'script',runtime:'node',source:'process.stdout.write("fixture")',cwdRef:'workspace',timeoutMs:1000});
@@ -20,12 +26,19 @@ try{
   const pageErrors=[];
   page.on('pageerror',error=>pageErrors.push(error.message));
   await context.route('**/*',route=>new URL(route.request().url()).origin===web.origin?route.continue():route.abort());
+  let releaseCanvas;
+  const holdCanvas=()=>new Promise(resolve=>{releaseCanvas=resolve});
+  let heldCanvas=holdCanvas();
+  await context.route(web.origin+canvasPath,async route=>{
+   await heldCanvas;
+   await route.continue().catch(()=>{});
+  });
   // ELK stays pending until the test switches back, then its next layout attempt fails.
   await context.addInitScript(()=>{
    const NativeWorker=window.Worker;
    window.Worker=class extends NativeWorker {
     constructor(url,options){
-     if(new URL(url).pathname.startsWith('/static/js/async/')){
+     if(!window.useRealOutlineLayout&&new URL(url).pathname.startsWith('/static/js/async/')){
       if(window.failOutlineLayout)throw Error('Fixture layout failure');
       const idle=URL.createObjectURL(new Blob(['onmessage = () => {}'],{type:'text/javascript'}));
       super(idle,options);
@@ -58,10 +71,38 @@ try{
    const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
    const activate=button=>mobile?button.tap():button.press('Enter');
    const scroll=outline.locator('div').first();
-   await page.goto(url);
-   await canvas.waitFor();
-   await canvas.getByText('Arranging Workflow…').waitFor();
-   await view('Outline').click();
+   const footer=async(region,label)=>{
+    const selector=region.getByRole('group',{name:'Workflow view',exact:true});
+    await selector.waitFor();
+    assert.equal(await page.getByRole('group',{name:'Workflow view',exact:true}).count(),1);
+    assert.equal(await selector.getByRole('button',{name:label,exact:true}).getAttribute('aria-pressed'),'true');
+    return selector.evaluate(element=>{
+     const bar=element.parentElement,rect=bar.getBoundingClientRect(),control=element.getBoundingClientRect();
+     const review=[...bar.querySelectorAll('button')].find(button=>button.textContent==='Review changes');
+     const action=review?.getBoundingClientRect();
+     if(!action||!bar.querySelector('[aria-label="Undo"]'))throw Error('The selector must share the footer with Undo and Review changes');
+     if(![control,action].every(box=>box.left>=rect.left&&box.right<=rect.right&&box.top>=rect.top&&box.bottom<=rect.bottom&&box.bottom<=innerHeight))throw Error('Footer controls must fit in the visible viewport');
+     if(rect.right-action.right>13)throw Error('Review changes must stay on the action side');
+     return control.left-rect.left;
+    });
+   };
+   const switchTo=async label=>{
+    await activate(view(label));
+    await page.waitForFunction(label=>document.activeElement?.textContent===label&&document.activeElement?.getAttribute('aria-pressed')==='true',label);
+   };
+   const request=page.waitForRequest(web.origin+canvasPath);
+   await page.goto(url,{waitUntil:'domcontentloaded'});
+   await request;
+   const loading=page.getByText('Loading Workflow Canvas…',{exact:true});
+   await loading.waitFor();
+   const workflow=page.getByRole('tabpanel',{name:'Workflow',exact:true});
+   const loadingOffset=await footer(workflow,'Canvas');
+   const panel=await workflow.boundingBox();
+   const tabs=await page.getByRole('tablist',{name:'Workflow Views',exact:true}).boundingBox();
+   assert.ok(Math.abs(panel.y-tabs.y-tabs.height)<=2,'Workflow content begins at the tab row');
+   await switchTo('Outline');
+   assert.equal(await footer(outline,'Outline'),loadingOffset);
+   assert.equal((await outline.boundingBox()).y,panel.y,'Outline starts at the top of the Workflow panel');
    await row('Check input').waitFor();
    assert.equal(await row('Fallback input').count(),0,'Secondary path starts collapsed');
    await activate(outline.getByText('Otherwise',{exact:true}));
@@ -75,10 +116,39 @@ try{
    const primary=outline.locator('details').filter({has:page.getByText('If it matches',{exact:true})});
    assert.equal(await primary.getByRole('button',{name:'Matched input Script',exact:true}).count(),1);
 
+   const matched=row('Matched input');
+   await activate(matched);
+   const initialName=inspector.getByRole('textbox',{name:'Name',exact:true});
+   await initialName.fill('Matched input edited');
+   await back.click();
+   assert.equal(await row('Matched input edited').getAttribute('aria-pressed'),'true');
+   await activate(outline.getByRole('button',{name:'Undo',exact:true}));
+   await matched.waitFor();
+   await activate(outline.getByRole('button',{name:'Expand Workflow',exact:true}));
+   await switchTo('Canvas');
+   await loading.waitFor();
+   await footer(workflow,'Canvas');
+   await view('Collapse Workflow').waitFor();
+   await switchTo('Outline');
+   assert.equal(await matched.getAttribute('aria-pressed'),'true');
+   await activate(outline.getByRole('button',{name:'Collapse Workflow',exact:true}));
+   console.log(`PASS ${mobile?'phone':'desktop'} switch and edit in Outline while ${canvasPath} is held`);
+
+   await switchTo('Canvas');
+   await page.keyboard.press('Tab');
+   assert.equal(await view('Outline').evaluate(node=>node===document.activeElement),true);
+   releaseCanvas();
+   await canvas.getByText('Arranging Workflow…').waitFor();
+   assert.equal(await footer(canvas,'Canvas'),loadingOffset);
+   assert.equal(await view('Outline').getAttribute('aria-pressed'),'false');
+   assert.equal(await view('Outline').evaluate(node=>node===document.activeElement),true,'Unselected Outline keeps focus through Canvas download');
+   assert.equal((await canvas.boundingBox()).y,panel.y,'Canvas starts at the top of the Workflow panel');
+   await page.keyboard.press('Enter');
+   await outline.waitFor();
    await page.evaluate(()=>window.failOutlineLayout=true);
-   await view('Canvas').click();
+   await switchTo('Canvas');
    await page.getByRole('alert').getByText('Fixture layout failure').waitFor();
-   await view('Outline').click();
+   await switchTo('Outline');
    await row('Fallback input').waitFor();
    await activate(outline.getByText('On failure',{exact:true}).first());
    await row('Recover input').waitFor();
@@ -146,16 +216,23 @@ try{
    await activate(outline.getByRole('button',{name:'Redo',exact:true}));
    await row('Review fallback').waitFor();
 
-   await row('Follow-up 11').scrollIntoViewIfNeeded();
+   if(mobile)await page.setViewportSize({width:320,height:844});
+   await activate(outline.getByRole('button',{name:'Expand Workflow',exact:true}));
+   await row('Follow-up 13').scrollIntoViewIfNeeded();
+   await footer(outline,'Outline');
+   assert(await row('Follow-up 13').evaluate(node=>node.getBoundingClientRect().bottom<=node.closest('[aria-label="Workflow Outline"]').firstElementChild.getBoundingClientRect().bottom),'The last row scrolls above the footer');
    const before=await scroll.evaluate(node=>node.scrollTop);
    assert.ok(before>100);
-   await view('Canvas').click();
-   await view('Outline').click();
+   await switchTo('Canvas');
+   await footer(canvas,'Canvas');
+   await canvas.getByRole('button',{name:'Collapse Workflow',exact:true}).waitFor();
+   await switchTo('Outline');
+   await outline.getByRole('button',{name:'Collapse Workflow',exact:true}).waitFor();
    assert.equal(await scroll.evaluate(node=>node.scrollTop),before);
    assert.equal(await row('Review fallback').getAttribute('aria-pressed'),'true');
 
    const review=outline.getByRole('button',{name:'Review changes',exact:true});
-   await review.click();
+   await activate(review);
    await inspector.getByRole('button',{name:'Publish workflow',exact:true}).click();
    await inspector.waitFor({state:'hidden'});
    await outline.waitFor();
@@ -174,8 +251,35 @@ try{
    assert.equal(version.definition.edges.find(item=>item.id==='no').to,unmatched.id);
    assert.equal(version.definition.edges.find(item=>item.from===unmatched.id&&item.on==='approved').to,'no');
    assert.equal(version.definition.edges.find(item=>item.id==='yes').to,'yes');
+   console.log(`PASS ${mobile?'phone 390×844':'desktop 1440×900'} Outline Enter after Canvas download, stalled and failed Canvas, paths, links, exact insertion, focus, resize, undo/redo, footer placement, expanded switching, view continuity, publication`);
+
+   if(mobile)await page.setViewportSize({width:390,height:844});
+   heldCanvas=holdCanvas();
+   const secondRequest=page.waitForRequest(web.origin+canvasPath);
+   await page.reload({waitUntil:'domcontentloaded'});
+   await secondRequest;
+   await loading.waitFor();
+   await switchTo('Outline');
+   await activate(matched);
+   await initialName.fill('Matched input for review');
+   await back.click();
+   await row('Matched input for review').waitFor();
+   await switchTo('Canvas');
+   const pendingReview=view('Review changes');
+   await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.textContent==='Review changes'&&!button.disabled&&button.getClientRects().length));
+   for(const label of ['Outline','Undo','Expand Workflow','Review changes']){
+    await page.keyboard.press('Tab');
+    assert.equal(await view(label).evaluate(node=>node===document.activeElement),true,`Tab focuses ${label}`);
+   }
+   await page.evaluate(()=>window.useRealOutlineLayout=true);
+   releaseCanvas();
+   await canvas.getByRole('region',{name:'Canvas Viewport',exact:true}).waitFor();
+   await page.waitForFunction(()=>document.querySelector('[aria-label="Workflow Canvas"]')?.getAttribute('aria-busy')==='false');
+   assert.equal(await pendingReview.evaluate(node=>node===document.activeElement),true,'Review changes keeps focus through Canvas download');
+   await page.keyboard.press('Enter');
+   await inspector.getByRole('button',{name:'Publish workflow',exact:true}).waitFor();
    assert.deepEqual(pageErrors,[]);
-   console.log(`PASS ${mobile?'phone 390×844':'desktop 1440×900'} Outline, stalled and failed Canvas, paths, links, exact insertion, focus, resize, undo/redo, view continuity, publication`);
-  }finally{await context.close()}
+   console.log(`PASS ${mobile?'phone 390×844':'desktop 1440×900'} dirty draft Review changes keeps focus through Canvas download and opens with Enter`);
+  }finally{releaseCanvas();await context.close()}
  }
 }finally{await browser?.close();await web?.close();await f.dispose()}

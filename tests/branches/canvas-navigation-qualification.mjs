@@ -59,7 +59,15 @@ try{
    if(name==='wide'){
     // Existing navigation owner and Map stay mounted; no page reload.
     const before=await stableCamera(page);row.memorySavedBefore=await cameraMemory(page);for(const branchName of ['long','wide']){const link=page.getByRole('link',{name:'Open Workflow UI008 '+branchName,exact:true});if(!await link.isVisible())await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();await link.click();await settled(page);}row.memory={before,after:await stableCamera(page),savedAfter:await cameraMemory(page)};sameCenter(before,row.memory.after,'Per-Branch camera memory');
-    await page.getByRole('button',{name:'Outline',exact:true}).click();
+    const visit=async label=>{
+     const button=page.getByRole('button',{name:label,exact:true});
+     if(width===390)await button.tap();else await button.press('Enter');
+    };
+    await visit('Outline');
+    await visit('Canvas');
+    await settled(page);
+    sameCenter(row.memory.after,await stableCamera(page),'Canvas → Outline → Canvas');
+    await visit('Outline');
     const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
     await outline.getByRole('button',{name:'Script p7 Script',exact:true}).click();
     const settings=page.locator('[aria-label="Workflow inspector"]');

@@ -1,4 +1,4 @@
-import {createContext,memo,useCallback,useContext,useEffect,useLayoutEffect,useMemo,useRef,useState,type ReactNode} from 'react';
+import {createContext,memo,useCallback,useContext,useEffect,useImperativeHandle,useLayoutEffect,useMemo,useRef,useState,type ReactNode,type RefObject,type Ref} from 'react';
 import {Alert,Box,Button,IconButton,Stack,Tooltip,Typography,useTheme} from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
@@ -9,13 +9,6 @@ import CallSplitOutlinedIcon from '@mui/icons-material/CallSplitOutlined';
 import PlaylistAddCheckOutlinedIcon from '@mui/icons-material/PlaylistAddCheckOutlined';
 import RepeatOutlinedIcon from '@mui/icons-material/RepeatOutlined';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import OpenInFullIcon from '@mui/icons-material/OpenInFull';
-import CloseFullscreenIcon from '@mui/icons-material/CloseFullscreen';
-import ZoomInIcon from '@mui/icons-material/ZoomIn';
-import ZoomOutIcon from '@mui/icons-material/ZoomOut';
-import FitScreenIcon from '@mui/icons-material/FitScreen';
-import UndoIcon from '@mui/icons-material/Undo';
-import RedoIcon from '@mui/icons-material/Redo';
 import {Background,BaseEdge,EdgeLabelRenderer,EdgeToolbar,Handle,MarkerType,Position,ReactFlow,ReactFlowProvider,ViewportPortal,getViewportForBounds,useStore,useUpdateNodeInternals,type Edge,type EdgeProps,type Node,type NodeProps,type ReactFlowInstance,type Viewport} from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import ELK from 'elkjs/lib/elk-api.js';
@@ -27,6 +20,8 @@ import {frameWorkflowCanvas,resizeWorkflowViewport,workflowTranslateExtent,clamp
 import {guidedInsertionRestriction,type GuidedInsertionTarget} from './guided-operations';
 
 export type CanvasViewState={viewport?:Viewport;available?:{width:number;height:number};selected?:string;view?:'canvas'|'outline';outlineScroll?:number};
+export type CanvasNavigation={zoomBy(factor:number):void;fit():void};
+export type CanvasPhase='loading'|'arranging'|'ready'|'failed';
 export type WorkflowUndoRedo={canUndo:boolean;canRedo:boolean;onUndo():void;onRedo():void};
 type CanvasNode=Node<{layout:CanvasLayoutNode;node?:WorkflowNode;issue:boolean;entry:boolean}>;
 type CanvasEdge=Edge<{layout:CanvasLayoutEdge;issue:boolean}>;
@@ -58,14 +53,15 @@ const WorkflowConnection=memo(function WorkflowConnection({id,data,selected,mark
  </>;
 });
 const nodeTypes={workflow:WorkflowCard,terminal:WorkflowCard},edgeTypes={guided:WorkflowConnection};
-type Props={saveControl:ReactNode;expanded?:boolean;onToggleExpanded?():void;startControl?:ReactNode;entryButtonRef:React.RefObject<HTMLButtonElement>;branchId:string;definition:BranchDefinition;bindings:BranchBindings;agents:AgentDto[];selected?:string;onSelect(id:string):void;focusRequest:number;issues:BranchValidationIssue[];onInsert(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement):void;onDelete(id:string):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;revealRequest?:number;bottomSheetHeight?:number;active:boolean};
+type Props={region:RefObject<HTMLDivElement>;navigationRef:Ref<CanvasNavigation>;onPhase(phase:CanvasPhase):void;startControl?:ReactNode;entryButtonRef:React.RefObject<HTMLButtonElement>;branchId:string;definition:BranchDefinition;bindings:BranchBindings;agents:AgentDto[];selected?:string;onSelect(id:string):void;focusRequest:number;issues:BranchValidationIssue[];onInsert(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement):void;onDelete(id:string):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;revealRequest?:number;active:boolean};
 export function WorkflowCanvas(props:Props):JSX.Element{return <ReactFlowProvider><GuidedCanvas {...props}/></ReactFlowProvider>}
-function GuidedCanvas({saveControl,expanded=false,onToggleExpanded,startControl,entryButtonRef,branchId,definition,bindings,agents,selected,onSelect,focusRequest,issues,onInsert,onDelete,undoRedo,canvasViews,revealRequest=0,bottomSheetHeight=0,active}:Props):JSX.Element{
+function GuidedCanvas({region,navigationRef,onPhase,startControl,entryButtonRef,branchId,definition,bindings,agents,selected,onSelect,focusRequest,issues,onInsert,onDelete,undoRedo,canvasViews,revealRequest=0,active}:Props):JSX.Element{
  const zoom=useStore(state=>state.transform[2]),theme=useTheme();
- const region=useRef<HTMLDivElement>(null),scroll=useRef<HTMLDivElement>(null),start=useRef<HTMLDivElement>(null);
+ const scroll=useRef<HTMLDivElement>(null),start=useRef<HTMLDivElement>(null);
  const [flow,setFlow]=useState<ReactFlowInstance<CanvasNode,CanvasEdge>>(),[measurements,setMeasurements]=useState<CanvasMeasurements>({}),[layout,setLayout]=useState<CanvasLayout>(),[error,setError]=useState(''),[retry,setRetry]=useState(0),[arranging,setArranging]=useState(false),[selectedEdge,setSelectedEdge]=useState<string>();
  const [available,setAvailable]=useState({width:600,height:500}),[startSize,setStartSize]=useState({width:320,height:44});
- const lastFocusRequest=useRef(0),lastRevealRequest=useRef(0),latest=useRef({definition,bindings});latest.current={definition,bindings};
+ // Any focus request issued before Canvas mounts came from another view.
+ const lastFocusRequest=useRef(focusRequest),lastRevealRequest=useRef(0),latest=useRef({definition,bindings});latest.current={definition,bindings};
  // Keep an explicit Fit through measured toolbar reflow until the user moves the camera.
  const applied=useRef<{branchId:string;layout:CanvasLayout;selected?:string;available:typeof available}>(),fitPending=useRef<false|{width:number;height:number;key:string}>(false),restoringFocus=useRef(false);
  useLayoutEffect(()=>{fitPending.current=false},[branchId]);
@@ -78,6 +74,7 @@ function GuidedCanvas({saveControl,expanded=false,onToggleExpanded,startControl,
  const measure=useCallback((kind:'nodes'|'labels',id:string,width:number,height:number)=>{if(width<=0||height<=0)return;setMeasurements(previous=>previous[kind]?.[id]?.width===width&&previous[kind]?.[id]?.height===height?previous:{...previous,[kind]:{...previous[kind],[id]:{width,height}}})},[]);
  useEffect(()=>{if(!active)return;if(layout?.key===key){setError('');setArranging(false);return;}let current=true;let elk:InstanceType<typeof ELK>|undefined;setArranging(true);setError('');void (async()=>{elk=new ELK({workerFactory:()=>new Worker(new URL('elkjs/lib/elk-worker.min.js',import.meta.url))});return layoutWorkflowCanvas(latest.current.definition,latest.current.bindings,measurements,context,elk)})().then(result=>{if(current){setLayout(result);setError('');setArranging(false)}}).catch(error=>{if(current){setError(error instanceof Error?error.message:'The Workflow Could Not Be Arranged. Retry Or Use The Workflow Outline.');setArranging(false)}});return()=>{current=false;elk?.terminateWorker()}},[key,branchId,retry,active]);
  const measuring=arranging||!layout||layout.key!==key||layout.nodes.some(node=>!measurements.nodes?.[node.id])||layout.edges.some(edge=>!edge.unresolved&&!measurements.labels?.[edge.id]);
+ useLayoutEffect(()=>onPhase(error?'failed':measuring?'arranging':'ready'),[error,measuring,onPhase]);
  const frame=useMemo(()=>layout?frameWorkflowCanvas(layout,definition.entry,startSize):undefined,[layout,definition.entry,startSize]);
  const setFree=(viewport:Viewport)=>{if(!flow||!frame)return;const next=clampWorkflowViewport(frame,available,viewport);void flow.setViewport(next);remember({viewport:next,available:{...available}})};
  const reveal=useCallback((id:string,force=false)=>{
@@ -111,14 +108,13 @@ function GuidedCanvas({saveControl,expanded=false,onToggleExpanded,startControl,
  const actions=useMemo(()=>({definition,selected,selectedEdge,insert:onInsert,measure}),[definition,selected,selectedEdge,onInsert,measure]);
  const insertionButton=(edge:CanvasLayoutEdge)=><Button key={edge.id} data-workflow-insertion={JSON.stringify(edgeTarget(edge))} size="small" startIcon={<AddIcon/>} onClick={event=>onInsert(edgeTarget(edge),event.currentTarget)}>Insert On {edge.label}</Button>;
  const zoomBy=(factor:number)=>{if(!flow)return;fitPending.current=false;const view=flow.getViewport(),next=Math.max(.1,Math.min(2,view.zoom*factor)),ratio=next/view.zoom;setFree({x:available.width/2-(available.width/2-view.x)*ratio,y:available.height/2-(available.height/2-view.y)*ratio,zoom:next})};
- const controls:Array<[typeof AddIcon,string,()=>void,boolean]>=[[UndoIcon,'Undo',undoRedo.onUndo,!undoRedo.canUndo],[RedoIcon,'Redo',undoRedo.onRedo,!undoRedo.canRedo]];
- controls.unshift([ZoomInIcon,'Zoom In',()=>zoomBy(1.2),false],[ZoomOutIcon,'Zoom Out',()=>zoomBy(1/1.2),false],[FitScreenIcon,'Fit Workflow',fit,measuring]);
 
- return <Stack sx={{minWidth:0,minHeight:0,height:'100%'}}>
+ useImperativeHandle(navigationRef,()=>({zoomBy,fit}));
+
+ return <Stack sx={{flex:1,minWidth:0,minHeight:0}}>
   {!layout&&error&&!definition.entry&&<Button ref={entryButtonRef} variant="outlined" startIcon={<AddIcon/>} onClick={event=>onInsert({kind:'entry'},event.currentTarget)}>Add your first step</Button>}
   {error&&<Alert severity="error" action={<Button onClick={()=>setRetry(value=>value+1)}>Retry Layout</Button>}>{error}</Alert>}
-  <Box ref={region} role="region" aria-label="Workflow Canvas" aria-busy={measuring} onFocusCapture={event=>{const edge=(event.target as Element).closest('.react-flow__edge')?.getAttribute('data-id');if(edge)setSelectedEdge(edge);const id=(event.target as Element).closest('.react-flow__node')?.getAttribute('data-id');if(id&&!restoringFocus.current)reveal(id)}} onKeyDown={event=>{const target=event.target as Element;if(target.closest('input,textarea,[contenteditable="true"],button:not(.react-flow__node)'))return;const nodeId=target.closest('.react-flow__node')?.getAttribute('data-id'),edgeId=target.closest('.react-flow__edge')?.getAttribute('data-id');if((event.key==='Enter'||event.key===' ')&&nodeId&&[...definition.steps,...definition.controls].some(node=>node.id===nodeId)){event.preventDefault();setSelectedEdge(undefined);onSelect(nodeId)}else if((event.key==='Enter'||event.key===' ')&&edgeId){event.preventDefault();setSelectedEdge(edgeId)}if((event.key==='Delete'||event.key==='Backspace')&&selected&&nodeId===selected&&!selectedEdge){event.preventDefault();onDelete(selected)}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='z'){event.preventDefault();if(event.shiftKey)undoRedo.onRedo();else undoRedo.onUndo()}}} sx={{flex:1,minHeight:0,position:'relative',minWidth:0,overflow:'hidden',bgcolor:'background.default','--canvas-edge':theme.palette.text.secondary,'--canvas-failure':theme.palette.warning.main,'--canvas-error':theme.palette.error.main,'--xy-node-background-color':theme.palette.background.paper,'--xy-node-color':theme.palette.text.primary,'--xy-edge-stroke':theme.palette.text.secondary,'& .react-flow__node:focus-visible':{outline:'3px solid',outlineColor:'primary.main'}}}>
-   <Box sx={{height:`calc(100% - ${bottomSheetHeight}px)`,display:'flex',flexDirection:'column',minHeight:0}}>
+  <Box onFocusCapture={event=>{const edge=(event.target as Element).closest('.react-flow__edge')?.getAttribute('data-id');if(edge)setSelectedEdge(edge);const id=(event.target as Element).closest('.react-flow__node')?.getAttribute('data-id');if(id&&!restoringFocus.current)reveal(id)}} onKeyDown={event=>{const target=event.target as Element;if(target.closest('input,textarea,[contenteditable="true"],button:not(.react-flow__node)'))return;const nodeId=target.closest('.react-flow__node')?.getAttribute('data-id'),edgeId=target.closest('.react-flow__edge')?.getAttribute('data-id');if((event.key==='Enter'||event.key===' ')&&nodeId&&[...definition.steps,...definition.controls].some(node=>node.id===nodeId)){event.preventDefault();setSelectedEdge(undefined);onSelect(nodeId)}else if((event.key==='Enter'||event.key===' ')&&edgeId){event.preventDefault();setSelectedEdge(edgeId)}if((event.key==='Delete'||event.key==='Backspace')&&selected&&nodeId===selected&&!selectedEdge){event.preventDefault();onDelete(selected)}if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='z'){event.preventDefault();if(event.shiftKey)undoRedo.onRedo();else undoRedo.onUndo()}}} sx={{display:'flex',flexDirection:'column',flex:1,minHeight:0,position:'relative',minWidth:0,overflow:'hidden',bgcolor:'background.default','--canvas-edge':theme.palette.text.secondary,'--canvas-failure':theme.palette.warning.main,'--canvas-error':theme.palette.error.main,'--xy-node-background-color':theme.palette.background.paper,'--xy-node-color':theme.palette.text.primary,'--xy-edge-stroke':theme.palette.text.secondary,'& .react-flow__node:focus-visible':{outline:'3px solid',outlineColor:'primary.main'}}}>
    {(entryFallback||fallbackConnections.length>0)&&<Box role="group" aria-label="Workflow Insertion Actions" sx={{flexShrink:0,mx:1.5,mt:1.5,maxHeight:'30%',overflowY:'auto',bgcolor:'background.paper',borderRadius:1,'& > .MuiButton-root':{minHeight:44}}}>{entryFallback&&<Button ref={entryButtonRef} data-workflow-insertion="entry" size="small" startIcon={<AddIcon/>} sx={{minHeight:44}} onClick={event=>onInsert({kind:'entry'},event.currentTarget)}>Insert Before The First Step</Button>}{fallbackConnections.map(edge=>insertionButton(edge))}</Box>}
    <Box ref={scroll} role="region" aria-label="Canvas Viewport" sx={{flex:1,minHeight:0,overflow:'hidden',overscrollBehavior:'contain'}}>
     <Box sx={{width:'100%',height:'100%'}}>
@@ -127,16 +123,6 @@ function GuidedCanvas({saveControl,expanded=false,onToggleExpanded,startControl,
      {frame&&<ViewportPortal><Box ref={start} className="nodrag nopan" sx={{position:'absolute',left:frame.start.x,top:frame.start.y,width:frame.start.width,pointerEvents:'all','& > button':{width:'100%'}}}>{startControl}</Box><svg aria-hidden="true" style={{position:'absolute',left:frame.start.x+frame.start.width/2-8,top:frame.start.y+frame.start.height,width:16,height:64,overflow:'visible',pointerEvents:'none'}}><path d="M8 0 V56" fill="none" stroke={theme.palette.text.secondary} strokeWidth="1.6"/><path d="M3 55 L8 63 L13 55 Z" fill={theme.palette.text.secondary}/></svg>{frame.entry&&zoom>=.8&&!guidedInsertionRestriction(definition,{kind:'entry'})&&<Tooltip title="Insert Before The First Step"><IconButton ref={entryButtonRef} data-workflow-insertion="entry" className="nodrag nopan" aria-label="Insert Before The First Step" onClick={event=>onInsert({kind:'entry'},event.currentTarget)} sx={{position:'absolute',left:frame.start.x+frame.start.width/2-22/zoom,top:frame.start.y+frame.start.height+(64-44/zoom)/2,width:44/zoom,height:44/zoom,'& svg':{fontSize:24/zoom},bgcolor:'background.paper',border:'1px solid',borderColor:'divider',borderRadius:'50%',pointerEvents:'all'}}><AddIcon/></IconButton></Tooltip>}{frame.firstStep&&<Button ref={entryButtonRef} data-workflow-insertion="entry" variant="outlined" startIcon={<AddIcon/>} sx={{position:'absolute',left:frame.firstStep.x,top:frame.firstStep.y,width:frame.firstStep.width,height:frame.firstStep.height,pointerEvents:'all'}} onClick={event=>onInsert({kind:'entry'},event.currentTarget)}>Add your first step</Button>}</ViewportPortal>}
     </ReactFlow></CanvasActions.Provider>
     </Box>
-   </Box>
-   <Stack direction="row" alignItems="center" gap={1} sx={{flexShrink:0,flexWrap:'wrap',px:1.5,pt:1,borderTop:'1px solid',borderColor:'divider',pb:'calc(8px + env(safe-area-inset-bottom, 0px))',bgcolor:'background.default'}}>
-    <Stack direction="row" alignItems="center" gap={.5} sx={{flexShrink:0}}>
-    <Stack direction="row" sx={{bgcolor:'background.paper',border:'1px solid',borderColor:'divider',borderRadius:'12px',pointerEvents:'auto'}}>
-     {controls.map(([Icon,label,action,disabled])=><Tooltip title={label} key={label}><span><IconButton aria-label={label} onClick={action} disabled={disabled} sx={{width:44,height:44}}><Icon/></IconButton></span></Tooltip>)}
-    </Stack>
-    {onToggleExpanded&&<Tooltip title={expanded?'Collapse Workflow':'Expand Workflow'}><IconButton aria-label={expanded?'Collapse Workflow':'Expand Workflow'} aria-pressed={expanded} onClick={onToggleExpanded} sx={{width:44,height:44,bgcolor:'background.paper'}}>{expanded?<CloseFullscreenIcon/>:<OpenInFullIcon/>}</IconButton></Tooltip>}
-    </Stack>
-    <Stack direction="row" alignItems="center" gap={1} sx={{ml:'auto',minWidth:0,maxWidth:'100%','& .MuiButton-root':{minHeight:44,whiteSpace:'nowrap'}}}>{saveControl}</Stack>
-   </Stack>
    </Box>
    {measuring&&!error&&<Typography role="status" variant="caption" sx={{position:'absolute',right:12,top:12,bgcolor:'background.paper',p:.5}}>Arranging Workflow…</Typography>}
   </Box>

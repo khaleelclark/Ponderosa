@@ -1,5 +1,6 @@
 import {createPortal} from 'react-dom';
 import {WorkflowOutline} from './WorkflowOutline';
+import {WorkflowCanvasFooter} from './WorkflowCanvasFooter';
 import {WorkflowInspectorPage} from './WorkflowInspectorPage';
 import {workflowTriggerSummary} from './trigger-summary';
 import {useBranchDraftGuard} from './BranchNavigation';
@@ -10,13 +11,13 @@ import {lazy,Suspense,type ReactNode} from 'react';
 const WorkflowAgentSetup=lazy(()=>import('./WorkflowAgentSetup').then(module=>({default:module.WorkflowAgentSetup})));
 
 import { requestJson } from "../../api/real";
-import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {Alert,Box,Button,FormControl,FormControlLabel,FormLabel,IconButton,Menu,MenuItem,Radio,RadioGroup,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import type {AgentDto,BranchBindings,BranchDefinition,ConversationDto,EngineDto,TriggerSourceConfig} from '@ponderosa/core';
-import type {CanvasViewState,WorkflowUndoRedo} from './WorkflowCanvas';
+import type {CanvasNavigation,CanvasPhase,CanvasViewState,WorkflowUndoRedo} from './WorkflowCanvas';
 const WorkflowCanvas=lazy(()=>import('./WorkflowCanvas').then(module=>({default:module.WorkflowCanvas})));
 import {guidedInsertionRestriction,insertGuidedStep,type GuidedInsertionTarget,type GuidedStepKind} from './guided-operations';
 import {removeWorkflowNode} from './model';
@@ -63,6 +64,8 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const startsLabel=useId();
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
  const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??'canvas');
+ const canvasRegion=useRef<HTMLDivElement>(null),canvasNavigation=useRef<CanvasNavigation>(null);
+ const [canvasPhase,setCanvasPhase]=useState<CanvasPhase>('loading');
  const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
  const outlineScroll=useRef(canvasViews.get(branchId)?.outlineScroll??0),outlineTrigger=useRef<HTMLButtonElement>(null),outlineEntry=useRef<HTMLButtonElement>(null);
  const [insertionLabel,setInsertionLabel]=useState<string>();
@@ -142,6 +145,21 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   onDraft({definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:next});
  };
  const triggerControl=(ref:React.RefObject<HTMLButtonElement>)=><Tooltip describeChild title="Edit trigger settings"><Button ref={ref} color={triggerInvalid?'error':'inherit'} variant="outlined" startIcon={<PlayArrowOutlinedIcon/>} endIcon={<ExpandMoreIcon/>} onClick={()=>{setExpanded(false);onInspectorPane('trigger')}} sx={{minHeight:44,maxWidth:'100%',bgcolor:'background.paper',borderRadius:'12px',whiteSpace:'normal',textAlign:'left','& .MuiButton-startIcon, & .MuiButton-endIcon':{flexShrink:0}}}>{workflowTriggerSummary(definition.trigger.kind,sourceConfig)}{triggerDirty?' · Draft':''}</Button></Tooltip>;
+ const focusViewSelector=useRef(false);
+ const restoreViewFocus=useCallback((group:HTMLDivElement|null)=>{
+  if(!group||!focusViewSelector.current)return;
+  focusViewSelector.current=false;
+  group.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({preventScroll:true});
+ },[]);
+ const viewSelector=<ToggleButtonGroup ref={restoreViewFocus} exclusive value={view} aria-label="Workflow view" size="small" onChange={(_,next:'canvas'|'outline'|null)=>{
+  if(!next)return;
+  focusViewSelector.current=true;
+  setView(next);
+  if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
+ }} sx={{flexShrink:0,'& .MuiToggleButton-root':{minHeight:44,px:{xs:1,sm:2},textTransform:'none'}}}>
+  <ToggleButton value="canvas">Canvas</ToggleButton>
+  <ToggleButton value="outline">Outline</ToggleButton>
+ </ToggleButtonGroup>;
  const canEditInspector=()=>mounted.current&&editorAuthority.current.visible&&editorAuthority.current.branchId===branchId&&editorAuthority.current.nodeId===selectedNode?.id&&owner.current.definition===definition&&owner.current.bindings===bindings;
  return <Stack ref={canvas} onKeyDown={event=>{if(canvas.current?.contains(event.target as Node)&&event.key==='Escape'&&!event.defaultPrevented&&expanded){event.preventDefault();toggleExpanded()}}} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>
   {setupNotice&&<Alert severity="info" onClose={()=>setSetupNotice('')}>{setupNotice}</Alert>}
@@ -153,23 +171,20 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
    {(branching?[['condition','Condition'],['route','Named Routes'],['parallel','Parallel Paths'],['for_each','For Each']]:[['agent','Agent Task'],['human_gate','Approval'],['action','Notification'],['branch_call','Run Another Workflow'],['script','Script']]).map(([kind,label])=><MenuItem key={kind} disabled={Boolean(restricted)} onClick={()=>add(kind as GuidedStepKind)}>{label}</MenuItem>)}
    {!branching&&<MenuItem onClick={()=>setBranching(true)}>Branching…</MenuItem>}
   </Menu>
-  <Box sx={{px:1.5,py:.5,borderBottom:1,borderColor:'divider',flexShrink:0}}>
-   <ToggleButtonGroup exclusive value={view} aria-label="Workflow view" size="small" onChange={(_,next:'canvas'|'outline'|null)=>{
-    if(!next)return;
-    setView(next);
-    if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
-   }} sx={{'& .MuiToggleButton-root':{minHeight:44,px:2,textTransform:'none'}}}>
-    <ToggleButton value="canvas">Canvas</ToggleButton>
-    <ToggleButton value="outline">Outline</ToggleButton>
-   </ToggleButtonGroup>
-  </Box>
-  {canvasOpened&&<Box hidden={view!=='canvas'} sx={{flex:1,minHeight:0,minWidth:0}}>
-  <Suspense fallback={<Typography role="status">Loading Workflow Canvas…</Typography>}><WorkflowCanvas saveControl={saveControl} expanded={expanded} onToggleExpanded={toggleExpanded} startControl={triggerControl(triggerButton)} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active&&view==='canvas'} bottomSheetHeight={0} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} focusRequest={editorVisible?0:focusRequest}/></Suspense>
-  </Box>}
+  {canvasOpened&&<Stack ref={canvasRegion} hidden={view!=='canvas'} role="region" aria-label="Workflow Canvas"
+   aria-busy={canvasPhase==='loading'||canvasPhase==='arranging'} sx={{display:view==='canvas'?'flex':'none',flex:1,minHeight:0,minWidth:0}}>
+   <Suspense fallback={<Typography role="status" sx={{flex:1,minHeight:0}}>Loading Workflow Canvas…</Typography>}>
+    <WorkflowCanvas region={canvasRegion} navigationRef={canvasNavigation} onPhase={setCanvasPhase} startControl={triggerControl(triggerButton)} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active&&view==='canvas'} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} focusRequest={editorVisible?0:focusRequest}/>
+   </Suspense>
+   <WorkflowCanvasFooter viewSelector={view==='canvas'?viewSelector:null} saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
+    zoomIn={canvasPhase==='loading'?undefined:()=>canvasNavigation.current?.zoomBy(1.2)}
+    zoomOut={canvasPhase==='loading'?undefined:()=>canvasNavigation.current?.zoomBy(1/1.2)}
+    fit={canvasPhase==='ready'?()=>canvasNavigation.current?.fit():undefined}/>
+  </Stack>}
   {outlineOpened&&<Box hidden={view!=='outline'} sx={{flex:1,minHeight:0,minWidth:0}}>
    <WorkflowOutline definition={definition} bindings={bindings} agents={agents} issues={validationIssues} active={active&&view==='outline'} selected={selected}
     onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} startControl={triggerControl(outlineTrigger)} entryButtonRef={outlineEntry}
-    saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
+    viewSelector={view==='outline'?viewSelector:null} saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
     focusRequest={editorVisible?0:focusRequest} revealRequest={validationRequest+issueFocus+editorReveal} scrollPosition={outlineScroll}/>
   </Box>}
   {inspectorTarget&&createPortal(<>
