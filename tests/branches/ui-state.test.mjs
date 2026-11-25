@@ -854,7 +854,7 @@ test('Branch execution status distinguishes confirmed zero, active, unresolved a
  const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderBranchHeader({...props,...extra});
  for(const [extra,label] of [[{runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0}},'0 Running'],[{runCounts:{running:4,waiting:1,queued:2,retrying:0,stopping:0,needsAttention:0}},'4 Running · 2 Queued · 1 Waiting'],[{},'Run status loading…'],[{executionsUnavailable:true},'Run status unavailable']]){
-  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
+  const html=render(extra);assert.ok(html.includes(`aria-description="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('0 Running'),'An unavailable count is not confirmed idle');
  }
  const nested=renderBranchHeader({...props,tab:'chats',runCounts:{running:4,waiting:1,queued:2,retrying:0,stopping:0,needsAttention:0}});
@@ -1130,7 +1130,7 @@ test('pending actual advanced Apply survives publication retry without a new edi
 test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,runCounts:{running:2,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0},onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderBranchHeader(props);
- assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
+ assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.includes('aria-description="2 Running"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
  const clean=renderBranchHeader({...props,dirty:false});assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
  const initial=renderBranchHeader({...props,dirty:false,published:false});assert.ok(!initial.includes('aria-label="Editing"'));assert.ok(!initial.includes('Unpublished Changes'));assert.ok(!initial.includes('>Editing</span>'));
 });
@@ -1153,14 +1153,13 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  for(const [props,label,visible] of [[{runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0}},'0 Running','0'],[{runCounts:{running:12,waiting:3,queued:4,retrying:0,stopping:0,needsAttention:0}},'12 Running · 4 Queued · 3 Waiting','12 / 7'],[{},'Run status loading…','…'],[{executionsUnavailable:true},'Run status unavailable','!']]){
   const html=renderBranchHeader({...base,...props});
-  assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
-  const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
-  const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
-  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children,'Editing','Unpublished workflow changes use the visible Editing label');assert.equal(status.props.children[2].props.title,'Unpublished Changes');
-  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),undefined,'The Editing label replaces the ambiguous dot');
+  assert.ok(html.includes(`aria-description="${label}"`));
+  const tab=BranchWorkspaceHeader({...base,...props}).props.children.props.tabs.items.find(item=>item.value==='executions');
+  const executionCircle=tab.icon.props.children.props.children[1];
+  assert.equal(executionCircle.props.children.type,SemanticStatusCircle);
+  assert.equal(svg(renderToStaticMarkup(executionCircle)),reference);
   const kind=props.executionsUnavailable?'needs_attention':props.runCounts===undefined?'waiting':props.runCounts.running>0?'running':props.runCounts.waiting+props.runCounts.queued>0?'waiting':'idle';
   for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
-  assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
  }
 });
 
@@ -1199,13 +1198,13 @@ test('Branch notifications stay in the sidebar and drawer rather than the shared
 test('Branch usage reuses its canonical menu and forwards the persistent usage anchor',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('branch.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
- const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onHistory:undefined,onEditJson:undefined,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
+ const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onHistory:undefined,onEditJson:undefined,onVariables:undefined,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
  const render=vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),menu=render(open).props.children[1],anchor={isConnected:true};
  assert.equal(menu.props.label,'Branch Actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider Usage','Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
  const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
  const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
- assert.equal(header.props.primaryActions.type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
+ assert.equal(header.props.primaryActions.props.children[1].type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
 });
 
 
@@ -1455,10 +1454,10 @@ test('new repeating schedules default to Run Latest while one-time schedules car
 });
 
 
-test('Save Workflow renders the existing guarded review action with pending and disabled states',async()=>{
+test('Review changes renders the existing guarded review action with pending and disabled states',async()=>{
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
- const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Button'&&node.children.some(child=>f.ts.isJsxText(child)&&child.text==='Save Workflow'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);
- assert.equal(matches.length,1,'One primary Save Workflow entry point');
+ const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Button'&&node.children.some(child=>f.ts.isJsxText(child)&&child.text==='Review changes'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);
+ assert.equal(matches.length,1,'One primary Review changes entry point');
  Object.assign(s,{exports:{},require,Button:require('@mui/material').Button,setValidationRequest(){},setTab(){}});
  f.vm.runInContext(f.ts.transpileModule('globalThis.renderSave=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
  const renderSave=s.renderSave;s.renderSave=()=>{f.load('saveDisabled');return renderSave()};
@@ -1470,22 +1469,12 @@ test('Save Workflow renders the existing guarded review action with pending and 
  const attempt={input:{branchId:'owner',idempotencyKey:'same-attempt'},draftRevision:s.draftRevision.current};s.deploy.variables=attempt;s.publicationUnconfirmed=true;s.preview=undefined;s.renderSave().props.onClick();assert.equal(s.preview,attempt,'Uncertain publication reuses its exact existing review attempt');
 });
 
-test('a closing deployment review retains its content without retaining publication authority',async()=>{
- const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),mui=require('@mui/material');
- const names=['Dialog','DialogTitle','DialogContent','DialogActions','Stack','Alert','Typography','Accordion','AccordionSummary','AccordionDetails','Chip','Divider','Button'];
- Object.assign(s,{exports:{},require,PublishingEffects,...Object.fromEntries(names.map(name=>[name,mui[name]])),publishedVersion:{data:undefined},advancedDirty:false,publicationUnconfirmed:false});
- let state,published=0;s.setReviewDialog=update=>{state=update(state);s.preview=state?.active;s.reviewPresentation=s.preview??state?.retained;};
- f.load('setPreview');f.load('clearReviewPresentation');f.load('deploymentOperationLabel');
- const attempt={...s.preview,result:{operations:[{kind:'change',resource:'Execution settings',ref:'Concurrency',before:'2',after:'3'}],notes:['Exact reviewed policy remains visible.']}};
- s.setPreview(attempt);s.deploy.mutate=()=>{published++};
- const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Dialog'&&node.getText(f.file).includes('<DialogTitle>Review Deployment</DialogTitle>'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);assert.equal(matches.length,1);
- f.vm.runInContext(f.ts.transpileModule('globalThis.renderReview=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
- const opened=s.renderReview(),body=renderToStaticMarkup(opened.props.children[1]);assert.equal(opened.props.open,true);assert.ok(body.includes('Local rename')&&body.includes('Exact reviewed policy remains visible.'));
- s.setPreview(undefined);const closing=s.renderReview();assert.equal(closing.props.open,false);assert.equal(s.preview,undefined,'Logical review validity is cleared immediately');assert.equal(s.reviewPresentation,attempt);assert.equal(renderToStaticMarkup(closing.props.children[1]),body,'The exiting Dialog keeps the same reviewed content');
- const publish=closing.props.children[2].props.children[2];assert.equal(publish.props.disabled,true);publish.props.onClick();assert.equal(published,0,'A retained render snapshot cannot authorize publication');
- const oldExit=closing.props.slotProps.transition.onExited,newer={...attempt,input:{...attempt.input,idempotencyKey:'new-reviewed-attempt'}};
- s.setPreview(newer);oldExit();assert.equal(s.preview,newer);assert.equal(s.reviewPresentation,newer,'An older exit cannot erase a new active review');
- s.setPreview(undefined);s.renderReview().props.slotProps.transition.onExited();assert.equal(s.reviewPresentation,undefined,'Closed presentation is released only after exit');assert.equal(published,0);
+test('closing and reopening Review changes retires the old publication authority',async()=>{
+ const f=await discardActionFixture(),s=f.scope;
+ let published=0;s.deploy.mutate=()=>{published++};s.pendingAdvanced.current=false;
+ s.setPreview(undefined);s.publishChanges();assert.equal(published,0);
+ s.preview={input:{idempotencyKey:'reviewed'},draftRevision:s.draftRevision.current};
+ s.publishChanges();s.publishChanges();assert.equal(published,1);
 });
 
 test('review and publication failures retain the draft and its canonical baseline',async()=>{
@@ -1565,13 +1554,13 @@ async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
  const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query'),{readFileSync}=await import('node:fs');
  const {INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength}=await import('../../packages/core/dist/index.js'),navigations=[],buttons=[],fields=[],dialogs=[];
- Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,rerunVersion:undefined,setRerunVersion:value=>{s.rerunVersion=value},input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
+ Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,availability:{isPending:false},rerunVersion:undefined,setRerunVersion:value=>{s.rerunVersion=value},input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
  let intent=0;s.createClientId=()=>`new-run-intent-${++intent}`;const readWorkflow=s.requestJson;s.currentDraft.current=s.draft;s.requestJson=async(path,init)=>{if(!init?.body)return readWorkflow(path,init);f.requests.push({path,body:JSON.parse(init.body)});return submit()};
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});let observer;
  s.useMutation=options=>{observer=new MutationObserver(client,options);return observer.getCurrentResult()};f.load('run');const unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear()});
  const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack'].map(name=>[name,primitive]));
  mui.Alert=props=>React.createElement('div',null,props.children,props.action);mui.Dialog=props=>{dialogs.push(props);return props.open?React.createElement('section',null,props.children):null};mui.Button=props=>{buttons.push(props);return React.createElement('button',{disabled:props.disabled},props.children)};mui.TextField=props=>{fields.push(props);return null};
- const exports={};f.vm.runInNewContext(f.ts.transpile(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
+ const exports={};f.vm.runInNewContext(f.ts.transpile(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),{exports,React,require:name=>name==='@mui/material'?mui:name.endsWith('/WorkflowInspectorPage')?{WorkflowInspectorPage:props=>{dialogs.push({...props,onClose:props.onBack});return React.createElement('section',null,props.children,props.actions)}}:require(name)});
  Object.assign(s,mui,{ConfirmDialog:exports.ConfirmDialog});let dialog;
  function find(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='ConfirmDialog'&&node.openingElement.attributes.properties.some(a=>a.name?.getText(f.file)==='onConfirm'&&a.initializer?.expression?.getText(f.file)==='submitRun'))dialog=node.getText(f.file);f.ts.forEachChild(node,find)}find(f.file);assert.ok(dialog,'Run uses the existing shared confirmation shell');
  const render=()=>{s.route=s.routeOwner.current;s.run={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const name of ['once','runAccepted','runUnconfirmed','runInputError','runUnavailable','openRun','openRerun','submitRun'])f.load(name);buttons.length=0;fields.length=0;dialogs.length=0;return renderToStaticMarkup(f.vm.runInContext(f.ts.transpile('('+dialog+')',{target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),s))};
@@ -1580,9 +1569,9 @@ async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId
 
 test('header Run uses the published workflow without changing its schedule, fences duplicate clicks and opens the accepted run',async t=>{
  let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;s.draft.definition.trigger={kind:'schedule',configRef:'schedule'};const trigger=JSON.stringify(s.draft.definition.trigger),key=s.occurrenceKey;
- f.render();s.openRun();f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits excluded/);
+ f.render();s.openRun();f.render();assert.equal(f.dialogs[0].title,'Run Published Workflow');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits excluded/);
  const click=f.button('Run Published Workflow').onClick,pending=click();assert.equal(click(),undefined);f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(s.runOpen,true,'The shared shell fences immediate dismissal before mutation pending renders');
- await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.button('Cancel').disabled,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
+ await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.dialogs[0].pending,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0])),{path:'/api/branches/owner/executions',body:{occurrenceKey:key,input:'  First line\r\nSecond line 😀  '}});assert.equal(JSON.stringify(s.draft.definition.trigger),trigger,'Run never changes the saved trigger or publishes the draft');
  finish({id:'accepted-run',branchId:'owner',state:'queued'});await pending;f.render();assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);assert.equal(s.runOpen,false);assert.equal(f.notices.length,0,'The selected run confirms acceptance without a transient notice');assert.equal(s.occurrenceKey,key,'Feedback settlement does not rotate or reset mutation identity');
  s.openRun();f.render();assert.notEqual(s.occurrenceKey,key);assert.equal(f.button('Run Published Workflow').disabled,false,'Another run intent is available while the accepted run remains queued');
@@ -1634,9 +1623,9 @@ test('late Run acceptance cannot replace another owner, global view or selected 
 test('Run input stays raw, validates canonical code points and exposes unpublished/disabled guidance without submitting',async t=>{
  const f=await workflowRunFixture(t),s=f.scope;f.render();s.openRun();f.render();f.field().onChange({target:{value:'😀'.repeat(10_001)}});f.render();assert.equal(f.button('Run Published Workflow').disabled,true);assert.match(f.field().helperText,/10,000/);assert.equal(s.submitRun(),undefined);assert.equal(f.requests.length,0);
  s.input='e\u0301'.repeat(10_000);f.render();assert.equal(f.field().error,false,'Validation uses the existing server normalization contract');
- const verified=s.current;s.current=undefined;s.selectedBranch.isPending=true;f.render();assert.match(f.render(),/Checking workflow availability/);assert.doesNotMatch(f.render(),/Save Workflow before running/);s.selectedBranch.isPending=false;s.current=verified;
- s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Save Workflow before running/);assert.equal(f.button('Run once').disabled,true);assert.equal(f.requests.length,0);
- s.current={...s.current,versionId:'v1',enabled:false};f.render();assert.match(f.render(),/Enable it in Workflow trigger settings/);assert.equal(f.button('Run Published Workflow').disabled,true);f.button('Open Workflow').onClick();assert.equal(s.runOpen,false);
+ const verified=s.current;s.current=undefined;s.selectedBranch.isPending=true;f.render();assert.match(f.render(),/Checking workflow availability/);assert.doesNotMatch(f.render(),/Publish the workflow before running/);s.selectedBranch.isPending=false;s.current=verified;
+ s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Publish the workflow before running/);assert.equal(f.button('Run once').disabled,true);assert.equal(f.requests.length,0);
+ s.current={...s.current,versionId:'v1',enabled:false};f.render();assert.match(f.render(),/Enable the workflow to run it/);assert.equal(f.button('Run Published Workflow').disabled,true);f.button('Open Workflow').onClick();assert.equal(s.runOpen,false);
 });
 
 test('Branch tabs and execution-control deep links share canonical semantic order',async()=>{
@@ -1645,14 +1634,14 @@ test('Branch tabs and execution-control deep links share canonical semantic orde
  assert.equal(parseBranchRoute('?branch=b&tab=workflow&section=execution-controls').settingsSection,undefined);
 });
 
-test('every Branch tab shares a title-adjacent compact Run control with optional defaults for other callers',()=>{
- let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,runCounts:{running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0},onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
+test('every Branch tab keeps a labeled Run once action with the overflow',()=>{
+ let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
+ const action=extra=>BranchWorkspaceHeader({...props,...extra}).props.children.props.primaryActions.props.children[0];
  for(const tab of ['workflow','executions','chats','settings']){
-  const element=BranchWorkspaceHeader({...props,tab}),frame=element.props.children,status=frame.props.status,run=status.props.children[3].props.children.props.children;
-  assert.equal(frame.props.collapsedSingleRow,true);assert.equal(run.props['aria-label'],'Run Published Workflow');assert.equal(run.props.sx.minWidth,44);assert.equal(run.props.sx.minHeight,44);assert.equal(run.props.sx['@container (max-width: 40rem)'].width,44);run.props.onClick();
-  const html=renderBranchHeader({...props,tab});assert.match(html,/aria-label="Run Published Workflow"/);assert.equal((html.match(/data-testid="PlayArrowOutlinedIcon"/g)??[]).length,1);
+  const run=action({tab});assert.equal(run.props.children,'Run once');assert.equal(run.props.sx.minHeight,44);run.props.onClick();
  }
- assert.equal(opened,4);const pending=BranchWorkspaceHeader({...props,tab:'workflow',runPending:true}).props.children.props.status.props.children[3].props.children.props.children;assert.equal(pending.props.disabled,true);
+ assert.equal(opened,4);assert.equal(action({tab:'workflow',runPending:true}).props.disabled,true);
+ assert.equal(action({tab:'executions',runDisabled:true}).props.disabled,true);
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.
@@ -1666,7 +1655,7 @@ async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}
  const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack','Typography','MenuItem'].map(name=>[name,primitive]));
  mui.Dialog=p=>{dialogs.push(p);return p.open?React.createElement('section',null,p.children):null;};mui.Button=p=>{buttons.push(p);return React.createElement('button',{disabled:p.disabled},p.children);};mui.TextField=p=>{fields.push(p);return null;};mui.Switch=p=>{fields.push(p);return null;};mui.FormControlLabel=p=>React.createElement('div',null,p.control);
  const load=(text,scope={})=>vm.runInNewContext(ts.transpile(text,{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
- const exports={};load(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
+ const exports={};load(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{exports,React,require:name=>name==='@mui/material'?mui:name.endsWith('/WorkflowInspectorPage')?{WorkflowInspectorPage:props=>{dialogs.push({...props,onClose:props.onBack});return React.createElement('section',null,props.children,props.actions)}}:require(name)});
  let key=0;const scope={React,ApiRequestError,...mui,ConfirmDialog:exports.ConfirmDialog,intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'attempt-a',unknown}:{})},reason:'',reconciled:false,result:'',failed:false,target:'',commandKey:'command-0',createClientId:()=>`command-${++key}`,execution:{id:'execution-a',revision:7,parentExecutionId:'parent'},executions:[{id:'target',state:'waiting',createdAt:'2026-10-25T00:00:00Z'}],mergeTargets:{isPending:false,error:null,data:{},hasNextPage:false},actionsCurrent:true,detail:{attempts:[],steps:[]},refresh:()=>refreshes.push('refresh'),requestJson:async(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return submit();}};
  for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{scope[name]=value;};
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}}),observer=new MutationObserver(client,load('('+mutation+')',scope)),unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear();});

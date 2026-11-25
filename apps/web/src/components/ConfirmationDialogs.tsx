@@ -9,10 +9,12 @@ import {
   type DialogProps,
 } from "@mui/material";
 import type { ReactNode } from "react";
+import {WorkflowInspectorPage} from "./branches/WorkflowInspectorPage";
 import { useEffect, useRef, useState } from "react";
 
 interface FormDialogShellProps {
   open: boolean;
+  inWorkflowInspector?: boolean;
   title: ReactNode;
   children: ReactNode;
   pending?: boolean;
@@ -31,6 +33,7 @@ interface FormDialogShellProps {
 
 function FormDialogShell({
   open,
+  inWorkflowInspector,
   title,
   children,
   pending = false,
@@ -51,25 +54,14 @@ function FormDialogShell({
   const close = (): void => {
     if (!pending && !confirming.current) onCancel();
   };
-  return (
-    <Dialog
-      open={open}
-      onClose={close}
-      fullWidth
-      maxWidth={maxWidth}
-      aria-busy={pending || undefined}
-      slotProps={{ transition: { onExited } }}
-    >
-      <DialogTitle>{title}</DialogTitle>
-      <DialogContent>
+  const body = <>
         {children}
         {error ? <Alert severity="error" role="alert" sx={{ mt: 2 }}>{error}</Alert> : null}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={close} disabled={pending}>{cancelLabel}</Button>
-        {secondaryAction && <Button onClick={secondaryAction.onClick} disabled={pending || secondaryAction.disabled}>{secondaryAction.label}</Button>}
-        <Button
-          autoFocus
+  </>;
+  const secondary = secondaryAction && <Button onClick={secondaryAction.onClick} disabled={pending || secondaryAction.disabled}>{secondaryAction.label}</Button>;
+  const confirm = (
+    <Button
+          autoFocus={!inWorkflowInspector}
           color={confirmColor}
           variant="contained"
           disabled={pending || confirmDisabled}
@@ -91,6 +83,19 @@ function FormDialogShell({
         >
           {pending ? pendingLabel ?? `${confirmLabel.replace(/\s+$/, "")}…` : confirmLabel}
         </Button>
+  );
+  if (inWorkflowInspector) return open
+    ? <WorkflowInspectorPage title={title} pending={pending} onBack={close} actions={<>{secondary}{confirm}</>}>{body}</WorkflowInspectorPage>
+    : <></>;
+  return (
+    <Dialog open={open} onClose={close} fullWidth maxWidth={maxWidth}
+      aria-busy={pending || undefined} slotProps={{ transition: { onExited } }}>
+      <DialogTitle>{title}</DialogTitle>
+      <DialogContent>{body}</DialogContent>
+      <DialogActions>
+        <Button onClick={close} disabled={pending}>{cancelLabel}</Button>
+        {secondary}
+        {confirm}
       </DialogActions>
     </Dialog>
   );
@@ -98,6 +103,7 @@ function FormDialogShell({
 
 export interface ConfirmDialogProps {
   open: boolean;
+  inWorkflowInspector?: boolean;
   title: ReactNode;
   children: ReactNode;
   confirmLabel?: string;

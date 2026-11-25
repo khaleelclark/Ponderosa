@@ -34,12 +34,12 @@ try{
   const chatReady=()=>page.getByLabel('Message',{exact:true}).waitFor();
   try{
    if(kind==='direct-workflow'){
-    await page.goto(web.origin+'/branches?branch='+branch.id+'&tab=workflow');await page.getByRole('button',{name:'Add Your First Step',exact:true}).waitFor();
+    await page.goto(web.origin+'/branches?branch='+branch.id+'&tab=workflow');await page.getByRole('button',{name:'Add your first step',exact:true}).waitFor();
     assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),1);row.directWorkflowAvailable=true;
    }else{
     await page.goto(chatUrl);await chatReady();
     assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),0,'Unvisited Workflow stays unmounted');
-    assert.equal(await page.getByRole('button',{name:'Add Your First Step',exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'Add your first step',exact:true}).count(),0);
     assert(row.requests.some(request=>request.path==='/api/branches/engine/conversations/'+chat.id&&new URL(request.url).searchParams.get('limit')==='100'),'Existing canonical tail bound stays100');
     assert(!row.requests.some(request=>[editorChunk,nodeEditorChunk].includes(request.path)),'Cold Chat must not request editor module or NodeEditor code');
     row.coldScripts=row.requests.filter(request=>request.type==='script').map(request=>request.path);
@@ -50,23 +50,23 @@ try{
      assert.equal(await page.locator('.react-flow').count(),0,'Settings first-use must not mount the workflow canvas');
      await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
      await tab('Settings');assert.equal(await policy.inputValue(),'9','Settings draft survives Chat navigation');
-     await tab('Workflow');await page.getByRole('button',{name:'Add Your First Step',exact:true}).waitFor();
+     await tab('Workflow');await page.getByRole('button',{name:'Add your first step',exact:true}).waitFor();
     }else{
      await tab('Workflow');
      if(kind==='editor-retry'){
       await page.getByText('This View Could Not Be Loaded.',{exact:true}).waitFor();assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),0);
       assert.equal(row.blockedEditorRequests,1,'A rejected view does not retry automatically');await picture('explicit-retry');allowEditor=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();row.retry='explicit';
      }
-     await page.getByRole('button',{name:'Add Your First Step',exact:true}).waitFor();assert(row.requests.some(request=>request.path===editorChunk));if(kind==='editor-retry')assert.equal(row.editorRequests,2,'Exactly one explicit retry downloads the view');
+     await page.getByRole('button',{name:'Add your first step',exact:true}).waitFor();assert(row.requests.some(request=>request.path===editorChunk));if(kind==='editor-retry')assert.equal(row.editorRequests,2,'Exactly one explicit retry downloads the view');
      if(kind==='retained-editor'){
-      await page.getByRole('button',{name:'Add Your First Step',exact:true}).click();await page.getByRole('menuitem',{name:'Script',exact:true}).click();
+      await page.getByRole('button',{name:'Add your first step',exact:true}).click();await page.getByRole('menuitem',{name:'Script',exact:true}).click();
       const script=page.getByRole('textbox',{name:'Script',exact:true});await script.waitFor();const authored='console.log("retained workflow draft");';await script.fill(authored);
       const advanced=page.getByRole('button',{name:'Advanced',exact:true});if(await advanced.getAttribute('aria-expanded')!=='true')await advanced.click();
       const directory=page.getByRole('textbox',{name:'Working Directory',exact:true});await directory.waitFor();await directory.fill('.');if(await advanced.getAttribute('aria-expanded')!=='true')await advanced.click();await directory.waitFor();
       await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
       await tab('Workflow');await page.getByText('Step Settings',{exact:true}).waitFor();
       assert.equal(await script.inputValue(),authored);assert.equal(await directory.inputValue(),'.');assert.equal(await advanced.getAttribute('aria-expanded'),'true');assert.equal(await directory.isVisible(),true,'Open Advanced editor state stays mounted');
-      await page.getByRole('button',{name:'Close Step Settings',exact:true}).click();await page.getByRole('button',{name:'Explore Workflow',exact:true}).click();
+      await page.getByRole('button',{name:'Back to workflow',exact:true}).click();await page.getByRole('button',{name:'Explore Workflow',exact:true}).click();
       const viewport=page.locator('#branch-workflow-panel .react-flow__viewport'),before=await viewport.getAttribute('style');await page.getByRole('button',{name:'Zoom In',exact:true}).click();
       await page.waitForFunction(before=>document.querySelector('#branch-workflow-panel .react-flow__viewport')?.getAttribute('style')!==before,before);
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));row.retainedViewport=await viewport.getAttribute('style');
@@ -77,7 +77,7 @@ try{
       await tab('Settings');assert.equal(await policy.inputValue(),'7','Execution settings retain authored policy through another route');
      }else{
       await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft,'Explicit chunk retry preserves original Chat draft');
-      await tab('Workflow');await page.getByRole('button',{name:'Add Your First Step',exact:true}).waitFor();
+      await tab('Workflow');await page.getByRole('button',{name:'Add your first step',exact:true}).waitFor();
      }
     }
    }

@@ -1,3 +1,4 @@
+import {createPortal} from 'react-dom';
 import {WorkspaceQueryError} from "../WorkspaceQueryError";
 import {workspaceRead} from "../../workspaceAvailability";
 import {useReportWorkspaceRead} from "../WorkspaceRefreshContext";
@@ -15,14 +16,30 @@ import {CapabilityPolicyEditor} from "../CapabilityPolicyEditor";
 import {BranchExecutionBudget} from './BranchExecutionBudget';
 import {BranchDeletionStatus,BranchInstallationUpdateStatus} from './BranchOperations';
 
-export function BranchAvailability({branch,disabled=false}:{branch:BranchDto;disabled?:boolean}):JSX.Element {
+export function useBranchAvailability(branchId?:string) {
  const client=useQueryClient();
- const availability=useMutation({mutationFn:(enabled:boolean)=>requestJson<BranchDto>(`/api/branches/${branch.id}/availability`,{method:"PUT",body:JSON.stringify({enabled})}),onSuccess:next=>{client.setQueryData(["branch",branch.id],next);},onSettled:()=>Promise.all([client.invalidateQueries({queryKey:["branch",branch.id]}),client.invalidateQueries({queryKey:["branches"]}),client.invalidateQueries({queryKey:["branch-lifecycle-summary",branch.id]})])});
- useBranchDraftGuard(`branch-availability:${branch.id}`,availability.isPending);
- return <Stack spacing={1}>
-  <FormControlLabel label="Branch Enabled" control={<Switch checked={branch.enabled!==false} disabled={availability.isPending||disabled} onChange={(_,enabled)=>availability.mutate(enabled)}/>}/>
-  {availability.isPending&&<Typography role="status">Saving availability…</Typography>}
-  {availability.error&&<Alert severity="error">{availability.error.message} Check the live state before trying again.</Alert>}
+ const availability=useMutation({
+  mutationKey:['branch-availability',branchId],
+  mutationFn:({id,enabled}:{id:string;enabled:boolean})=>requestJson<BranchDto>(`/api/branches/${id}/availability`,{method:"PUT",body:JSON.stringify({enabled})}),
+  onSuccess:next=>{client.setQueryData(["branch",next.id],next)},
+  onSettled:(_data,_error,{id})=>Promise.all([client.invalidateQueries({queryKey:["branch",id],exact:true}),client.invalidateQueries({queryKey:["branches"]}),client.invalidateQueries({queryKey:["branch-lifecycle-summary",id]})]),
+ });
+ useBranchDraftGuard(`branch-availability:${branchId}`,availability.isPending);
+ return availability;
+}
+
+export function BranchAvailability({branch,mutation,disabled,onDisable}:{branch:BranchDto;mutation:ReturnType<typeof useBranchAvailability>;disabled:boolean;onDisable():void}):JSX.Element {
+ const enabled=branch.enabled!==false;
+ const pending=mutation.isPending&&mutation.variables?.id===branch.id;
+ const error=mutation.variables?.id===branch.id?mutation.error:undefined;
+ return <Stack sx={{alignSelf:'start',minWidth:0}}>
+  <FormControlLabel sx={{m:0,gap:.5,minHeight:32,'& .MuiFormControlLabel-label':{fontSize:12}}}
+   label={enabled?'Enabled':'Disabled'}
+   control={<Switch size="small" checked={enabled} disabled={pending||disabled} inputProps={{role:'switch','aria-label':'Workflow availability','aria-describedby':!enabled||pending||error?'branch-availability-feedback':undefined}}
+    onChange={(_,next)=>{if(next)mutation.mutate({id:branch.id,enabled:true});else onDisable()}}/>}/>
+  {(pending||error||!enabled)&&<Typography id="branch-availability-feedback" role={error?'alert':'status'} variant="caption" color={error?'error.main':'text.secondary'} sx={{overflowWrap:'anywhere'}}>
+   {pending?'Saving availability…':error?error.message:'Enable to run once.'}
+  </Typography>}
  </Stack>;
 }
 
@@ -62,8 +79,10 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
   return <Stack spacing={2}><WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>{(save.error||reloadAction.error)&&<Box component="details"><summary>Settings Action Needs Attention</summary>{reloadAction.error?.message||save.error?.message}{(save.error||reloadAction.error)&&reload}</Box>}<Box><Typography variant="h6" fontWeight={650}>Limits Within An Execution</Typography><Typography variant="body2" color="text.secondary">These ceilings stop runaway recursion and traversal with an explicit workflow failure.</Typography></Box>{([['maxCallDepth','Nested Branch Depth'],['maxLoopIterations','Loop Iterations'],['maxTraversals','Graph Traversals']] as const).map(([key,label])=><TextField disabled={save.isPending||reloadAction.isPending} key={key} label={label} type="number" error={!Number.isSafeInteger(draft.limits[key])||draft.limits[key]<1} helperText="A positive whole number is required." value={draft.limits[key]} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/>)}<Button variant="contained" sx={{alignSelf:"start"}} disabled={save.isPending||reloadAction.isPending||!branch.versionId||invalidLimits} onClick={()=>save.mutate()}>Save Execution Settings</Button></Stack>;
 }
 
-export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,focusExecutionControls=false,variablesFeedback,executionSettings,onDeleted}:{executionSettings?:ReactNode;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;focusExecutionControls?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
+export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,focusExecutionControls=false,variablesFeedback,executionSettings,deletionTarget,onDeletionOpen,onDeleted}:{executionSettings?:ReactNode;deletionTarget?:HTMLElement|null;onDeletionOpen?(open:boolean):void;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;focusExecutionControls?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
  const client=useQueryClient(),[capabilityDirty,setCapabilityDirty]=useState(false),[deleteOpen,setDeleteOpen]=useState(false),[acknowledged,setAcknowledged]=useState(false);
+ useEffect(()=>{onDeletionOpen?.(deleteOpen)},[deleteOpen,onDeletionOpen]);
+ useEffect(()=>()=>onDeletionOpen?.(false),[onDeletionOpen]);
  const executionControls=useRef<HTMLDivElement>(null);
  useEffect(()=>{if(settingsActive&&focusExecutionControls){executionControls.current?.focus({preventScroll:true});executionControls.current?.scrollIntoView({block:'start'})}},[settingsActive,focusExecutionControls]);
  const active=useRef(true),generation=useRef(0),removing=useRef(false),finished=useRef(false);
@@ -82,6 +101,16 @@ export function BranchSettings({branch,definition,active:settingsActive=true,foc
  useBranchDraftGuard(`branch-deletion:${branch.id}`,remove.isPending||(remove.isError&&(preflight.isPending||preflight.isError)));
  useBranchDraftGuard(`branch-capabilities:${branch.id}`,capabilityDirty);
  const callerNames=new Map(lifecycle.data?.callers.map(caller=>[caller.id,caller.name]));
+ const deletionConfirmation=<ResourceDeletionDialog inWorkflowInspector={Boolean(deletionTarget)} open={deleteOpen} resourceType="workflow" resourceName={branch.name} pending={remove.isPending} pendingLabel="Deleting…" confirmDisabled={!acknowledged||deletionBlocked} error={remove.error||preflight.error?[remove.error?.message,preflight.error?.message].filter(Boolean).join(" "):undefined} onCancel={closeDeletion} onConfirm={confirmDeletion}>
+       <Stack spacing={2}><Alert severity="warning"><Stack spacing={0.5}><Typography>Permanently deletes · definition · versions · execution history · owned Chats + Agents</Typography><Typography>Active executions · cancel + drain first</Typography><Typography>Source folders · preserved</Typography></Stack></Alert>
+        {preflight.isPending&&<Typography role="status">Checking current workflow ownership and dependencies…</Typography>}
+        {preflight.isSuccess&&preflight.variables===generation.current&&<Typography>{preflight.data.chats} owned Chats · {preflight.data.activeExecutions} active executions</Typography>}
+        {Boolean(preflight.data?.callers.length)&&<Alert severity="warning">Dependent workflows · remove their calls before deletion</Alert>}
+        {Boolean(preflight.data?.updates.length)&&<Alert severity="warning">Package update in progress · deletion waits for completion</Alert>}
+        <Button disabled={preflight.isPending||remove.isPending} onClick={refreshDeletion}>Check Again</Button>
+        <FormControlLabel control={<Checkbox checked={acknowledged} disabled={deletionBlocked||remove.isPending} onChange={(_,checked)=>setAcknowledged(checked)}/>} label="I understand this permanently deletes this workflow and its owned Chats and Agents."/>
+       </Stack>
+      </ResourceDeletionDialog>;
  return <Stack className="branch-settings" spacing={3} sx={{minWidth:0,width:"100%",maxWidth:880,mx:"auto",pb:"max(24px, env(safe-area-inset-bottom, 0px))"}}>
   <Stack component="section" aria-label="Execution Controls" id="branch-execution-controls" ref={executionControls} tabIndex={-1} spacing={2} sx={{minWidth:0,scrollMarginTop:16}}>
    <Typography variant="h6" fontWeight={650}>Execution Controls</Typography>
@@ -95,15 +124,6 @@ export function BranchSettings({branch,definition,active:settingsActive=true,foc
       <Paper variant="outlined" sx={{p:{xs:2,sm:2.5}}}><Stack spacing={2}><Box><Typography variant="h6" fontWeight={650}>Dependencies</Typography><Typography variant="body2" color="text.secondary">Caller links block deletion until removed</Typography></Box>{dependencies.isPending?<Typography>Loading dependencies…</Typography>:dependencies.error?<WorkspaceQueryError active={settingsActive} read={workspaceRead(`branch:${branch.id}`,"Dependencies",dependencies)}/>:<><Box><Typography variant="subtitle2">This Workflow Calls</Typography><Typography color="text.secondary">{dependencies.data?.calls.length?dependencies.data.calls.map(item=>item.ref).join(", "):"No other Branches"}</Typography></Box><Box><Typography variant="subtitle2">Called By</Typography><Typography color="text.secondary">{dependencies.data?.callers.length?[...new Set(dependencies.data.callers.map(item=>item.id))].map(id=>callerNames.get(id)??id).join(", "):"No other Branches"}</Typography></Box></>}</Stack></Paper>
       <Paper variant="outlined" sx={{p:{xs:2,sm:2.5},borderColor:"error.dark"}}><Stack spacing={2}><Box><Typography variant="h6" fontWeight={650}>Delete Workflow</Typography><Typography variant="body2" color="text.secondary">Deletes Branch + owned Chats/Agents after cancellation and drain; source folders preserved</Typography></Box>{lifecycle.data?.updates.map(update=><BranchInstallationUpdateStatus key={update.id} update={update}/>)}{lifecycle.data?.pendingRemoval.map(resource=><Alert key={resource.id} severity={resource.error?"error":"info"}>{resource.kind} pending removal: {resource.id}. {resource.error??"Waiting for earlier executions to drain."}</Alert>)}{lifecycle.data?.callers.length?<Alert severity="warning">Used by {lifecycle.data.callers.map(c=>c.name).join(", ")}. Remove those calls before deleting this Branch.</Alert>:null}{remove.error&&<Alert severity="error">{remove.error.message}</Alert>}{lifecycle.data?.deleting||remove.data?.pending?<BranchDeletionStatus error={lifecycle.data?.deletionError}/>:<Button color="error" variant="outlined" sx={{alignSelf:"start"}} disabled={remove.isPending||!lifecycle.data||Boolean(lifecycle.error)||Boolean(lifecycle.data?.callers.length)||Boolean(lifecycle.data?.updates.length)} onClick={()=>{setDeleteOpen(true);refreshDeletion()}}>Delete Workflow…</Button>}</Stack></Paper>
 
-      <ResourceDeletionDialog open={deleteOpen} resourceType="workflow" resourceName={branch.name} pending={remove.isPending} pendingLabel="Deleting…" confirmDisabled={!acknowledged||deletionBlocked} error={remove.error||preflight.error?[remove.error?.message,preflight.error?.message].filter(Boolean).join(" "):undefined} onCancel={closeDeletion} onConfirm={confirmDeletion}>
-       <Stack spacing={2}><Alert severity="warning"><Stack spacing={0.5}><Typography>Permanently deletes · definition · versions · execution history · owned Chats + Agents</Typography><Typography>Active executions · cancel + drain first</Typography><Typography>Source folders · preserved</Typography></Stack></Alert>
-        {preflight.isPending&&<Typography role="status">Checking current workflow ownership and dependencies…</Typography>}
-        {preflight.isSuccess&&preflight.variables===generation.current&&<Typography>{preflight.data.chats} owned Chats · {preflight.data.activeExecutions} active executions</Typography>}
-        {Boolean(preflight.data?.callers.length)&&<Alert severity="warning">Dependent workflows · remove their calls before deletion</Alert>}
-        {Boolean(preflight.data?.updates.length)&&<Alert severity="warning">Package update in progress · deletion waits for completion</Alert>}
-        <Button disabled={preflight.isPending||remove.isPending} onClick={refreshDeletion}>Check Again</Button>
-        <FormControlLabel control={<Checkbox checked={acknowledged} disabled={deletionBlocked||remove.isPending} onChange={(_,checked)=>setAcknowledged(checked)}/>} label="I understand this permanently deletes this workflow and its owned Chats and Agents."/>
-       </Stack>
-      </ResourceDeletionDialog>
+      {deletionTarget&&deleteOpen?createPortal(deletionConfirmation,deletionTarget):deletionTarget?null:deletionConfirmation}
   </Stack>;
 }

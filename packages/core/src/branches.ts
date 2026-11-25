@@ -264,6 +264,10 @@ export interface BranchPackageDto { schema: "ponderosa.branch-package.v1"; expor
 export interface BranchDeploymentPreviewDto {
   definitionHash: string; requirements: BranchRequirementsDto;
   operations: Array<{ kind: "create" | "update" | "detach" | "unchanged"; resource: string; ref: string; before?: string; after?: string }>;
+  triggerChange?: {
+    before: Pick<import('./dto/branch-triggers.js').TriggerDefinitionDto,'sourceKind'|'sourceConfig'|'enabled'> | null;
+    after: Pick<import('./dto/branch-triggers.js').TriggerDefinitionDto,'sourceKind'|'sourceConfig'|'enabled'> | null;
+  };
   notes: string[];
 }
 export interface BranchResourceDto { stepExecutionId: string; templateRef: string; state: string; rootAgentId?: string; agentIds: string[]; error?: string }

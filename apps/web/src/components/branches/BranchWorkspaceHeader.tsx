@@ -6,42 +6,50 @@ import ChatBubbleOutline from '@mui/icons-material/ChatBubbleOutline';
 import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline';
 import PlayArrowOutlined from '@mui/icons-material/PlayArrowOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
-import {Box,Button,Tooltip} from '@mui/material';
+import {Box,Button,Stack,Tooltip,Typography} from '@mui/material';
 import {branchTabs,type BranchTab} from '../../branchesRouting';
 import {TabbedWorkspaceFrame} from '../WorkspaceFrame';
-import {SemanticStatus,SemanticStatusCircle,semanticStatusColorToken} from '../SemanticStatus';
+import {SemanticStatusCircle,semanticStatusColorToken} from '../SemanticStatus';
 import {ChatOverflowMenu} from '../ChatOverflowMenu';
 import type {BranchRunCountsDto} from '@ponderosa/core';
 import {branchRunStatus} from './branchRunStatus';
 
 /** Branch actions adapt the shared workspace chrome; publication stays with its owner. */
-export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runPending=false,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onDiscard,discardDisabled=true}:{
+export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runPending=false,runDisabled=false,availability,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onVariables,onDiscard,discardDisabled=true}:{
  name:string;tab:BranchTab;published:boolean;dirty:boolean;runCounts?:BranchRunCountsDto;executionsUnavailable?:boolean;
- onRun?():void;runPending?:boolean;
- onTab(tab:BranchTab):void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onHistory?():void;onEditJson?():void;onDiscard?():void;discardDisabled?:boolean;
+ onRun?():void;runPending?:boolean;runDisabled?:boolean;availability?:ReactNode;
+ onTab(tab:BranchTab):void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onHistory?():void;onEditJson?():void;onVariables?():void;onDiscard?():void;discardDisabled?:boolean;
 }):JSX.Element{
- const tabItems={workflow:{label:'Workflow',icon:<AccountTreeOutlined/>},executions:{label:'Executions',icon:<PlayCircleOutline/>,disabled:!published},chats:{label:'Chats',icon:<ChatBubbleOutline/>},settings:{label:'Settings',icon:<SettingsOutlined/>}};
- const tabs={idPrefix:'branch',value:tab,label:'Branch Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
- const activity=branchRunStatus(runCounts,executionsUnavailable),executionStatus=activity.status,executionLabel=activity.label;
+ const activity=branchRunStatus(runCounts,executionsUnavailable);
  const executionTooltip=<>{activity.lines.map(line=><Box key={line}>{line}</Box>)}</>;
- const runLabel=dirty&&published?'Run Published Workflow':'Run once';
- return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile collapsedIconTabs collapsedSingleRow retainCollapsedActions statusBeforePrimaryActions
-  status={<Box sx={{display:'flex',gap:.5,alignItems:'center',flexShrink:0,minWidth:0,'@container (max-width: 27.5rem)':{gap:.25},'& .MuiChip-root':{maxWidth:'100%',height:'auto',minHeight:24},'& .MuiChip-label':{whiteSpace:'nowrap',lineHeight:1.2,py:.5,px:1}}}><Tooltip describeChild title={executionTooltip}><Box tabIndex={0} sx={{display:'flex','@container (max-width: 40rem)':{display:'none'}}}><SemanticStatus status={executionStatus} label={executionLabel}/></Box></Tooltip><Tooltip describeChild title={executionTooltip}><Box component="span" role="img" tabIndex={0} aria-label={executionLabel} sx={{display:'none',alignItems:'center',gap:.5,px:.5,minHeight:24,whiteSpace:'nowrap',fontSize:12,'@container (max-width: 27.5rem)':{px:0},borderRadius:.5,'@container (max-width: 40rem)':{display:'inline-flex'},'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:-2}}}><Box component="span" aria-hidden sx={theme=>({color:semanticStatusColorToken(executionStatus,theme.palette.mode)})}><SemanticStatusCircle/></Box>{activity.compact}</Box></Tooltip>{dirty&&<Tooltip describeChild title="Unpublished Changes"><Box component="span" tabIndex={0} aria-label="Editing" sx={{color:'warning.main',display:'inline-flex',alignItems:'center',flexShrink:0,minHeight:24,fontSize:12,fontWeight:600,lineHeight:1,whiteSpace:'nowrap',px:.75,borderRadius:.5,'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:-2},'@container (max-width: 27.5rem)':{px:0,fontSize:11}}}>Editing</Box></Tooltip>}{onRun&&<Tooltip title={runLabel}><span><Button aria-label={runLabel} variant="outlined" disabled={runPending} onClick={onRun} startIcon={<PlayArrowOutlined/>} sx={{minWidth:44,minHeight:44,whiteSpace:'nowrap',flexShrink:0,'@container (max-width: 40rem)':{width:44,p:0,'& .MuiButton-startIcon':{m:0}},'& .branch-run-label':{'@container (max-width: 40rem)':{display:'none'}}}}><Box component="span" className="branch-run-label">{runLabel}</Box></Button></span></Tooltip>}</Box>}
-  primaryActions={<BranchHeaderActions onRename={onRename} onDiscard={onDiscard} discardDisabled={discardDisabled} onExport={onExport} onUpdate={onUpdate} onHistory={onHistory} onEditJson={onEditJson}/>}
+ const executionIcon=<Tooltip describeChild title={executionTooltip}><Box component="span" sx={{position:'relative',display:'inline-flex'}}><PlayCircleOutline/>
+  <Box component="span" aria-hidden sx={theme=>({position:'absolute',top:-3,right:-4,color:semanticStatusColorToken(activity.status,theme.palette.mode)})}><SemanticStatusCircle/></Box>
+ </Box></Tooltip>;
+ const tabItems={workflow:{label:'Workflow',icon:<AccountTreeOutlined/>},executions:{label:'Executions',icon:executionIcon,description:activity.label,disabled:!published},chats:{label:'Chats',icon:<ChatBubbleOutline/>},settings:{label:'Settings',icon:<SettingsOutlined/>}};
+ const tabs={idPrefix:'branch',value:tab,label:'Branch Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
+ const runAction=onRun&&<Button variant="outlined" disabled={runPending||runDisabled} aria-describedby={runDisabled?'branch-availability-feedback':undefined}
+  onClick={onRun} startIcon={<PlayArrowOutlined/>} sx={{minHeight:44,whiteSpace:'nowrap',px:{xs:1,sm:1.5},'& .MuiButton-startIcon':{display:{xs:'none',sm:'inline-flex'}}}}>{runPending?'Submitting…':'Run once'}</Button>;
+ return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile collapsedIconTabs retainCollapsedActions statusBeforePrimaryActions
+  titleControl={<Stack sx={{minWidth:0}}><Typography component="h1" variant="body2" fontWeight={800} noWrap title={name}>{name}</Typography><Stack direction="row" useFlexGap flexWrap="wrap" alignItems="flex-start" gap={.5}>
+   {availability}{dirty&&<Tooltip describeChild title="Unpublished Changes"><Typography component="span" tabIndex={0} aria-label="Editing" variant="caption" color="warning.main" sx={{alignSelf:'center'}}>Editing</Typography></Tooltip>}
+  </Stack></Stack>}
+  primaryActions={<Stack direction="row" spacing={.5} alignItems="center">{runAction}<BranchHeaderActions onRename={onRename} onDiscard={onDiscard} discardDisabled={discardDisabled} onExport={onExport} onUpdate={onUpdate} onHistory={onHistory} onEditJson={onEditJson} onVariables={onVariables}/></Stack>}
   tabs={tabs}/></Box>;
+
 }
 
 /** The existing global usage observer renders into the Branch's own menu. */
-function BranchHeaderActions({onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson}:Pick<Parameters<typeof BranchWorkspaceHeader>[0],'onRename'|'onDiscard'|'discardDisabled'|'onExport'|'onUpdate'|'onHistory'|'onEditJson'>):JSX.Element{
+function BranchHeaderActions({onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson,onVariables}:Pick<Parameters<typeof BranchWorkspaceHeader>[0],'onRename'|'onDiscard'|'discardDisabled'|'onExport'|'onUpdate'|'onHistory'|'onEditJson'|'onVariables'>):JSX.Element{
  const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Branch Actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
   ...(openUsage&&!fullTrigger?[{label:'Provider Usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
   {label:'Rename…',onSelect:onRename},
   ...(onHistory?[{label:'Version History',onSelect:onHistory}]:[]),
+  ...(onVariables?[{label:'Workflow variables',onSelect:onVariables}]:[]),
   ...(onEditJson?[{label:'Edit Workflow JSON…',onSelect:onEditJson}]:[]),
   {label:'Discard Changes',onSelect:()=>onDiscard?.(),disabled:discardDisabled},
   {label:'Export Template',onSelect:()=>onExport('template')},
   {label:'Export Full',onSelect:()=>onExport('full')},
   {label:'Apply Package Update…',onSelect:onUpdate},
- ]}/></Box>,[onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson]);
+ ]}/></Box>,[onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson,onVariables]);
  return <PrimaryHeaderActionsOutlet renderTrigger={renderMenu} fallback={renderMenu()}/>;
 }

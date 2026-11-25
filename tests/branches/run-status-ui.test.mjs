@@ -20,14 +20,15 @@ test('Run count presentation names each effective bucket, drops Pending and neve
  assert.equal(branchRunStatus(undefined,true).label,'Run status unavailable');assert.deepEqual(branchRunStatus({running:1,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0},true).lines,['Workflow Runs','Running: 1','Queued: 0','Waiting: 0','Retrying: 0','Stopping: 0','Needs Attention: 0','Updates delayed']);
 });
 
-test('expanded and compact header counts reuse shared status presentation and one accessible breakdown',()=>{
- const props={...base,runCounts:{running:2,waiting:3,queued:4,retrying:0,stopping:0,needsAttention:0}},header=BranchWorkspaceHeader(props).props.children,status=header.props.status,full=status.props.children[0],compact=status.props.children[1];
- const tooltip=renderToStaticMarkup(full.props.title);for(const text of ['Running: 2','Waiting: 3','Queued: 4'])assert.ok(tooltip.includes(text));
- assert.equal(full.props.children.props.tabIndex,0,'Desktop count tooltip is keyboard reachable');
- assert.equal(compact.props.children.props['aria-label'],'2 Running · 4 Queued · 3 Waiting');assert.equal(compact.props.children.props.tabIndex,0);
- assert.equal(compact.props.children.props.children[0].props.children.type,SemanticStatusCircle);
- const html=renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));assert.match(html,/2 Running · 4 Queued · 3 Waiting/);assert.doesNotMatch(html,/Pending/);assert.doesNotMatch(html,/active executions/);
- const unknown=renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,{...base,executionsUnavailable:true})));assert.match(unknown,/Run status unavailable/);assert.doesNotMatch(unknown,/0 Running/);
+test('Executions owns the same run breakdown in the expanded and compact header',()=>{
+ const props={...base,runCounts:{running:2,waiting:3,queued:4,retrying:0,stopping:0,needsAttention:0}};
+ const header=BranchWorkspaceHeader(props).props.children;
+ const tab=header.props.tabs.items.find(item=>item.value==='executions');
+ const tooltip=renderToStaticMarkup(tab.icon.props.title);for(const text of ['Running: 2','Waiting: 3','Queued: 4'])assert.ok(tooltip.includes(text));
+ assert.equal(tab.description,'2 Running · 4 Queued · 3 Waiting');
+ assert.equal(tab.icon.props.children.props.children[1].props.children.type,SemanticStatusCircle);
+ const html=renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));assert.match(html,/aria-description="2 Running · 4 Queued · 3 Waiting"/);assert.doesNotMatch(html,/Pending|active executions/);
+ const unknown=renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,{...base,executionsUnavailable:true})));assert.match(unknown,/aria-description="Run status unavailable"/);assert.doesNotMatch(unknown,/0 Running/);
 });
 
 test('sidebar tooltip reuses the same count breakdown while retaining independent availability and intake',()=>{

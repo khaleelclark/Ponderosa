@@ -35,6 +35,7 @@ export const useBranchNavigationGuard = () => useContext(GuardContext);
 /** One guard for route changes, nested dialogs, browser history, and reload. */
 export function BranchNavigation({ children }: { children(router: {
   route: BranchRoute;
+  leaveConfirmation?: ReactNode;
   navigate(route: BranchRoute, replace?: boolean, onAccepted?: () => void): boolean;
 }): ReactNode }): JSX.Element {
   const [route, setRoute] = useState(() => parseBranchRoute(window.location.search));
@@ -178,7 +179,6 @@ export function BranchNavigation({ children }: { children(router: {
     return () => { window.removeEventListener('popstate', pop); window.removeEventListener('beforeunload', unload); };
   }, [requestLeave, commitRoute, confirmOtherLeave, cancelLeave]);
   const actions = workflow.current?.();
-  return <DirtyContext.Provider value={register}><WorkflowLeaveContext.Provider value={registerWorkflow}><GuardContext.Provider value={guard}>{children({ route, navigate })}
-    <ConfirmDialog open={Boolean(prompt)} title="Unsaved Changes" confirmLabel="Save And Leave" cancelLabel="Back To Editing" pending={actions?.pending} confirmDisabled={!actions?.canSave} onCancel={cancelLeave} onConfirm={()=>settleWorkflow('save')} secondaryAction={{label:'Discard And Leave',disabled:!actions?.canDiscard,onClick:()=>settleWorkflow('discard')}}>Save your workflow changes before leaving?</ConfirmDialog>
-  </GuardContext.Provider></WorkflowLeaveContext.Provider></DirtyContext.Provider>;
+  const leaveConfirmation=prompt?<ConfirmDialog inWorkflowInspector open title="Unsaved Changes" confirmLabel="Save And Leave" cancelLabel="Back To Editing" pending={actions?.pending} confirmDisabled={!actions?.canSave} onCancel={cancelLeave} onConfirm={()=>settleWorkflow('save')} secondaryAction={{label:'Discard And Leave',disabled:!actions?.canDiscard,onClick:()=>settleWorkflow('discard')}}>Save your workflow changes before leaving?</ConfirmDialog>:undefined;
+  return <DirtyContext.Provider value={register}><WorkflowLeaveContext.Provider value={registerWorkflow}><GuardContext.Provider value={guard}>{children({ route, navigate, leaveConfirmation })}</GuardContext.Provider></WorkflowLeaveContext.Provider></DirtyContext.Provider>;
 }
