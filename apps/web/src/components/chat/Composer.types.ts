@@ -1,6 +1,14 @@
+import type { Ref } from "react";
 import type { VoiceConversationContext } from "../speech/VoiceConversation";
 import type { ChatComposerContract } from "./composerContracts";
 import type { AgentMentionBindingDto } from "@ponderosa/core";
+
+export interface ComposerDraftSnapshot {
+  text: string;
+  rawText: string;
+  files: File[];
+  ownerId: string;
+}
 
 export interface ComposerProps extends ChatComposerContract {
   /** Designated Assistant presentation and steering-only intake; ordinary Outputs omit this. */
@@ -36,6 +44,8 @@ export interface ComposerProps extends ChatComposerContract {
   cancelPending?: boolean;
   /** Canonical Assistant Run controls; editable steering remains independent. */
   runControl?: {paused:boolean;pending:boolean;resumeDisabled:boolean;onPauseResume():void};
+  /** Capture the editable draft when a New Chat action needs a saved owner. */
+  draftSnapshotRef?: Ref<() => ComposerDraftSnapshot>;
   draftStorageKey?: string;
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };

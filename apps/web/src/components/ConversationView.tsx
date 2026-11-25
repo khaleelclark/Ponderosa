@@ -65,7 +65,7 @@ import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import type { AgentsTab } from "./AgentsTab";
 import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
-import type { ConversationDetailView } from "../routing";
+import type { ConversationDetailView, ConversationHeaderAction } from "../routing";
 import {
   conversationComposerRuntime,
   reconcileQueuedProjectMessages,
@@ -117,6 +117,7 @@ export function ConversationView({
   conversationId,
   focusMessageId,
   initialView,
+  initialAction,
   onViewChange,
   onClearMessageFocus,
   engines,
@@ -140,6 +141,7 @@ export function ConversationView({
   conversationId: string;
   focusMessageId?: string;
   initialView?: ConversationDetailView;
+  initialAction?: ConversationHeaderAction;
   onViewChange?(view: ConversationDetailView): void;
   onClearMessageFocus(): void;
   engines: EngineDto[];
@@ -211,6 +213,24 @@ export function ConversationView({
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [addAgentsOpen, setAddAgentsOpen] = useState(false);
   const [agentWorkRequested, setAgentWorkOpen] = useState(false);
+  const handleHeaderAction = (action: ConversationHeaderAction) => {
+    if (!conversation || auditOnly) return;
+    switch (action) {
+      case "settings": setContextSettingsOpen(true); break;
+      case "work": setAgentWorkOpen(true); break;
+      case "rename": setRenameValue(conversation.title); setRenameOpen(true); break;
+      case "addAgents": setAddAgentsOpen(true); break;
+      case "archive": setArchiveOpen(true); break;
+      case "delete": setDeleteOpen(true); break;
+      case "browser": onOpenProjectBrowser(); break;
+    }
+  };
+  const continuedAction = useRef<ConversationHeaderAction>();
+  useEffect(() => {
+    if (!initialAction || !conversation || continuedAction.current === initialAction) return;
+    continuedAction.current = initialAction;
+    handleHeaderAction(initialAction);
+  }, [conversation, initialAction]);
   const agentWorkOpen = agentWorkRequested && !auditOnly;
   const collaborationVisited = useRef(activeView === "collaboration");
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
@@ -906,19 +926,13 @@ export function ConversationView({
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
-        onChatSettings={() => setContextSettingsOpen(true)}
         projectLabel={project?.label}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
-        onOpenProjectBrowser={onOpenProjectBrowser}
-        setAgentWorkOpen={setAgentWorkOpen}
-        setRenameValue={setRenameValue}
-        setRenameOpen={setRenameOpen}
-        setAddAgentsOpen={setAddAgentsOpen}
-        setDeleteOpen={setDeleteOpen}
-        setArchiveOpen={setArchiveOpen}
+        onAction={handleHeaderAction}
         setActiveView={next => {
+          setAgentWorkOpen(false);
           setActiveView(next);
           onViewChange?.(next);
         }}

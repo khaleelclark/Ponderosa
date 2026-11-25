@@ -35,6 +35,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useImperativeHandle,
   useMemo,
   useReducer,
   useRef,
@@ -289,6 +290,9 @@ function providerCommandInput(
   };
 }
 
+/** The owning workspace already displays the recovery action beside the composer. */
+export class ComposerSubmissionReported extends Error {}
+
 export function Composer({
   assistantMessages = false,
   queueReviewHref,
@@ -322,6 +326,7 @@ export function Composer({
   cancelPending = false,
   runControl,
   draftStorageKey,
+  draftSnapshotRef,
   conversationDraftId,
   leadingControls,
   controls,
@@ -364,6 +369,12 @@ export function Composer({
     { files: [] },
   );
   const files = attachments.files;
+  useImperativeHandle(draftSnapshotRef, () => () => ({
+    text: composerSubmissionText(textRef.current, pastedTextRef.current),
+    rawText: textRef.current,
+    files,
+    ownerId: draftOwnerId,
+  }), [files, draftOwnerId]);
   const queryClient = useQueryClient();
   const outgoing = useOutgoingMessage();
   const assetLimitsQuery = useQuery({
@@ -3069,7 +3080,8 @@ export function Composer({
       })
       .then(resolveFeedback)
       .catch(async (error: unknown) => {
-        notify({key:feedbackKey(),incident:feedbackAttempt,severity:"error",message:runtimeCommandSubmission?"Provider Action Needs Review":"Message Needs Review",description:"Your original draft and attachments are retained. Review them in the original Chat before retrying.",details:error instanceof Error?error.message:String(error)});
+        const reported = error instanceof ComposerSubmissionReported;
+        if (!reported) notify({key:feedbackKey(),incident:feedbackAttempt,severity:"error",message:runtimeCommandSubmission?"Provider Action Needs Review":"Message Needs Review",description:"Your original draft and attachments are retained. Review them in the original Chat before retrying.",details:error instanceof Error?error.message:String(error)});
         if (!submittedScopeStillActive()) return;
         if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
             durableSubmissionMayBeReleased(
@@ -3084,7 +3096,7 @@ export function Composer({
             submittedUserMutationGeneration &&
           activeSubmissionIntentKeyRef.current === submissionIntentKey;
         setPreparedRetry(
-          !(error instanceof ApiRequestError) && intentUnchanged
+          !reported && !(error instanceof ApiRequestError) && intentUnchanged
             ? { action, submissionIntentKey }
             : undefined,
         );
@@ -3093,7 +3105,7 @@ export function Composer({
           replacePastedText(submittedPastedText);
           if (draftStorageKey) writeChatState(draftStorageKey, submittedText);
         }
-        setSendError(
+        if (!reported) setSendError(
           error instanceof ApiRequestError && error.status === 429
             ? `Message not sent. Your draft and attachments remain here; retry in about ${Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)} seconds.`
             : error instanceof Error ? error.message : "Upload failed; try again.",

@@ -26,6 +26,8 @@ export type ConversationDetailView =
   | "collaboration"
   | "files"
   | "agents";
+export const conversationHeaderActions = ["settings", "work", "rename", "addAgents", "archive", "delete", "browser"] as const;
+export type ConversationHeaderAction = (typeof conversationHeaderActions)[number];
 export type CreateResourceKind = "chat" | "agent";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "artifacts", "settings", "technical"];
@@ -67,7 +69,7 @@ export type Route =
   | { kind: "workspaceFile"; projectId: string; path: string; agentId?: string; conversationId?: string; returnTo?: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; initialAction?: ConversationHeaderAction; urlDriven?: boolean }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; urlDriven?: boolean }
   | { kind: "review"; projectId: string; agentId: string; path?: string; executionId?: string; returnTo?: string };
 

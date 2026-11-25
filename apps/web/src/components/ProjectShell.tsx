@@ -243,6 +243,7 @@ export function ProjectShell({
         key={route.conversationId}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
+        initialAction={route.initialAction}
         initialView={route.urlDriven
           ? (route.view ?? route.channel ?? "main")
           : (route.view ?? route.channel)}

@@ -1,4 +1,6 @@
 import type { ConversationDto, CreateProjectRequest } from "@ponderosa/core";
+import { chatCreationFiles } from "./chatCreationFiles";
+import { conversationHeaderActions, isConversationDetailView, type ConversationDetailView, type ConversationHeaderAction } from "../routing";
 import { api } from "../api";
 import { requestJson } from "../api/real";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -16,12 +18,23 @@ export const submitCreationAttempt = (attempt: ChatCreationAttempt): Promise<Con
   ? requestJson(`/api/branches/${encodeURIComponent(attempt.owner.branchId)}/chats`, {method: "POST", headers: {"idempotency-key": attempt.key}, body: JSON.stringify(attempt.input)})
   : api.createChat(attempt.input, attempt.key);
 
+export type ChatCreationContinuation =
+  | { view: ConversationDetailView }
+  | { initialAction: ConversationHeaderAction };
+
 export interface ChatCreationAttempt {
   key: string;
   owner?: ChatCreationOwner;
   origin?: "import_destination";
   input: CreateProjectRequest;
   chat?: Pick<ConversationDto, "id" | "projectId">;
+  continuation?: ChatCreationContinuation;
+  draft?: {
+    text?: string;
+    rawText?: string;
+    ownerId: string;
+    files?: { key: string; count: number; ids?: string[] };
+  };
   opening?: {
     text: string;
     title: string;
@@ -41,7 +54,9 @@ export function mayRecordCreationReceipt(items:ChatCreationAttempt[],attempt:Cha
 }
 function sameCreationInput(a: ChatCreationAttempt, b: ChatCreationAttempt): boolean {
   return JSON.stringify(a.input) === JSON.stringify(b.input) &&
-    JSON.stringify(a.opening) === JSON.stringify(b.opening);
+    JSON.stringify(a.opening) === JSON.stringify(b.opening) &&
+    JSON.stringify(a.continuation) === JSON.stringify(b.continuation) &&
+    JSON.stringify(a.draft) === JSON.stringify(b.draft);
 }
 
 export function withChatCreationReceipt(attempt: ChatCreationAttempt, chat: ConversationDto): ChatCreationAttempt {
@@ -65,6 +80,7 @@ export async function submitChatOpening(attempt: ChatCreationAttempt, chat: Conv
   }
   if (!opening.runtime) throw new Error("The opening message runtime could not be recovered.");
   const { defaultEngine, defaultModel, defaultEffort, defaultSpeed } = opening.runtime;
+  attempt = await stageCreationFiles(attempt, chat);
   await api.createAgent(chat.projectId, chat.id, {
     title: opening.title,
     engine: defaultEngine,
@@ -72,19 +88,73 @@ export async function submitChatOpening(attempt: ChatCreationAttempt, chat: Conv
     effort: defaultEffort,
     speed: defaultSpeed,
     initialMessage: opening.text,
+    ...(attempt.draft?.files ? {
+      draftAttachmentIds: attempt.draft.files.ids,
+      draftOwnerId: attempt.draft.ownerId,
+    } : {}),
     idempotencyKey: `${attempt.key}:opening`,
   });
-  settleChatOpening(attempt, chat);
-  const draftKey = chatStateKey("draft", `new-chat.${attempt.key}`);
-  if (readChatState(draftKey)?.trim() === opening.text) writeChatState(draftKey, "");
+  settleCreationDraft(attempt, chat);
 }
 
-export function settleChatOpening(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): void {
+export async function stageCreationFiles(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<ChatCreationAttempt> {
+  const draft = attempt.draft;
+  if (!draft?.files || draft.files.ids) return attempt;
+  const files = await chatCreationFiles("read", draft.files.key);
+  if (!files || files.length !== draft.files.count)
+    throw new Error("The original attachments are unavailable. The opening message has been held.");
+  const ids = [];
+  for (const file of files) {
+    ids.push((await api.uploadDraftAttachment(chat.id, draft.ownerId, file)).id);
+  }
+  const staged = { ...attempt, draft: { ...draft, files: { ...draft.files, ids } } };
+  replaceCreationReceipt(attempt, staged, chat);
+  return staged;
+}
+
+export async function moveCreationDraft(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<ChatCreationAttempt> {
+  if (!attempt.draft) return attempt;
+  attempt = await stageCreationFiles(attempt, chat);
+  const draft = attempt.draft!;
+  const text = draft.text ?? attempt.opening?.text ?? "";
+  const attachmentIds = draft.files?.ids ?? [];
+  if (text || attachmentIds.length) {
+    const existing = await api.getConversationDraft(chat.id, draft.ownerId);
+    const matches = existing.text === text && JSON.stringify(existing.attachmentIds) === JSON.stringify(attachmentIds);
+    if (!matches) {
+      if (existing.revision !== 0) throw new Error("The saved Chat already has a draft. The New Chat draft is retained.");
+      await api.putConversationDraft(chat.id, {
+        text,
+        attachmentIds,
+        ownerId: draft.ownerId,
+        expectedRevision: 0,
+        clientId: attempt.key,
+      });
+    }
+  }
+  return settleCreationDraft(attempt, chat);
+}
+
+function replaceCreationReceipt(attempt: ChatCreationAttempt, next: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): void {
   const journal = readDurableChatAttempts();
   if (!mayRecordCreationReceipt(journal, attempt, chat) ||
-      !saveCreationAttempts(journal.map(item => sameCreationAttempt(item, attempt) ? { ...item, opening: undefined } : item))) {
-    throw new Error("The opening message receipt could not be saved. Retry the same request.");
+      !saveCreationAttempts(journal.map(item => sameCreationAttempt(item, attempt) ? next : item))) {
+    throw new Error("The Chat receipt could not be saved. Retry the same request.");
   }
+}
+
+export function settleCreationDraft(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): ChatCreationAttempt {
+  const next = { ...attempt, opening: undefined, draft: undefined };
+  replaceCreationReceipt(attempt, next, chat);
+  if (attempt.draft?.files) void chatCreationFiles("remove", attempt.draft.files.key).catch(() => {});
+  const draftKey = chatStateKey("draft", `new-chat.${attempt.key}`);
+  const source = attempt.draft?.rawText ?? attempt.draft?.text ?? attempt.opening?.text;
+  if (source !== undefined && readChatState(draftKey)?.trim() === source.trim()) writeChatState(draftKey, "");
+  return next;
+}
+
+export function settleCreationContinuation(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): void {
+  if (attempt.continuation) replaceCreationReceipt(attempt, { ...attempt, continuation: undefined }, chat);
 }
 
 export const chatCreationAttemptsKey = "ponderosa.new-chat-attempts.v2";
@@ -96,8 +166,18 @@ export function readCreationAttempts(): ChatCreationAttempt[] {
     return items.filter((item): item is ChatCreationAttempt => item && typeof item.key === "string" &&
       (item.owner === undefined || (item.owner?.product === "branches" && typeof item.owner.branchId === "string" && item.owner.branchId.length > 0)) &&
       (item.origin === undefined || item.origin === "import_destination") &&
+      (item.continuation === undefined || (!item.owner && !item.origin && !item.opening &&
+        (isConversationDetailView(item.continuation?.view) || conversationHeaderActions.includes(item.continuation?.initialAction)))) &&
+      (item.draft === undefined || (!item.owner && !item.origin &&
+        item.draft && (item.draft.text === undefined || typeof item.draft.text === "string") &&
+        (item.draft.rawText === undefined || typeof item.draft.rawText === "string") &&
+        typeof item.draft?.ownerId === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(item.draft.ownerId) &&
+        (item.draft.files === undefined || (typeof item.draft.files?.key === "string" &&
+          Number.isInteger(item.draft.files.count) && item.draft.files.count > 0 &&
+          (item.draft.files.ids === undefined || (Array.isArray(item.draft.files.ids) &&
+            item.draft.files.ids.length === item.draft.files.count && item.draft.files.ids.every((id: unknown) => typeof id === "string"))))))) &&
       (item.opening === undefined || (!item.owner && !item.origin &&
-        typeof item.opening?.text === "string" && Boolean(item.opening.text) &&
+        typeof item.opening?.text === "string" && Boolean(item.opening.text || item.draft?.files) &&
         typeof item.opening?.title === "string" && Boolean(item.opening.title) &&
         (item.opening.runtime === undefined || (typeof item.opening.runtime?.defaultEngine === "string" &&
           ["defaultModel", "defaultEffort", "defaultSpeed"].every(field =>

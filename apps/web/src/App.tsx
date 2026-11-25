@@ -762,7 +762,7 @@ export default function App({
                   {route.kind !== "assistant" && <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />}
                   <ChatCreationRecovery key={JSON.stringify(route)}
                     activeCreationKey={route.kind === "create" && route.resource === "chat" ? route.creationKey : undefined}
-                    onCreated={(projectId, conversationId) => navigateWorkspace({ kind: "conversation", projectId, conversationId })} />
+                    onCreated={(projectId, conversationId, continuation) => navigateWorkspace({ kind: "conversation", projectId, conversationId, ...continuation })} />
                 </>}
                 preferredProvider={defaultUsageProvider}
                 onOpenProviderSettings={() =>
