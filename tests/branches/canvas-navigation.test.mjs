@@ -83,11 +83,11 @@ test('restoring or resizing a camera never reveals a selection unless a node was
  applied.current={branchId:'branch',layout:{...graph,key:'before-insertion',nodes:[]},available:{...available}};run();assert.deepEqual(revealed.at(-1),{id:'entry',force:true});
 });
 
-test('all insertion controls retain their exact clicked anchor, with Outline as focus-return fallback',async()=>{
- const {createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),opened=[],target={kind:'edge',edgeId:'failure'},clicked={id:'visible-fallback'},outline={id:'outline-trigger'},outlineButton={current:null};
- const render=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='insertionButton',{Button:'button',AddIcon:'svg',require,outlineButton,setOutlineOpen(){},edgeTarget:()=>target,onInsert:(value,anchor,returnTo)=>opened.push({value,anchor,returnTo})});
- const edge={id:'failure',label:'Failure Path'};render(edge).props.onClick({currentTarget:clicked});assert.equal(opened[0].anchor,clicked);assert.equal(opened[0].value,target);
- outlineButton.current=outline;const temporary={id:'temporary-dialog-button'};render(edge,true).props.onClick({currentTarget:temporary});assert.equal(opened[1].anchor,temporary,'The clicked control supplies the captured position even when Outline closes');assert.equal(opened[1].returnTo,outline,'The mounted Outline trigger restores focus after its temporary control closes');
+test('Canvas fallback insertion uses the exact clicked control and connection',async()=>{
+ const {createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),opened=[],target={kind:'edge',edgeId:'failure'},clicked={id:'visible-fallback'};
+ const render=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='insertionButton',{Button:'button',AddIcon:'svg',require,edgeTarget:()=>target,onInsert:(value,anchor)=>opened.push({value,anchor})});
+ render({id:'failure',label:'Failure Path'}).props.onClick({currentTarget:clicked});
+ assert.deepEqual(opened,[{value:target,anchor:clicked}]);
 });
 
 

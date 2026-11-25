@@ -1,0 +1,181 @@
+import '../shared/workspace-resolution.mjs';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {createRequire} from 'node:module';
+const {fixture}=await import('../shared/fixture.mjs');
+import {serveFixture} from '../shared/serve-ui-fixture.mjs';
+
+const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
+const f=await fixture();
+let web,browser;
+const script=(id,label)=>({id,label,kind:'script',runtime:'node',source:'process.stdout.write("fixture")',cwdRef:'workspace',timeoutMs:1000});
+const edge=(id,from,to,on='success',extra={})=>({id,from,to,on,...extra});
+try{
+ web=await serveFixture(f);
+ browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
+ for(const mobile of [false,true]){
+  const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:900},isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
+  const page=await context.newPage();
+  page.setDefaultTimeout(8000);
+  const pageErrors=[];
+  page.on('pageerror',error=>pageErrors.push(error.message));
+  await context.route('**/*',route=>new URL(route.request().url()).origin===web.origin?route.continue():route.abort());
+  // ELK stays pending until the test switches back, then its next layout attempt fails.
+  await context.addInitScript(()=>{
+   const NativeWorker=window.Worker;
+   window.Worker=class extends NativeWorker {
+    constructor(url,options){
+     if(new URL(url).pathname.startsWith('/static/js/async/')){
+      if(window.failOutlineLayout)throw Error('Fixture layout failure');
+      const idle=URL.createObjectURL(new Blob(['onmessage = () => {}'],{type:'text/javascript'}));
+      super(idle,options);
+      URL.revokeObjectURL(idle);
+      return;
+     }
+     super(url,options);
+    }
+   };
+  });
+  try{
+   const name=mobile?'Phone Outline':'Desktop Outline';
+   const branch=f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
+   const tail=Array.from({length:14},(_,i)=>script('tail'+i,'Follow-up '+i));
+   const definition={schema:'ponderosa.branch.v1',name,trigger:{kind:'manual'},entry:'condition',
+    steps:[...tail,script('right','Second worker'),script('no','Fallback input'),script('yes','Matched input'),script('shared','Shared work'),script('recover','Recover input'),script('left','First worker')],
+    controls:[{id:'join',kind:'join',label:'Combine workers',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['left','right']},
+     {id:'condition',kind:'condition',label:'Check input',predicate:{source:'input',equals:'yes'},otherwise:'no'},{id:'fork',kind:'fork',label:'Run workers',joinId:'join'}],
+    edges:[edge('no','condition','no','failure'),edge('right','fork','right','selected'),edge('yes','condition','yes','selected'),edge('yes-next','yes','shared'),edge('no-next','no','shared'),
+     edge('failure','shared','recover','failure'),edge('recover-next','recover','fork'),edge('ready','shared','fork'),edge('left','fork','left','selected'),edge('left-done','left','join'),edge('right-done','right','join'),
+     edge('finish','join','tail0'),...tail.slice(1).map((node,index)=>edge('after'+index,'tail'+index,node.id)),edge('retry','tail1','tail0','failure',{loop:true})],
+    policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+   const initial=f.ok(await f.api('POST','/api/branches/deploy',{branchId:branch.id,chatId:branch.chatId,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{workspace:f.root}}}));
+   const url=`${web.origin}/branches?branch=${branch.id}`;
+   const canvas=page.getByRole('region',{name:'Workflow Canvas',exact:true});
+   const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
+   const view=label=>page.getByRole('button',{name:label,exact:true});
+   const row=text=>outline.getByRole('button',{name:new RegExp('^'+text+' (?:Script|Condition|Join|Parallel paths|Human approval)$')});
+   const inspector=page.getByRole(mobile?'dialog':'region',{name:'Workflow inspector',exact:true});
+   const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
+   const activate=button=>mobile?button.tap():button.press('Enter');
+   const scroll=outline.locator('div').first();
+   await page.goto(url);
+   await canvas.waitFor();
+   await canvas.getByText('Arranging Workflow…').waitFor();
+   await view('Outline').click();
+   await row('Check input').waitFor();
+   assert.equal(await row('Fallback input').count(),0,'Secondary path starts collapsed');
+   await activate(outline.getByText('Otherwise',{exact:true}));
+   await row('Fallback input').waitFor();
+   await row('Matched input').waitFor();
+   assert.equal(await row('Shared work').count(),1);
+   const shared=outline.getByRole('button',{name:'Continue at Shared work',exact:true});
+   assert.equal(await shared.count(),2);
+   await activate(shared.first());
+   assert.equal(await row('Shared work').evaluate(node=>node===document.activeElement),true);
+   const primary=outline.locator('details').filter({has:page.getByText('If it matches',{exact:true})});
+   assert.equal(await primary.getByRole('button',{name:'Matched input Script',exact:true}).count(),1);
+
+   await page.evaluate(()=>window.failOutlineLayout=true);
+   await view('Canvas').click();
+   await page.getByRole('alert').getByText('Fixture layout failure').waitFor();
+   await view('Outline').click();
+   await row('Fallback input').waitFor();
+   await activate(outline.getByText('On failure',{exact:true}).first());
+   await row('Recover input').waitFor();
+   assert.equal(await outline.getByRole('button',{name:'Continue at Run workers',exact:true}).count(),2);
+   assert.equal(await outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).count(),2);
+   assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Second worker|Combine workers) /}).allTextContents(),['First workerScript','Second workerScript','Combine workersJoin']);
+   await activate(outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).last());
+   assert.equal(await row('Combine workers').evaluate(node=>node===document.activeElement),true);
+   const retryPath=outline.locator('details').filter({has:page.getByText('On failure',{exact:true})}).last();
+   await activate(retryPath.locator('summary'));
+   const loop=outline.getByRole('button',{name:'Loop to Follow-up 0',exact:true});
+   await activate(loop);
+   assert.equal(await row('Follow-up 0').evaluate(node=>node===document.activeElement),true);
+
+   const conditionActions=outline.getByRole('button',{name:'Actions for Check input',exact:true});
+   await activate(conditionActions);
+   await page.getByRole('menuitem',{name:'Add if it matches → Matched input',exact:true}).waitFor();
+   await activate(page.getByRole('menuitem',{name:'Add otherwise → Fallback input',exact:true}));
+   await page.getByRole('menu').getByText('Otherwise → Fallback input',{exact:true}).waitFor();
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Actions for Check input');
+   await activate(conditionActions);
+   await activate(page.getByRole('menuitem',{name:'Add otherwise → Fallback input',exact:true}));
+   await activate(page.getByRole('menuitem',{name:'Approval',exact:true}));
+   await inspector.getByRole('textbox',{name:'Name',exact:true}).fill('Review unmatched input');
+   await back.click();
+   await inspector.waitFor({state:'hidden'});
+   assert.equal(await row('Review unmatched input').evaluate(node=>node===document.activeElement),true);
+
+   await activate(outline.getByRole('button',{name:'Actions for Matched input',exact:true}));
+   await page.getByRole('menuitem',{name:'Add after this step',exact:true}).waitFor();
+   await page.keyboard.press('Escape');
+   const actions=outline.getByRole('button',{name:'Actions for Shared work',exact:true});
+   await activate(actions);
+   const onFailure=page.getByRole('menuitem',{name:'Add on failure → Recover input',exact:true});
+   await onFailure.waitFor();
+   if(!mobile){
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Actions for Shared work');
+    await activate(actions);
+   }
+   await activate(onFailure);
+   await page.getByRole('menu').getByText('On failure → Recover input',{exact:true}).waitFor();
+   await activate(page.getByRole('menuitem',{name:'Approval',exact:true}));
+   const nameField=inspector.getByRole('textbox',{name:'Name',exact:true});
+   await nameField.fill('Review fallback');
+   if(!mobile){
+    const divider=page.getByRole('separator',{name:'Resize workflow inspector'});
+    const width=async()=>Number(await divider.getAttribute('aria-valuenow'));
+    const first=await width();
+    await divider.press('ArrowLeft');assert.equal(await width(),first+16);
+    const handle=await divider.boundingBox();
+    await page.mouse.move(handle.x+6,handle.y+30);await page.mouse.down();await page.mouse.move(handle.x-34,handle.y+30,{steps:5});await page.mouse.up();
+    assert.equal(await width(),first+56);
+    const dock=await inspector.boundingBox(),list=await outline.boundingBox();
+    assert.ok(list.width>=380&&list.x+list.width<dock.x);
+   }
+   await back.click();
+   await inspector.waitFor({state:'hidden'});
+   assert.equal(await row('Review fallback').getAttribute('aria-pressed'),'true');
+   assert.equal(await row('Review fallback').evaluate(node=>node===document.activeElement),true);
+   assert.equal(await outline.locator('details').filter({has:page.getByRole('button',{name:'Review fallback Human approval',exact:true})}).count(),1);
+   await activate(outline.getByRole('button',{name:'Undo',exact:true}));
+   await row('Review Result').waitFor();
+   await activate(outline.getByRole('button',{name:'Redo',exact:true}));
+   await row('Review fallback').waitFor();
+
+   await row('Follow-up 11').scrollIntoViewIfNeeded();
+   const before=await scroll.evaluate(node=>node.scrollTop);
+   assert.ok(before>100);
+   await view('Canvas').click();
+   await view('Outline').click();
+   assert.equal(await scroll.evaluate(node=>node.scrollTop),before);
+   assert.equal(await row('Review fallback').getAttribute('aria-pressed'),'true');
+
+   const review=outline.getByRole('button',{name:'Review changes',exact:true});
+   await review.click();
+   await inspector.getByRole('button',{name:'Publish workflow',exact:true}).click();
+   await inspector.waitFor({state:'hidden'});
+   await outline.waitFor();
+   await row('Review fallback').waitFor();
+   const persisted=f.ok(await f.api('GET',`/api/branches/${branch.id}`));
+   assert.notEqual(persisted.versionId,initial.versionId);
+   const version=f.ok(await f.api('GET',`/api/branches/${branch.id}/versions/${persisted.versionId}`));
+   const added=version.definition.steps.find(node=>node.label==='Review fallback');
+   assert.ok(added);
+   assert.equal(version.definition.edges.find(item=>item.id==='failure').to,added.id);
+   assert.equal(version.definition.edges.find(item=>item.from===added.id&&item.on==='approved').to,'recover');
+   assert.equal(version.definition.edges.find(item=>item.id==='ready').to,'fork');
+   const unmatched=version.definition.steps.find(node=>node.label==='Review unmatched input');
+   assert.ok(unmatched);
+   assert.equal(version.definition.controls.find(item=>item.id==='condition').otherwise,unmatched.id);
+   assert.equal(version.definition.edges.find(item=>item.id==='no').to,unmatched.id);
+   assert.equal(version.definition.edges.find(item=>item.from===unmatched.id&&item.on==='approved').to,'no');
+   assert.equal(version.definition.edges.find(item=>item.id==='yes').to,'yes');
+   assert.deepEqual(pageErrors,[]);
+   console.log(`PASS ${mobile?'phone 390×844':'desktop 1440×900'} Outline, stalled and failed Canvas, paths, links, exact insertion, focus, resize, undo/redo, view continuity, publication`);
+  }finally{await context.close()}
+ }
+}finally{await browser?.close();await web?.close();await f.dispose()}

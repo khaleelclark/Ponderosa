@@ -1,4 +1,5 @@
 import {createPortal} from 'react-dom';
+import {WorkflowOutline} from './WorkflowOutline';
 import {WorkflowInspectorPage} from './WorkflowInspectorPage';
 import {workflowTriggerSummary} from './trigger-summary';
 import {useBranchDraftGuard} from './BranchNavigation';
@@ -10,7 +11,7 @@ const WorkflowAgentSetup=lazy(()=>import('./WorkflowAgentSetup').then(module=>({
 
 import { requestJson } from "../../api/real";
 import {useEffect,useLayoutEffect,useRef,useState} from 'react';
-import {Alert,Box,Button,FormControlLabel,IconButton,Menu,MenuItem,Stack,Switch,TextField,Tooltip,Typography} from '@mui/material';
+import {Alert,Box,Button,FormControlLabel,IconButton,Menu,MenuItem,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
@@ -60,9 +61,20 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const applyRequest=useRef(0),currentDefinition=useRef(definition);currentDefinition.current=definition;
  const [triggerInvalid,setTriggerInvalid]=useState(false),[retainTrigger,setRetainTrigger]=useState(false);
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
+ const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??'canvas');
+ const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
+ const outlineScroll=useRef(canvasViews.get(branchId)?.outlineScroll??0),outlineTrigger=useRef<HTMLButtonElement>(null),outlineEntry=useRef<HTMLButtonElement>(null);
+ const [insertionLabel,setInsertionLabel]=useState<string>();
+ useLayoutEffect(()=>{
+  const previous=canvasViews.get(branchId);
+  canvasViews.delete(branchId);
+  canvasViews.set(branchId,{...previous,view,selected});
+  while(canvasViews.size>100)canvasViews.delete(canvasViews.keys().next().value!);
+ },[branchId,canvasViews,selected,view]);
+ useLayoutEffect(()=>()=>{const saved=canvasViews.get(branchId);if(saved)saved.outlineScroll=outlineScroll.current},[branchId,canvasViews]);
  const dismissedInsertion=useRef<ReturnType<typeof workflowInsertionAnchor>|null>(null);
  const addButton=useRef<HTMLButtonElement>(null),triggerButton=useRef<HTMLButtonElement>(null),canvas=useRef<HTMLDivElement>(null);
- const expandedPane=useRef<typeof inspectorPane>();
+ const expandedPane=useRef<typeof inspectorPane>(),stepPanel=useRef<HTMLDivElement>(null),stepScroll=useRef(0);
  const variablesButton=useRef<HTMLButtonElement>(null),setupButton=useRef<HTMLElement>(),variablesFromTrigger=useRef(false);
  const restoreSetupFocus=()=>requestAnimationFrame(()=>setupButton.current?.focus({preventScroll:true}));
  useEffect(()=>{if(inspectorPane==='trigger')setRetainTrigger(true);if(inspectorPane!=='variables')variablesFromTrigger.current=false},[inspectorPane]);
@@ -74,18 +86,29 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const openEditor=(id:string)=>{if(setupPending)return;if(setup&&id!==selected)setSetup(undefined);setSelected(id);onInspectorPane('step');setExpanded(false);setEditorReveal(value=>value+1)};
  const toggleExpanded=()=>{
   const next=!expanded;setExpanded(next);
-  if(next){expandedPane.current=inspectorPane;onInspectorPane()}else if(expandedPane.current)onInspectorPane(expandedPane.current);
+  if(next){
+   expandedPane.current=inspectorPane;
+   stepScroll.current=stepPanel.current?.querySelector('[data-inspector-scroll]')?.scrollTop??0;
+   onInspectorPane();
+  }else if(expandedPane.current)onInspectorPane(expandedPane.current);
   requestAnimationFrame(()=>{
-   if(!mounted.current||owner.current.branchId!==branchId||!next&&expandedPane.current)return;
-   canvas.current?.querySelector<HTMLElement>(`[aria-label="${next?'Collapse Workflow':'Expand Workflow'}"]`)?.focus({preventScroll:true})
+   if(!mounted.current||owner.current.branchId!==branchId)return;
+   if(!next&&expandedPane.current){
+    if(expandedPane.current==='step'){
+     const scroll=stepPanel.current?.querySelector('[data-inspector-scroll]');
+     if(scroll)scroll.scrollTop=stepScroll.current;
+    }
+    return;
+   }
+   canvas.current?.querySelector<HTMLElement>(`[aria-label="${next?'Collapse Workflow':'Expand Workflow'}"]:not([hidden] *)`)?.focus({preventScroll:true})
   })
  };
- const openAdd=(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement)=>{setInsertionTarget(target);setBranching(false);dismissedInsertion.current=null;setAddAnchor(workflowInsertionAnchor(anchor,returnTo));setInsertError('')};
+ const openAdd=(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement,label?:string)=>{setInsertionTarget(target);setInsertionLabel(label);setBranching(false);dismissedInsertion.current=null;setAddAnchor(workflowInsertionAnchor(anchor,returnTo));setInsertError('')};
  const closeAdd=()=>{dismissedInsertion.current=addAnchor;setAddAnchor(null)};
  const add=(kind:GuidedStepKind)=>{if(!addAnchor)return;const result=insertGuidedStep(definition,kind,insertionTarget);if(!result.ok){setInsertError(result.reason);return;}onDraft({definition:result.definition});openEditor(result.selected);setFocusRequest(value=>value+1);dismissedInsertion.current=null;setAddAnchor(null)};
  const removeSelected=(id:string)=>{const result=removeWorkflowNode(definition,id);if(!result.ok){setInsertError(result.reason);return;}onDefinition(result.definition);setSelected(result.nextSelected);setFocusRequest(value=>value+1)};
  const restricted=guidedInsertionRestriction(definition,insertionTarget);
- useEffect(()=>{if(!validationRequest||validationIssues.some(issue=>issue.nodeId))return;const missing=definition.steps.find(step=>advancedSettingsNeedAttention(step,bindings)||step.kind==='script'&&(!step.source.trim()||!bindings.directories[step.cwdRef]?.trim())||step.kind==='agent'&&'ref'in step.target&&!bindings.agents[step.target.ref]||step.kind==='human_gate'&&!step.prompt.trim()||step.kind==='branch_call'&&!bindings.branches?.[step.branchRef]);if(missing){openEditor(missing.id);onInvalidStep?.()}else if(!definition.steps.length){onInvalidStep?.();addButton.current?.focus()}},[validationRequest]);
+ useEffect(()=>{if(!validationRequest||validationIssues.some(issue=>issue.nodeId))return;const missing=definition.steps.find(step=>advancedSettingsNeedAttention(step,bindings)||step.kind==='script'&&(!step.source.trim()||!bindings.directories[step.cwdRef]?.trim())||step.kind==='agent'&&'ref'in step.target&&!bindings.agents[step.target.ref]||step.kind==='human_gate'&&!step.prompt.trim()||step.kind==='branch_call'&&!bindings.branches?.[step.branchRef]);if(missing){openEditor(missing.id);onInvalidStep?.()}else if(!definition.steps.length){onInvalidStep?.();(view==='outline'?outlineEntry:addButton).current?.focus()}},[validationRequest]);
  useEffect(()=>{onPendingEdits?.(setupPending||triggerInvalid||(advanced!==undefined&&advanced!==JSON.stringify(definition,null,2)))},[advanced,definition,onPendingEdits,triggerInvalid,setupPending]);
  useEffect(()=>()=>onPendingEdits?.(false),[onPendingEdits]);
  useEffect(()=>{if(!active)setAddAnchor(null)},[active]);
@@ -99,21 +122,40 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString(),whenRunning:'run_latest'}:kind==='webhook'?{}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
   onDraft({definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:next});
  };
+ const triggerControl=(ref:React.RefObject<HTMLButtonElement>)=><Tooltip describeChild title="Edit trigger settings"><Button ref={ref} color={triggerInvalid?'error':'inherit'} variant="outlined" startIcon={<PlayArrowOutlinedIcon/>} endIcon={<ExpandMoreIcon/>} onClick={()=>{setExpanded(false);onInspectorPane('trigger')}} sx={{minHeight:44,maxWidth:'100%',bgcolor:'background.paper',borderRadius:'12px',whiteSpace:'normal',textAlign:'left','& .MuiButton-startIcon, & .MuiButton-endIcon':{flexShrink:0}}}>{workflowTriggerSummary(definition.trigger.kind,sourceConfig)}{triggerDirty?' · Draft':''}</Button></Tooltip>;
  const canEditInspector=()=>mounted.current&&editorAuthority.current.visible&&editorAuthority.current.branchId===branchId&&editorAuthority.current.nodeId===selectedNode?.id&&owner.current.definition===definition&&owner.current.bindings===bindings;
  return <Stack ref={canvas} onKeyDown={event=>{if(canvas.current?.contains(event.target as Node)&&event.key==='Escape'&&!event.defaultPrevented&&expanded){event.preventDefault();toggleExpanded()}}} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>
   {setupNotice&&<Alert severity="info" onClose={()=>setSetupNotice('')}>{setupNotice}</Alert>}
-  {validationIssues.length>0&&<Stack component="section" aria-label="Publication Issues" spacing={.5} sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto'}}><Typography fontWeight={600}>Publication Issues</Typography>{validationIssues.map((issue,index)=><Button key={index} sx={{justifyContent:'flex-start',textAlign:'left'}} onClick={()=>{if(issue.nodeId){setChosenIssue(issue);setIssueFocus(value=>value+1);openEditor(issue.nodeId);onInvalidStep?.()}else if(issue.section==='settings')onSettingsIssue?.();else addButton.current?.focus()}}>{issue.message}</Button>)}</Stack>}
+  {validationIssues.length>0&&<Stack component="section" aria-label="Publication Issues" spacing={.5} sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto'}}><Typography fontWeight={600}>Publication Issues</Typography>{validationIssues.map((issue,index)=><Button key={index} sx={{justifyContent:'flex-start',textAlign:'left'}} onClick={()=>{if(issue.nodeId){setChosenIssue(issue);setIssueFocus(value=>value+1);openEditor(issue.nodeId);onInvalidStep?.()}else if(issue.section==='settings')onSettingsIssue?.();else (view==='outline'?outlineEntry:addButton).current?.focus()}}>{issue.message}</Button>)}</Stack>}
   {insertError&&<Alert severity="error" onClose={()=>setInsertError('')}>{insertError}</Alert>}
   <Menu anchorEl={addAnchor} anchorOrigin={{vertical:'bottom',horizontal:'center'}} transformOrigin={{vertical:'top',horizontal:'center'}} marginThreshold={16} open={Boolean(addAnchor)} onClose={closeAdd} disableRestoreFocus slotProps={{transition:{onExited:()=>{const anchor=dismissedInsertion.current;dismissedInsertion.current=null;if(mounted.current&&owner.current.active)anchor?.restoreFocus()}}}}>
    {branching&&<MenuItem onClick={()=>setBranching(false)}>← All Steps</MenuItem>}
-   <Box sx={{px:2,py:1,maxWidth:280}}><Typography variant="caption" color="text.secondary">{restricted??(insertionTarget.kind==='entry'?(definition.entry?'Before The First Step':'First Step'):insertionTarget.kind==='edge'?'On This Connection':'Before End This Path')}</Typography></Box>
+   <Box sx={{px:2,py:1,maxWidth:280}}><Typography variant="caption" color="text.secondary">{restricted??insertionLabel??(insertionTarget.kind==='entry'?(definition.entry?'Before The First Step':'First Step'):insertionTarget.kind==='edge'?'On This Connection':'Before End This Path')}</Typography></Box>
    {(branching?[['condition','Condition'],['route','Named Routes'],['parallel','Parallel Paths'],['for_each','For Each']]:[['agent','Agent Task'],['human_gate','Approval'],['action','Notification'],['branch_call','Run Another Workflow'],['script','Script']]).map(([kind,label])=><MenuItem key={kind} disabled={Boolean(restricted)} onClick={()=>add(kind as GuidedStepKind)}>{label}</MenuItem>)}
    {!branching&&<MenuItem onClick={()=>setBranching(true)}>Branching…</MenuItem>}
   </Menu>
-  <Suspense fallback={<Typography role="status">Loading Workflow Canvas…</Typography>}><WorkflowCanvas saveControl={saveControl} expanded={expanded} onToggleExpanded={toggleExpanded} startControl={<Tooltip describeChild title="Edit trigger settings"><Button ref={triggerButton} color={triggerInvalid?'error':'inherit'} variant="outlined" startIcon={<PlayArrowOutlinedIcon/>} endIcon={<ExpandMoreIcon/>} onClick={()=>{setExpanded(false);onInspectorPane('trigger')}} sx={{minHeight:44,maxWidth:'100%',bgcolor:'background.paper',borderRadius:'12px',whiteSpace:'normal',textAlign:'left','& .MuiButton-startIcon, & .MuiButton-endIcon':{flexShrink:0}}}>{workflowTriggerSummary(definition.trigger.kind,sourceConfig)}{triggerDirty?' · Draft':''}</Button></Tooltip>} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active} bottomSheetHeight={0} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} focusRequest={editorVisible?0:focusRequest}/></Suspense>
+  <Box sx={{px:1.5,py:.5,borderBottom:1,borderColor:'divider',flexShrink:0}}>
+   <ToggleButtonGroup exclusive value={view} aria-label="Workflow view" size="small" onChange={(_,next:'canvas'|'outline'|null)=>{
+    if(!next)return;
+    setView(next);
+    if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
+   }} sx={{'& .MuiToggleButton-root':{minHeight:44,px:2,textTransform:'none'}}}>
+    <ToggleButton value="canvas">Canvas</ToggleButton>
+    <ToggleButton value="outline">Outline</ToggleButton>
+   </ToggleButtonGroup>
+  </Box>
+  {canvasOpened&&<Box hidden={view!=='canvas'} sx={{flex:1,minHeight:0,minWidth:0}}>
+  <Suspense fallback={<Typography role="status">Loading Workflow Canvas…</Typography>}><WorkflowCanvas saveControl={saveControl} expanded={expanded} onToggleExpanded={toggleExpanded} startControl={triggerControl(triggerButton)} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active&&view==='canvas'} bottomSheetHeight={0} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} focusRequest={editorVisible?0:focusRequest}/></Suspense>
+  </Box>}
+  {outlineOpened&&<Box hidden={view!=='outline'} sx={{flex:1,minHeight:0,minWidth:0}}>
+   <WorkflowOutline definition={definition} bindings={bindings} agents={agents} issues={validationIssues} active={active&&view==='outline'} selected={selected}
+    onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} startControl={triggerControl(outlineTrigger)} entryButtonRef={outlineEntry}
+    saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
+    focusRequest={editorVisible?0:focusRequest} revealRequest={validationRequest+issueFocus+editorReveal} scrollPosition={outlineScroll}/>
+  </Box>}
   {inspectorTarget&&createPortal(<>
    {retainTrigger||inspectorPane==='trigger'?<Box hidden={!inspectorActive||inspectorPane!=='trigger'} sx={{height:'100%'}}>
-    <WorkflowInspectorPage title="Trigger settings" onBack={()=>{onInspectorPane();requestAnimationFrame(()=>triggerButton.current?.focus({preventScroll:true}))}} actions={<Button ref={variablesButton} onClick={()=>{variablesFromTrigger.current=true;onInspectorPane('variables')}}>Workflow variables</Button>}>
+    <WorkflowInspectorPage title="Trigger settings" onBack={()=>{onInspectorPane();requestAnimationFrame(()=>(view==='outline'?outlineTrigger:triggerButton).current?.focus({preventScroll:true}))}} actions={<Button ref={variablesButton} onClick={()=>{variablesFromTrigger.current=true;onInspectorPane('variables')}}>Workflow variables</Button>}>
   <Stack component="section" aria-label="How It Starts" spacing={1.5}>
    {intake}
    {triggerDirty&&<Typography fontWeight={600}>Draft · {workflowTriggerSummary(definition.trigger.kind,sourceConfig)}</Typography>}
@@ -127,7 +169,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
    {inspectorActive&&inspectorPane==='variables'&&<WorkflowInspectorPage title="Workflow variables" backLabel={variablesFromTrigger.current?"Back to trigger settings":"Back to workflow"} onBack={()=>{if(!variablesFromTrigger.current){onInspectorPane();return}variablesFromTrigger.current=false;onInspectorPane('trigger');requestAnimationFrame(()=>variablesButton.current?.focus({preventScroll:true}))}}>
     <ParameterDefinitions definition={definition} onChange={onDefinition}/>
    </WorkflowInspectorPage>}
-   {selectedNode&&<Box hidden={!editorVisible} {...(!editorVisible?{inert:true}:{})} sx={{height:'100%'}}>
+   {selectedNode&&<Box ref={stepPanel} hidden={!editorVisible} {...(!editorVisible?{inert:''}:{})} sx={{height:'100%'}}>
     <WorkflowInspectorPage title="Step Settings" onBack={closeEditor} headerAction={<IconButton aria-label="Expand Workflow" onClick={toggleExpanded} sx={{width:44,height:44}}><OpenInFullIcon/></IconButton>}>
      <NodeEditor active={editorVisible} key={selectedNode.id} onDraft={value=>{if(canEditInspector())owner.current.onDraft(value)}} validationRequest={active?validationRequest+issueFocus:0} retainedTemplates={retainedTemplates.current} branchId={branchId} onSetup={value=>{if(canEditInspector()){setupButton.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setSetup(value)}}} validationIssue={chosenIssue?.nodeId===selectedNode.id?chosenIssue:validationIssues.find(issue=>issue.nodeId===selectedNode.id)} definition={definition} nodeId={selectedNode.id} onChange={value=>{if(canEditInspector())owner.current.onDefinition(value)}} onRemove={next=>{if(canEditInspector()){setSelected(next);setFocusRequest(value=>value+1)}}} bindings={bindings} onBindings={value=>{if(canEditInspector())owner.current.onBindings(value)}} contexts={contexts} agents={agents} engines={engines}/>
     </WorkflowInspectorPage>
