@@ -843,6 +843,13 @@
       "origin": "Phase2 historical execution archive fresh-instance portability"
     },
     {
+      "path": "tests/installation-release/static-web-assets.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built native server workspaces and disposable Fastify fixture; no provider account"
+    },
+    {
       "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
       "feature": "installation-release",
       "lane": "server",
