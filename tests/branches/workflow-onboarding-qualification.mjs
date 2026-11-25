@@ -42,8 +42,10 @@ try{
    await page.goto(web.origin+'/');
    await page.getByRole('heading',{name:'Home',exact:true}).waitFor();
    if(mobile)await click(navButton);
-   await click(page.getByRole('link',{name:'Workflows',exact:true}));
-   await page.waitForURL(web.origin+'/branches');
+   const sidebar=page.getByRole('navigation',{name:'Workspace Sections',exact:true});
+   await sidebar.getByRole('button',{name:'Chats',exact:true}).waitFor();
+   assert.equal(await sidebar.getByRole('link',{name:'Workflows',exact:true}).count(),0);
+   await page.goto(web.origin+'/branches');
    await page.getByRole('heading',{name:'Workflows',exact:true}).last().waitFor();
    const example=button('Try an example');
    await example.waitFor();
@@ -67,7 +69,7 @@ try{
    assert.equal(versions.length,1);
    assert.equal(f.ok(await f.api('GET',samplePath+'/versions/'+branch.versionId)).definition.trigger.kind,'manual');
    assert.equal(requests.filter(path=>path.endsWith('/executions')).length,0);
-   steps.push('Home → Workflows → Try an example');
+   steps.push('Ponderosa sidebar has no Workflows link; /branches → Try an example');
 
    await click(button('Run once'));
    await button('Run once',inspector).waitFor();
