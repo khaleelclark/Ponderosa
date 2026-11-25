@@ -45,6 +45,23 @@ test('duplicate intake pins accepted version and restart never creates another R
  assert.equal(f.branches.detail(e.id).attempts[0].requestId,request);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE id=?').get(request).n,1);
 });
+test('a canceled run can start a fresh execution with edited input and the reviewed version',t=>{
+ const f=fixture(t),original=f.branches.accept(f.branch.id,'original','original input');
+ f.branches.cancel(original.id);
+ const published=f.branches.deploy({...f.deployment,branchId:f.branch.id,expectedVersionId:f.branch.versionId,
+  idempotencyKey:'new-version',definition:{...f.deployment.definition,name:'New version'}});
+ assert.throws(()=>f.branches.accept(f.branch.id,'rerun','edited input',undefined,original.versionId),/version changed/);
+ const rerun=f.branches.accept(f.branch.id,'rerun','edited input',undefined,published.versionId);
+ assert.notEqual(rerun.id,original.id);
+ assert.equal(rerun.versionId,published.versionId);
+ assert.equal(rerun.input,'edited input');
+ f.branches.deploy({...f.deployment,branchId:f.branch.id,expectedVersionId:published.versionId,
+  idempotencyKey:'another-version',definition:{...f.deployment.definition,name:'Another version'}});
+ assert.equal(f.branches.accept(f.branch.id,'rerun','edited input',undefined,published.versionId).id,rerun.id);
+ assert.throws(()=>f.branches.accept(f.branch.id,'rerun','edited input',undefined,original.versionId),/idempotency/);
+ assert.equal(f.branches.execution(original.id).state,'canceled');
+ assert.equal(f.branches.execution(original.id).input,'original input');
+});
 test('Branch directory status reports availability, automatic intake, and active work',t=>{
  const f=fixture(t);
  const directory=()=>f.branches.listBranches().find(branch=>branch.id===f.branch.id);

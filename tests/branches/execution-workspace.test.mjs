@@ -24,13 +24,14 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  let slot=0,transport=async()=>({}),queryPatch={};
  const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn,deps){const index=slot++,previous=slots[index];if(!previous||!deps||deps.some((value,i)=>value!==previous[i])){slots[index]=deps;effects.push(fn)}},useLayoutEffect(){}};
  const primitive=name=>props=>{
-  if(name==='Button')buttons.push(props);
+  if(name==='Button'||name==='MenuItem')buttons.push(props);
   if(name==='TextField')fields.push(props);
   if(name==='Box'&&props.component==='details')disclosures.push(props);
-  const tag=props.component??(name==='Button'?'button':name==='Typography'?'span':'div');
+   if(name==='Menu'&&!props.open)return null;
+ const tag=props.component??(['Button','ButtonBase'].includes(name)?'button':name==='Typography'?'span':'div');
   return React.createElement(tag,{...(props.id?{id:props.id}:{}),...(props.href?{href:props.href}:{}),...(props.label?{'data-label':props.label}:{}),...(props.role?{role:props.role}:{}),...(props['aria-label']?{'aria-label':props['aria-label']}:{}),...(tag==='details'?{open:props.open}:{}),...(props.disabled?{disabled:true}:{})},props.children,name==='Alert'?props.action:null);
  };
- const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Button','Chip','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,primitive(name)]));
+ const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Button','ButtonBase','Chip','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','Menu','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,primitive(name)]));
  const query=options=>{
   const key=options.queryKey[0];queries.set(key,options);
   let data=key==='branch-execution-operations'?operations:key==='branch-execution-actions'?{pages:[actionPage],pageParams:[undefined]}:undefined;
@@ -76,6 +77,7 @@ test('selected run keeps canonical status, results and all focused decisions out
  const f=fixture({actions:[gate,old]});
  const html=f.render();
  assert.equal(f.disclosures.length,1);assert.equal(f.disclosures[0].open,false);assert.match(html,/Needs Your Review/);assert.match(html,/Approve the original result/);assert.match(html,/Exact proposed result/);assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
+ assert.ok(html.indexOf('Exact proposed result')<html.indexOf('Result with the complete original wording'));
  assert.ok(html.indexOf('Exact proposed result')<html.indexOf('<details'));assert.ok(html.indexOf('Original failure summary')<html.indexOf('<details'));assert.ok(html.indexOf('Result with the complete original wording')<html.indexOf('<details'));
  assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each Items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
@@ -199,13 +201,13 @@ test('a changed Run revision refetches its stable actions owner without clearing
 });
 
 test('Merge discovers paged canonical candidates only on demand, independently of the visible history filter',async()=>{
- const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
+ const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);f.button('Run actions').onClick({currentTarget:{}});f.render();assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
  f.button('Merge Into Another Run').onClick();let html=f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,true);assert.match(html,/Loading eligible runs/);
  const completed={...f.execution,id:'completed-target',state:'completed',createdAt:'2026-10-25T01:00:00Z'};f.setQuery('branch-merge-targets',{data:{pages:[[completed]],pageParams:[undefined]},isPending:false,hasNextPage:true});html=f.render();assert.match(html,/completed/);assert.ok(f.button('Load Older Runs'));
  const field=f.fields.find(field=>field.label==='Keep This Execution');field.onChange({target:{value:'completed-target'}});f.render();assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target');
  const query=f.queries.get('branch-merge-targets');f.setTransport(async path=>{assert.equal(path,'/api/branches/branch-a/executions?mergeFor=run-a&before=older-cursor');return [completed]});assert.equal((await query.queryFn({pageParam:'older-cursor'}))[0].id,'completed-target');assert.equal(query.getNextPageParam(Array.from({length:100},(_,i)=>({...completed,id:'candidate-'+i}))),'candidate-99');assert.equal(query.getNextPageParam([completed]),undefined);
  f.setQuery('branch-merge-targets',{data:{pages:[[completed]]},error:Error('Candidate list unavailable'),isPending:false});html=f.render();assert.match(html,/Eligible runs could not be loaded/);assert.match(html,/Candidate list unavailable/);assert.ok(f.button('Retry Eligible Runs'));assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target','A failed refresh cannot silently erase a selected or uncertain intervention target');
- const empty=fixture();empty.render();empty.button('Merge Into Another Run').onClick();empty.setQuery('branch-merge-targets',{data:{pages:[[]]},isPending:false});assert.match(empty.render(),/No eligible runs are currently available/);
+ const empty=fixture();empty.render();empty.button('Run actions').onClick({currentTarget:{}});empty.render();empty.button('Merge Into Another Run').onClick();empty.setQuery('branch-merge-targets',{data:{pages:[[]]},isPending:false});assert.match(empty.render(),/No eligible runs are currently available/);
 });
 
 test('Script failure summaries keep the existing exit-code interpretation ahead of stdout and supplied Run links remain main',()=>{
@@ -472,6 +474,18 @@ test('results show one stable publication, report reuse, and keep earlier output
  }
 });
 
+test('a context hold combines the blocked step, reason and retry above any output',()=>{
+ const f=fixture({output:''});
+ Object.assign(f.operations,{state:'blocked',counts:{},agentWaits:[{requestId:'held-request',stepId:'review',stepExecutionId:'recent-step',
+  state:'context_blocked',label:'Blocked',reason:'The saved session needs to be restored.',contextRetryActivationId:'held-activation'}]});
+ const html=f.render();
+ assert.match(html,/Blocked · Review Document/);
+ assert.match(html,/The saved session needs to be restored/);
+ assert.match(html,/No output yet/);
+ assert.doesNotMatch(html,/aria-label="Results"|0 Steps completed/);
+ assert.ok(f.button('Retry step'));
+});
+
 test('only a current confirmed provider hold needs attention, and terminal failure replaces the wait',()=>{
  const f=fixture({output:''});
  f.detail.steps[0].state='waiting';
@@ -481,7 +495,7 @@ test('only a current confirmed provider hold needs attention, and terminal failu
  f.operations.agentWaits=[{requestId:'retry',stepId:'review',stepExecutionId:'recent-step',state:'provider_attention',label:f.operations.label,reason:'Sign in from Provider Settings. The step can resume when sign-in is verified.'}];
  let html=f.render();
  assert.match(html,/data-status="needs_attention">Needs Attention/);
- assert.match(html,/No output produced yet/);
+ assert.doesNotMatch(html,/aria-label="Results"/);
  assert.match(html,/sign-in is verified/);assert.ok(f.button('Open Provider Settings'));
  assert.doesNotMatch(html,/No action needed/);
 

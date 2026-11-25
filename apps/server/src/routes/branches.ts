@@ -560,8 +560,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       return result;
     } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch deployment', ...(error instanceof BranchValidationError?{issues:[error.issue]}:{}) }); }
   });
-  app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string } }>('/api/branches/:id/executions', async (request, reply) => {
-    try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input); notify(); return execution; }
+  app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string; expectedVersionId?: string } }>('/api/branches/:id/executions', async (request, reply) => {
+    try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input, undefined, request.body.expectedVersionId); notify(); return execution; }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch input' }); }
   });
   app.post<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{

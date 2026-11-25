@@ -52,11 +52,18 @@ test('mobile starts in history, restores its chosen Run across tabs and preserve
  const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
  let nodes=f.render({active:true,runs:[run('a')],onSelect});assert.deepEqual(selected,[]);
  nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
- nodes.find(node=>node.type==='Button'&&node.props.children==='Run History').props.onClick();
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Back to Run History').props.onClick();
  f.render({active:false,selectedId:'a',runs:[run('a')],onSelect});f.render({active:false,selectedId:'',runs:[run('a')],onSelect});
  f.render({active:true,selectedId:'',runs:[run('new'),run('a')],onSelect});assert.deepEqual(selected,[['a',undefined],['a',true]],'Returning restores the previous choice rather than the newest Run');
  f.resize(true);f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});f.resize(false);nodes=f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
  assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');
+});
+
+test('a remembered execution wins over the latest run on workspace entry, while a direct link wins over both',()=>{
+ const remembered=historyFixture(),explicit=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
+ remembered.resize(true);remembered.render({runs:[run('new')],rememberedId:'older',onSelect});
+ explicit.resize(true);explicit.render({runs:[run('new')],rememberedId:'older',selectedId:'linked',onSelect});
+ assert.deepEqual(selected,[['older',true]]);
 });
 
 test('rejected automatic navigation does not repeatedly prompt on background history refresh',()=>{
@@ -69,7 +76,7 @@ test('rejected automatic navigation does not repeatedly prompt on background his
 test('mobile browser Back to an unselected history route is not rewritten to the remembered Run',()=>{
  const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
  f.render({active:true,runs:[run('a')],onSelect});f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
- let nodes=f.render({active:true,selectedId:'',runs:[run('a')],onSelect});nodes=f.render({active:true,selectedId:'',runs:[run('new'),run('a')],onSelect});
+ let nodes=f.render({active:true,selectedId:'',rememberedId:'a',runs:[run('a')],onSelect});nodes=f.render({active:true,selectedId:'',rememberedId:'a',runs:[run('new'),run('a')],onSelect});
  assert.deepEqual(selected,[]);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');
 });
 
@@ -99,7 +106,7 @@ test('mobile history back retains selection, filter and scroll; only explicit se
  let nodes=f.render(extra),history=nodes.find(node=>node.props?.['aria-label']==='Run History'),detail=nodes.find(node=>node.props?.['aria-label']==='Selected Run');
  const historyElement={scrollTop:140},detailElement={scrollTop:220};history.props.ref.current=historyElement;detail.props.ref.current=detailElement;
  history.props.onScroll({currentTarget:historyElement});detail.props.onScroll({currentTarget:detailElement});
- nodes.find(node=>node.type==='Button'&&node.props.children==='Run History').props.onClick();nodes=f.render(extra);
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Back to Run History').props.onClick();nodes=f.render(extra);
  assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');assert.equal(historyElement.scrollTop,140);assert.equal(detailElement.scrollTop,220);assert.deepEqual(selected,[]);
  nodes.find(node=>node.type==='TextField').props.onChange({target:{value:'failed'}});assert.deepEqual(filters,['failed']);assert.deepEqual(selected,[]);
  nodes=f.render({...extra,onSelect:()=>false});nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render(extra);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex','Rejected navigation leaves the history pane intact');

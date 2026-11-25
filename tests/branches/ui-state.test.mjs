@@ -1565,7 +1565,7 @@ async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
  const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query'),{readFileSync}=await import('node:fs');
  const {INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength}=await import('../../packages/core/dist/index.js'),navigations=[],buttons=[],fields=[],dialogs=[];
- Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
+ Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,rerunVersion:undefined,setRerunVersion:value=>{s.rerunVersion=value},input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
  let intent=0;s.createClientId=()=>`new-run-intent-${++intent}`;const readWorkflow=s.requestJson;s.currentDraft.current=s.draft;s.requestJson=async(path,init)=>{if(!init?.body)return readWorkflow(path,init);f.requests.push({path,body:JSON.parse(init.body)});return submit()};
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});let observer;
  s.useMutation=options=>{observer=new MutationObserver(client,options);return observer.getCurrentResult()};f.load('run');const unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear()});
@@ -1574,7 +1574,7 @@ async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId
  const exports={};f.vm.runInNewContext(f.ts.transpile(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
  Object.assign(s,mui,{ConfirmDialog:exports.ConfirmDialog});let dialog;
  function find(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='ConfirmDialog'&&node.openingElement.attributes.properties.some(a=>a.name?.getText(f.file)==='onConfirm'&&a.initializer?.expression?.getText(f.file)==='submitRun'))dialog=node.getText(f.file);f.ts.forEachChild(node,find)}find(f.file);assert.ok(dialog,'Run uses the existing shared confirmation shell');
- const render=()=>{s.route=s.routeOwner.current;s.run={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const name of ['once','runAccepted','runUnconfirmed','runInputError','runUnavailable','openRun','submitRun'])f.load(name);buttons.length=0;fields.length=0;dialogs.length=0;return renderToStaticMarkup(f.vm.runInContext(f.ts.transpile('('+dialog+')',{target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),s))};
+ const render=()=>{s.route=s.routeOwner.current;s.run={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const name of ['once','runAccepted','runUnconfirmed','runInputError','runUnavailable','openRun','openRerun','submitRun'])f.load(name);buttons.length=0;fields.length=0;dialogs.length=0;return renderToStaticMarkup(f.vm.runInContext(f.ts.transpile('('+dialog+')',{target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),s))};
  return {...f,navigations,render,dialogs,button:label=>buttons.find(button=>button.children===label),field:()=>fields.find(field=>field.label==='Run Input'),observer};
 }
 
@@ -1584,8 +1584,23 @@ test('header Run uses the published workflow without changing its schedule, fenc
  const click=f.button('Run Published Workflow').onClick,pending=click();assert.equal(click(),undefined);f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(s.runOpen,true,'The shared shell fences immediate dismissal before mutation pending renders');
  await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.button('Cancel').disabled,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0])),{path:'/api/branches/owner/executions',body:{occurrenceKey:key,input:'  First line\r\nSecond line 😀  '}});assert.equal(JSON.stringify(s.draft.definition.trigger),trigger,'Run never changes the saved trigger or publishes the draft');
- finish({id:'accepted-run',branchId:'owner',state:'queued'});await pending;f.render();assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);assert.equal(s.runOpen,false);assert.equal(f.notices.at(-1).message,'Run requested');assert.equal(s.occurrenceKey,key,'Feedback settlement does not rotate or reset mutation identity');
+ finish({id:'accepted-run',branchId:'owner',state:'queued'});await pending;f.render();assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);assert.equal(s.runOpen,false);assert.equal(f.notices.length,0,'The selected run confirms acceptance without a transient notice');assert.equal(s.occurrenceKey,key,'Feedback settlement does not rotate or reset mutation identity');
  s.openRun();f.render();assert.notEqual(s.occurrenceKey,key);assert.equal(f.button('Run Published Workflow').disabled,false,'Another run intent is available while the accepted run remains queued');
+});
+
+test('canceled rerun opens the existing form with copied input and submits the reviewed version under a fresh key',async t=>{
+ const f=await workflowRunFixture(t),s=f.scope;
+ s.routeOwner.current={branchId:'owner',tab:'executions',executionId:'canceled-run'};
+ const priorKey=s.occurrenceKey;
+ f.render();s.openRerun({id:'canceled-run',branchId:'owner',versionId:'earlier-version'},'Previous input');
+ assert.match(f.render(),/new run will use published version/);
+ assert.equal(f.field().value,'Previous input');
+ assert.notEqual(s.occurrenceKey,priorKey);
+ f.field().onChange({target:{value:'My revised input'}});f.render();
+ await f.button('Start new run').onClick();
+ assert.equal(f.requests[0].body.input,'My revised input');
+ assert.equal(f.requests[0].body.expectedVersionId,s.current.versionId);
+ assert.equal(f.navigations[0].executionId,'accepted-run');
 });
 
 test('accepted Runs retain filters and remain reachable when a settings guard refuses navigation',async t=>{

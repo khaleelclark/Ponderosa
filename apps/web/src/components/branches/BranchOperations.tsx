@@ -32,7 +32,7 @@ export function BranchTriggerAudit({onNavigate,branchId,diagnostics=[]}:{diagnos
  useReportWorkspaceRead(workspaceRead(`branch:${branchId}`,"Trigger Events",pages));
  const occurrences=pages.data?.pages.flat()??[];
  return <>
-  <Button variant="outlined" sx={{minHeight:44}} onClick={()=>setOpen(true)}>Trigger Events</Button>
+  <Button size="small" sx={{flexShrink:0,minHeight:40,whiteSpace:'nowrap'}} onClick={()=>setOpen(true)}>Trigger Events</Button>
   <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title">
    <DialogTitle id="branch-trigger-events-title">Trigger Events</DialogTitle>
    <DialogContent>

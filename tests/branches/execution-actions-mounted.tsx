@@ -32,7 +32,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(method==='GET','Only controlled projection reads are allowed');gets.push(url.pathname);
   if(url.pathname==='/api/decisions'){assert(url.searchParams.get('id')===decision.id,'Exact canonical Decision read');return json([decision]);}
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
-  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',revision:detail.execution.revision,state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions')){
    const response={executionId:mode==='wrong-id'?'foreign-run':'race-run',revision,generation:'generation-'+revision,items:terminal?[]:items};
    if(mode==='503')return json({error:'Actions service temporarily unavailable'},503);
@@ -85,7 +85,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   await until(()=>Boolean(host.textContent?.includes('Completed')),'Terminal operations header did not arrive');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&proposal.disabled,'Terminal refresh retains the same disabled dirty Gate');
   assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Terminal header never coexists with a stale approval request');
-  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral review-count cue');
+  assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral refresh cue');
   mode='ok';release!();await until(()=>!host.textContent?.includes('Refreshing Run actions'),'Terminal actions did not converge');
   assert(!gateInput()&&!host.textContent?.includes('Approval Requested'),'Only the fresh empty action page removes the settled Gate');
   assert(posts.length===0,'Read synchronization and recovery cannot replay any POST');
@@ -112,16 +112,18 @@ export async function executionSkipWithoutReasonRegression():Promise<void>{
   }
   assert(!/checkpoint|disclosure|issued-destinations|resource-group/.test(url.pathname),'Advanced review reads stay closed: '+url.pathname);
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
-  if(url.pathname.endsWith('/operations'))return json({executionId:'skip-run',state:'running',label:'Running',observedAt:detail.execution.updatedAt,counts:{completed:0,running:1,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/operations'))return json({executionId:'skip-run',revision:detail.execution.revision,state:'running',label:'Running',observedAt:detail.execution.updatedAt,counts:{completed:0,running:1,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions'))return json({executionId:'skip-run',revision:4,generation:'generation-4',items:[]});
   throw Error('Unexpected projection read '+url.pathname);
  };
  const button=(text:string,scope:ParentNode=document)=>Array.from(scope.querySelectorAll('button')).find(node=>node.textContent===text) as HTMLButtonElement|undefined;
  try{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ExecutionPanel detail={detail} viewStates={new Map()}/></MutationNotificationProvider></QueryClientProvider>);
-  await until(()=>Boolean(button('Skip Run',host)&&!button('Skip Run',host)!.disabled),'Skip Run did not become available');
+  await until(()=>Boolean(button('Run actions',host)),'Run actions did not become available');
   assert(!button('Review Saved Work')&&!button('Review Resource Group'),'Advanced reviews are not mounted outside Technical Details');
-  button('Skip Run',host)!.click();
+  button('Run actions',host)!.click();
+  const skip=()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item=>item.textContent==='Skip Run');
+  await until(()=>Boolean(skip()),'Run actions contains Skip Run');skip()!.click();
   await until(()=>Boolean(document.querySelector('[role="dialog"]')),'Skip confirmation did not open');
   const dialog=document.querySelector('[role="dialog"]')!;
   assert(!dialog.querySelector('textarea:not([aria-hidden="true"])'),'Skip asks for no reason');

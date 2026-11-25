@@ -647,10 +647,11 @@ export class BranchStore {
       return result;
     })();
   }
-  accept(branchId: string, occurrenceKey: string, value: string, now = new Date().toISOString()): BranchExecutionDto {
+  accept(branchId: string, occurrenceKey: string, value: string, now = new Date().toISOString(), expectedVersionId?: string): BranchExecutionDto {
     branchKey(occurrenceKey);
+    if(expectedVersionId!==undefined)branchKey(expectedVersionId);
     const input = branchText(value), hash = payloadHash({ input, source: "manual" });
-    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
+    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual", undefined, expectedVersionId);
   }
   /** Recreate private data owners without an acceptance, budget debit or dispatchable frontier. */
   importRuntimeTree(planId:string,data:import('@ponderosa/core').BranchPortableExecutionTree,plan:import('@ponderosa/core').BranchRuntimeTreePlan,branchMap:Record<string,string>,chatMap:Record<string,string>,agentMap:Record<string,string>,now=new Date().toISOString()) {
@@ -1780,17 +1781,19 @@ export class BranchStore {
     validateHistoricalRequest(request,host.updates.filter(update=>update.row.request_id===request.id).map(update=>update.row).sort((a,b)=>a.resulting_version-b.resulting_version),host);
     return true;
   }
-  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call", reservedId?:string): BranchExecutionDto {
+  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call", reservedId?:string, expectedVersionId?:string): BranchExecutionDto {
     return this.unitTransaction(() => {
-      const prior = this.row("SELECT id, input_hash, admission_source FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
+      const prior = this.row("SELECT id, input_hash, admission_source, version_id FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
       if (prior) {
-        if (prior.input_hash !== hash || prior.admission_source !== admissionSource || reservedId!==undefined&&prior.id!==reservedId) throw new Error("Branch occurrence idempotency conflict");
+        if (prior.input_hash !== hash || prior.admission_source !== admissionSource ||
+          (reservedId!==undefined&&prior.id!==reservedId) || (expectedVersionId!==undefined&&prior.version_id!==expectedVersionId)) throw new Error("Branch occurrence idempotency conflict");
         return this.execution(prior.id)!;
       }
       const branch = this.getBranch(branchId);
       if (!branch) throw new Error("Branch not found");
       if(!branch.enabled || this.row("SELECT deleting FROM branches WHERE id=?",branchId)?.deleting) throw new Error("Branch is disabled");
       if(!branch.versionId)throw new Error('Publish the Branch definition before running it');
+      if(expectedVersionId!==undefined&&branch.versionId!==expectedVersionId)throw new Error('The published workflow version changed. Review the current version before starting a new run.');
       if(branch.chatId)this.chat(branch.chatId);
       if (this.row("SELECT COUNT(*) n FROM branch_executions WHERE branch_id = ? AND state = 'queued'", branchId)!.n >= 1000) throw new Error("Branch pending execution limit reached");
       const definition=this.version(branchId,branch.versionId)!.definition;
