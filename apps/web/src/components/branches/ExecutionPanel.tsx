@@ -5,9 +5,9 @@ import {BranchGroupReview} from './BranchGroupReview';
 import {BranchResourceReview} from './BranchResourceReview';
 import {createClientId} from '../../clientId';
 import {branchRoutePath} from '../../branchesRouting';
-import {useCallback,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
+import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
-import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,ButtonBase,Chip,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,Menu,MenuItem,Paper,Stack,Switch,TextField,Typography} from '@mui/material';
+import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,ButtonBase,Chip,Dialog,DialogActions,DialogContent,DialogTitle,FormControl,FormControlLabel,FormLabel,Menu,MenuItem,Paper,Radio,RadioGroup,Stack,Switch,TextField,Typography} from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import type {BranchDefinition,BranchExecutionDetailDto,BranchExecutionDto,BranchGateDto,BranchGateResolution,BranchIntervention,BranchStepEvidenceDto,BranchMapItemDto,BranchOperationalSummaryDto,BranchExecutionActionsDto,BranchStepExecutionDto,BranchWaitDto} from '@ponderosa/core';
@@ -29,9 +29,18 @@ import {branchStepStatus,controlStates,currentExecutionActions,mapItemStatus,sho
 class RunActionsRevisionPending extends Error {}
 function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:BranchGateDto;label:string;onChanged():void;disabled?:boolean;refreshing?:boolean}):JSX.Element{
  const [text,setText]=useState(gate.proposal),[choice,setChoice]=useState(gate.choices?.[0]??''),[key,setKey]=useState(()=>createClientId());
+ const choiceLabel=useId(),choices=gate.choices??[];
+ const changeChoice=(value:string)=>{setChoice(value);setKey(createClientId())};
  const resolve=useMutation({mutationFn:(decision:BranchGateResolution['decision'])=>requestJson(`/api/branch-gates/${gate.id}/resolve`,{method:'POST',body:JSON.stringify({commandKey:key,expectedRevision:gate.revision,decision,...(decision==='approve'?(gate.choices?.length?{choice}:gate.editable?{output:text}:{}):{})} satisfies BranchGateResolution)}),onSuccess:onChanged});
  return <Paper variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={2}><Typography variant="caption" color="text.secondary">{label}{refreshing?' · Refreshing status':gate.openedAt?` · Waiting since ${new Date(gate.openedAt).toLocaleString()}`:''}</Typography><Typography variant="h6">{refreshing?'Refreshing Review…':gate.purpose==='recovery'?'A Failed Step Needs Your Decision':'Approval Requested'}</Typography><Typography>{gate.prompt}</Typography>{resolve.error&&<Alert severity="error">{/revision|stale|conflict/i.test(resolve.error.message)?'This decision changed while you were reviewing it. Refresh the execution and try again. ':''}{resolve.error.message}</Alert>}
-  {gate.choices?.length?<><Typography sx={{whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{gate.proposal}</Typography><TextField select label="Choose A Result" disabled={disabled||resolve.isPending||resolve.isSuccess} value={choice} onChange={e=>{setChoice(e.target.value);setKey(createClientId())}}>{gate.choices.map(option=><MenuItem value={option} key={option}>{option}</MenuItem>)}</TextField></>:gate.editable&&gate.purpose==='approval'?<TextField label="Proposed Result" disabled={disabled||resolve.isPending||resolve.isSuccess} multiline minRows={4} value={text} onChange={e=>{setText(e.target.value);setKey(createClientId())}}/>:<Typography sx={{whiteSpace:'pre-wrap',maxHeight:260,overflow:'auto'}}>{gate.proposal}</Typography>}
+  {choices.length?<><Typography sx={{whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{gate.proposal}</Typography>
+   {choices.length===1?<Typography>Result · {choice}</Typography>:choices.length<=3?<FormControl disabled={disabled||resolve.isPending||resolve.isSuccess}>
+    <FormLabel id={choiceLabel}>Choose a result</FormLabel>
+    <RadioGroup row aria-labelledby={choiceLabel} value={choice} onChange={(_,value)=>changeChoice(value)}>
+     {choices.map(option=><FormControlLabel value={option} key={option} control={<Radio size="small"/>} label={option}/>)}
+    </RadioGroup>
+   </FormControl>:<TextField select label="Choose a result" disabled={disabled||resolve.isPending||resolve.isSuccess} value={choice} onChange={e=>changeChoice(e.target.value)}>{choices.map(option=><MenuItem value={option} key={option}>{option}</MenuItem>)}</TextField>}
+  </>:gate.editable&&gate.purpose==='approval'?<TextField label="Proposed Result" disabled={disabled||resolve.isPending||resolve.isSuccess} multiline minRows={4} value={text} onChange={e=>{setText(e.target.value);setKey(createClientId())}}/>:<Typography sx={{whiteSpace:'pre-wrap',maxHeight:260,overflow:'auto'}}>{gate.proposal}</Typography>}
   <Stack direction="row" spacing={1}><Button variant="contained" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate(gate.purpose==='recovery'?'retry':'approve')}>{resolve.isPending?'Saving Decision…':gate.purpose==='recovery'?'Retry Step':text!==gate.proposal?'Approve Edited Text':'Approve'}</Button><Button color="error" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate('reject')}>Reject</Button></Stack>
  </Stack></Paper>;
 }
@@ -174,6 +183,13 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  // the current Run revision. React Query retains coherent pages during refetch.
  const actionItems=currentActions??currentExecutionActions({id:execution.id,revision:actions.data?.pages[0]?.revision??execution.revision},actions.data?.pages);
  const actionsCurrent=!execution.runtimeData&&!execution.stopping&&authorityFresh&&Boolean(currentActions)&&!actions.error;
+ const progress=op?[
+  op.counts.mapItems&&`${op.counts.mapSettled} of ${op.counts.mapItems} For Each items settled`,
+  op.counts.completed&&`${op.counts.completed} ${op.counts.completed===1?'step':'steps'} completed`,
+  op.counts.running&&`${op.counts.running} running`,
+  op.counts.retrying&&`${op.counts.retrying} retrying`,
+  actionsCurrent&&op.counts.waitingHuman&&`${op.counts.waitingHuman} waiting for review`,
+ ].filter(Boolean):[];
  useEffect(()=>{if(actions.data?.pages[0]&&actions.data.pages[0].revision!==execution.revision)void client.invalidateQueries({queryKey:actionsKey,exact:true})},[client,execution.id,execution.revision]);
  const pendingDecisions=Array.from(new Map<string,DecisionPrompt>([...retainedDecisionForms,...(actionItems?.filter(item=>item.kind==='decision').map(item=>[item.decision.id,item.decision] as const)??[])]).values());
  const guidanceReviews=actionItems?.filter(item=>item.kind==='guidance_review')??[];
@@ -303,7 +319,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    {cancel.isPending&&<Typography role="status">Requesting stop…</Typography>}
    {stopping?<Alert severity={stopping.blocked?'warning':'info'}>{stopping.blocked??`${stopping.outcome==='skipped'?'Skip':stopping.outcome==='merged'?'Merge':'Stop'} accepted. Waiting for this Run's provider work to finish stopping; it will show as ${stopping.outcome==='skipped'?'Skipped':stopping.outcome==='merged'?'Merged':'Canceled'} automatically.`}</Alert>
     :waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:ongoing&&execution.waitReason&&headline.status!=='running'&&<Alert severity="info">{execution.waitReason}</Alert>}
-   {!execution.runtimeData&&op&&<>{Boolean(op.counts.mapItems||op.counts.completed||op.counts.running||op.counts.retrying||op.counts.waitingHuman)&&<Typography variant="body2" color="text.secondary">{op.counts.mapItems?op.counts.mapSettled+' of '+op.counts.mapItems+' For Each items settled · ':''}{op.counts.completed} {op.counts.completed===1?'Step':'Steps'} completed · {op.counts.running} running · {op.counts.retrying} retrying · {actionsCurrent?`${op.counts.waitingHuman} waiting for review`:'Review status refreshing'}</Typography>}{op.additionalAgentWaits>0&&<Typography variant="caption">{op.additionalAgentWaits} more Agent waits are recorded in the run evidence.</Typography>}{op.state==='provider_attention'&&!waits.some(wait=>agentWaits.some(agent=>agent.requestId===wait.requestId&&agent.state==='provider_attention'))&&<Button sx={{alignSelf:'start'}} href={providerSettings}>Open Provider Settings</Button>}</>}
+   {!execution.runtimeData&&op&&<>{progress.length>0&&<Typography variant="body2" color="text.secondary">{progress.join(' · ')}</Typography>}{op.additionalAgentWaits>0&&<Typography variant="caption">{op.additionalAgentWaits} more Agent waits are recorded in the run evidence.</Typography>}{op.state==='provider_attention'&&!waits.some(wait=>agentWaits.some(agent=>agent.requestId===wait.requestId&&agent.state==='provider_attention'))&&<Button sx={{alignSelf:'start'}} href={providerSettings}>Open Provider Settings</Button>}</>}
    {operations.error&&<Alert severity="warning" action={<Button onClick={()=>void operations.refetch()}>Retry Status</Button>}>Run status could not refresh. {operations.error.message}</Alert>}
    {cancel.error&&<Alert severity="error">{cancel.error.message}</Alert>}
   </Stack>

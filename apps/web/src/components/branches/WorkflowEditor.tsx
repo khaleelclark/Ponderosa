@@ -10,8 +10,8 @@ import {lazy,Suspense,type ReactNode} from 'react';
 const WorkflowAgentSetup=lazy(()=>import('./WorkflowAgentSetup').then(module=>({default:module.WorkflowAgentSetup})));
 
 import { requestJson } from "../../api/real";
-import {useEffect,useLayoutEffect,useRef,useState} from 'react';
-import {Alert,Box,Button,FormControlLabel,IconButton,Menu,MenuItem,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
+import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
+import {Alert,Box,Button,FormControl,FormControlLabel,FormLabel,IconButton,Menu,MenuItem,Radio,RadioGroup,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
@@ -43,7 +43,7 @@ function BranchTriggerSource({kind,config,onChange,onInvalid}:{kind:'schedule'|'
  useEffect(()=>()=>callbacks.current.onInvalid(false),[]);
  return <TriggerSourceFields sourceKind={kind} draft={draft}/>;
 }
-export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,firstStepRequest=0,onProviderSetup,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;firstStepRequest?:number;onProviderSetup?():void;onInvalidStep?():void;onSettingsIssue?():void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
+export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,firstStepRequest=0,onProviderSetup,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;firstStepRequest?:number;onProviderSetup?():void;onInvalidStep?():void;onSettingsIssue?(field?:string):void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
  const retainedTemplates=useRef<NonNullable<BranchDefinition['templates']>>({});retainedTemplates.current={...retainedTemplates.current,...definition.templates,...Object.fromEntries(definition.steps.flatMap(step=>{const template=step.kind==='agent'&&'templateRef'in step.target?definition.templates?.[step.target.templateRef]:undefined;return template?[[step.id+'_'+template.kind+'_template',template]]:[]}))};
  const [setup,setSetup]=useState<AgentSetupRequest>(),[setupPending,setSetupPending]=useState(false),[setupNotice,setSetupNotice]=useState(''),[issueFocus,setIssueFocus]=useState(0),[chosenIssue,setChosenIssue]=useState<import('@ponderosa/core').BranchValidationIssue>();
  useBranchDraftGuard('workflow-agent-setup',setupPending);
@@ -60,6 +60,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  };
  const applyRequest=useRef(0),currentDefinition=useRef(definition);currentDefinition.current=definition;
  const [triggerInvalid,setTriggerInvalid]=useState(false),[retainTrigger,setRetainTrigger]=useState(false);
+ const startsLabel=useId();
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
  const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??'canvas');
  const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
@@ -144,7 +145,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const canEditInspector=()=>mounted.current&&editorAuthority.current.visible&&editorAuthority.current.branchId===branchId&&editorAuthority.current.nodeId===selectedNode?.id&&owner.current.definition===definition&&owner.current.bindings===bindings;
  return <Stack ref={canvas} onKeyDown={event=>{if(canvas.current?.contains(event.target as Node)&&event.key==='Escape'&&!event.defaultPrevented&&expanded){event.preventDefault();toggleExpanded()}}} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>
   {setupNotice&&<Alert severity="info" onClose={()=>setSetupNotice('')}>{setupNotice}</Alert>}
-  {validationIssues.length>0&&<Stack component="section" aria-label="Publication Issues" spacing={.5} sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto'}}><Typography fontWeight={600}>Publication Issues</Typography>{validationIssues.map((issue,index)=><Button key={index} sx={{justifyContent:'flex-start',textAlign:'left'}} onClick={()=>{if(issue.nodeId){setChosenIssue(issue);setIssueFocus(value=>value+1);openEditor(issue.nodeId);onInvalidStep?.()}else if(issue.section==='settings')onSettingsIssue?.();else (view==='outline'?outlineEntry:addButton).current?.focus()}}>{issue.message}</Button>)}</Stack>}
+  {validationIssues.length>0&&<Stack component="section" aria-label="Publication Issues" spacing={.5} sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto'}}><Typography fontWeight={600}>Publication Issues</Typography>{validationIssues.map((issue,index)=><Button key={index} sx={{justifyContent:'flex-start',textAlign:'left'}} onClick={()=>{if(issue.nodeId){setChosenIssue(issue);setIssueFocus(value=>value+1);openEditor(issue.nodeId);onInvalidStep?.()}else if(issue.section==='settings')onSettingsIssue?.(issue.field);else (view==='outline'?outlineEntry:addButton).current?.focus()}}>{issue.message}</Button>)}</Stack>}
   {insertError&&<Alert severity="error" onClose={()=>setInsertError('')}>{insertError}</Alert>}
   <Menu anchorEl={addAnchor} anchorOrigin={{vertical:'bottom',horizontal:'center'}} transformOrigin={{vertical:'top',horizontal:'center'}} marginThreshold={16} open={Boolean(addAnchor)} onClose={closeAdd} disableRestoreFocus slotProps={{transition:{onExited:()=>{const anchor=dismissedInsertion.current;dismissedInsertion.current=null;if(mounted.current&&owner.current.active)anchor?.restoreFocus()}}}}>
    {branching&&<MenuItem onClick={()=>setBranching(false)}>← All Steps</MenuItem>}
@@ -177,10 +178,21 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   <Stack component="section" aria-label="How It Starts" spacing={1.5}>
    {intake}
    {triggerDirty&&<Typography fontWeight={600}>Draft · {workflowTriggerSummary(definition.trigger.kind,sourceConfig)}</Typography>}
-   <TextField select label="Starts" size="small" value={definition.trigger.kind} onChange={e=>setTrigger(e.target.value as BranchDefinition['trigger']['kind'])}><MenuItem value="manual">Start manually</MenuItem><MenuItem value="schedule">On A Schedule</MenuItem><MenuItem value="webhook">When A Webhook Arrives</MenuItem><MenuItem value="filesystem">When Files Change</MenuItem></TextField>
+   <FormControl>
+    <FormLabel id={startsLabel}>How it starts</FormLabel>
+    <RadioGroup row aria-labelledby={startsLabel} value={definition.trigger.kind} onChange={(_,value)=>setTrigger(value as BranchDefinition['trigger']['kind'])}>
+     <FormControlLabel value="manual" control={<Radio size="small"/>} label="Manually with Run once"/>
+     <FormControlLabel value="schedule" control={<Radio size="small"/>} label="On a schedule"/>
+     <FormControlLabel value="webhook" control={<Radio size="small"/>} label="When a webhook arrives"/>
+     <FormControlLabel value="filesystem" control={<Radio size="small"/>} label="When files change"/>
+    </RadioGroup>
+   </FormControl>
    {definition.trigger.kind!=='manual'&&sourceConfig&&<BranchTriggerSource key={definition.trigger.kind} kind={definition.trigger.kind} config={sourceConfig} onChange={setSource} onInvalid={setTriggerInvalid}/>}
    {triggerInvalid&&<Alert severity="error">Correct the trigger fields before reviewing publication.</Alert>}
-   {source&&definition.trigger.kind!=='manual'&&<FormControlLabel control={<Switch checked={source.enabled} onChange={(_,enabled)=>{if(definition.trigger.kind!=='manual')onBindings({...bindings,triggers:{...bindings.triggers,[definition.trigger.configRef]:{...source,enabled}}})}}/>} label="Accept automatic starts after publishing"/>}
+   {source&&definition.trigger.kind!=='manual'&&<Box>
+    <FormControlLabel control={<Switch checked={source.enabled} inputProps={{'aria-describedby':startsLabel+'-publish'}} onChange={(_,enabled)=>{if(definition.trigger.kind!=='manual')onBindings({...bindings,triggers:{...bindings.triggers,[definition.trigger.configRef]:{...source,enabled}}})}}/>} label="Allow automatic runs in this draft"/>
+    <Typography id={startsLabel+'-publish'} variant="body2" color="text.secondary">Review changes shows whether automatic runs will be on or paused after publishing.</Typography>
+   </Box>}
   </Stack>
     </WorkflowInspectorPage>
    </Box>:null}
@@ -202,15 +214,25 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
 }
 
 /** Definition policy edits use the same draft owner as the canvas. */
-export function WorkflowExecutionSettings({definition,onDefinition,bindings,onBindings,agents,contexts}:Pick<Parameters<typeof WorkflowEditor>[0],'definition'|'onDefinition'|'bindings'|'onBindings'|'agents'|'contexts'>):JSX.Element {
- return <Stack component="section" aria-label="Execution Settings" spacing={2}><Typography variant="h6">Execution Settings</Typography>
+export function WorkflowExecutionSettings({definition,onDefinition,bindings,onBindings,agents,contexts,validationIssue}:Pick<Parameters<typeof WorkflowEditor>[0],'definition'|'onDefinition'|'bindings'|'onBindings'|'agents'|'contexts'>&{validationIssue?:import('@ponderosa/core').BranchValidationIssue}):JSX.Element {
+ const section=useRef<HTMLElement>(null);
+ useEffect(()=>{
+  if(!validationIssue)return;
+  const root=section.current;
+  const name=validationIssue.field;
+  const field=name?root?.querySelector(`[data-branch-field="${CSS.escape(name)}"]`)?.querySelector<HTMLElement>('[role="combobox"], input:not([aria-hidden])'):undefined;
+  const target=field??root;
+  target?.focus({preventScroll:true});
+  target?.scrollIntoView({block:'center'});
+ },[validationIssue]);
+ return <Stack component="section" ref={section} tabIndex={-1} aria-label="Draft execution policy" spacing={2}>
+  <Box><Typography fontWeight={650}>Execution policy</Typography><Typography variant="body2" color="text.secondary">Publish the workflow to apply these changes.</Typography></Box>
   {([['maxConcurrentExecutions','Concurrent Executions',2],['maxEphemeralAgents','Temporary Agents Per Execution',100],['maxPathInstances','Maximum Paths',1000],['maxStepInvocations','Maximum Step Invocations',1000]] as const).map(([field,label,fallback])=>{
     const value=definition.policy[field]??fallback,maximum=field==='maxConcurrentExecutions'?1000:100000;
     const invalid=!Number.isSafeInteger(value)||value<1||value>maximum;
-    return <TextField key={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={field==='maxConcurrentExecutions'&&invalid?'Enter a whole number from 1 to 1,000.':undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>;
+    return <TextField data-branch-field={field} key={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={invalid?`Enter a whole number from 1 to ${maximum.toLocaleString()}.`:undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>;
    })}
-  <FormControlLabel label="Pause Automatic Runs When Speaker Role Is Removed" control={<Switch checked={definition.policy.pauseOnSpeakerRemoval===true} onChange={(_,pauseOnSpeakerRemoval)=>onDefinition({...definition,policy:{...definition.policy,pauseOnSpeakerRemoval}})}/>}/>
-  <Typography variant="body2" color="text.secondary">Publish changes to apply.</Typography>
+  <FormControlLabel data-branch-field="pauseOnSpeakerRemoval" label="Pause Automatic Runs When Speaker Role Is Removed" control={<Switch checked={definition.policy.pauseOnSpeakerRemoval===true} onChange={(_,pauseOnSpeakerRemoval)=>onDefinition({...definition,policy:{...definition.policy,pauseOnSpeakerRemoval}})}/>}/>
   <FailureEditor value={definition.policy.failure} onChange={failure=>onDefinition({...definition,policy:{...definition.policy,failure:failure??{action:'stop'}}})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/>
  </Stack>;
 }

@@ -49,6 +49,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
  try{
   render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled&&host.textContent?.includes('1 waiting for review')),'Initial actions did not load');
   assert(host.textContent?.includes('Approval Requested')&&host.textContent.includes('1 waiting for review'),'Fresh Gate shows its actual pending state');
+  assert(!/0 (steps? completed|running|retrying)/i.test(host.textContent??''),'Run progress shows only nonzero counts');
   const proposal=gateInput();input(proposal,'Gate draft retained Ω');await until(()=>Boolean(button('Approve Edited Text')),'Gate edit not applied');
   button('Answer').click();await until(()=>Boolean(document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])')),'Decision dialog missing');
   const answer=document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
@@ -61,7 +62,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(answer.isConnected&&answer.value==='Separate Decision draft retained 🙂','Open shared Decision draft retained');
   assert(button('Approve Edited Text').disabled&&button('Retry Step').disabled,'Known stale Branch actions remain disabled');
   assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Stale Gate stays mounted with a neutral heading');
-  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
+  assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
   assert(button('Refresh Run'),'Manual refresh remains available during synchronization');
   mode='ok';detail={...detail,execution:{...detail.execution,revision:2}};render();
   await until(()=>Boolean(!button('Retry Step').disabled&&!host.textContent?.includes('Refreshing Run actions')),'Matching revisions did not converge');

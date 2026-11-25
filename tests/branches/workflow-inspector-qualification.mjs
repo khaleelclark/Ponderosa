@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {fixture} from '../shared/fixture.mjs';
 import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 
 const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
-const f=await fixture();
+let store;
+const f=await fixture({storeFactory:directory=>(store=new AgentStore(directory))});
 let web,browser;
 try{
  web=await serveFixture(f);
@@ -22,20 +24,29 @@ try{
    const branch=f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
    const path=`/api/branches/${branch.id}`;
    const schedule={scheduleKind:'interval',everyMs:600000,startsAt:new Date(Date.now()+3600000).toISOString()};
-   const initial=f.ok(await f.api('POST','/api/branches/deploy',{branchId:branch.id,chatId:branch.chatId,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),
+   const deployment={branchId:branch.id,chatId:branch.chatId,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),
     definition:{schema:'ponderosa.branch.v1',name,trigger:{kind:'schedule',configRef:'schedule'},entry:'review',steps:[{id:'review',label:'Review request',kind:'human_gate',prompt:'Approve the fixture?',editable:true}],controls:[],edges:[],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},
-    bindings:{agents:{},directories:{},triggers:{schedule:{enabled:true,sourceConfig:schedule}}}}));
+    bindings:{agents:{},directories:{},triggers:{schedule:{enabled:true,sourceConfig:schedule}}}};
+   const initial=f.ok(await f.api('POST','/api/branches/deploy',deployment));
    const url=`${web.origin}/branches?branch=${branch.id}`;
    const inspector=page.getByRole(mobile?'dialog':'region',{name:'Workflow inspector',exact:true});
    const start=page.getByRole('button',{name:/Every \d+ minutes/});
    const availability=page.getByRole('switch',{name:'Workflow availability'});
    const run=page.getByRole('button',{name:'Run once',exact:true});
    const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
+   const activate=control=>mobile?control.tap():control.click();
+   const live=inspector.getByRole('region',{name:'Published trigger',exact:true});
+   const busy=inspector.getByRole('radiogroup',{name:'When already running',exact:true});
    await page.goto(url);
    await start.waitFor();
    assert.equal(await availability.isChecked(),true);
    await start.click();
    await inspector.getByText('Published · Every 10 minutes',{exact:true}).waitFor();
+   await live.getByText('Automatic runs on',{exact:true}).waitFor();
+   assert.equal(await busy.getByRole('radio',{name:'Queue every run',exact:true}).isChecked(),true);
+   await inspector.getByText(/Queue a separate run for each scheduled event/).waitFor();
+   assert.equal(await inspector.getByRole('combobox').count(),1,'Only the interval unit needs a dropdown');
+   assert.equal(await inspector.getByRole('textbox',{name:'Cron Expression'}).count(),0);
    if(mobile){
     await page.waitForFunction(()=>{const rect=document.querySelector('[aria-label="Workflow inspector"]').getBoundingClientRect();return Math.abs(rect.width-390)<1&&rect.x<=1;});
     await inspector.getByRole('button',{name:'Workflow variables',exact:true}).click();
@@ -80,15 +91,38 @@ try{
    await page.getByRole('alert').getByText('Fixture review validation failed',{exact:true}).waitFor();
    await reviewButton.click();
    await inspector.getByRole('heading',{name:'Review changes',exact:true}).waitFor();
-   await inspector.getByText('After publishing · Every 15 minutes · Automatic starts enabled',{exact:true}).waitFor();
+   await inspector.getByText('After publishing · Every 15 minutes · Automatic runs on',{exact:true}).waitFor();
    await inspector.getByRole('button',{name:'Publish workflow',exact:true}).click();
    await inspector.waitFor({state:'hidden'});
    await page.getByRole('button',{name:'Every 15 minutes',exact:true}).click();
    await inspector.getByText('Published · Every 15 minutes',{exact:true}).waitFor();
    await inspector.getByRole('button',{name:'Pause schedule',exact:true}).click();
    await inspector.getByRole('button',{name:'Resume schedule',exact:true}).waitFor();
+   await live.getByText('Automatic runs paused',{exact:true}).waitFor();
    assert.equal(await availability.isChecked(),true);
-   assert.equal(f.ok(await f.api('GET',path+'/trigger')).enabled,false);
+   const paused=f.ok(await f.api('GET',path+'/trigger'));
+   assert.equal(paused.enabled,false);
+   assert.deepEqual(paused.sourceConfig,{...schedule,everyMs:900000},'Cadence edit preserves the saved phase and legacy overlap behavior');
+   await activate(busy.getByRole('radio',{name:'Update current run',exact:true}));
+   await inspector.getByText(/Send the next event to a supported Agent/).waitFor();
+   await activate(busy.getByRole('radio',{name:'Run latest after current',exact:true}));
+   await inspector.getByText(/Keep only the latest event for a run after the current one finishes/).waitFor();
+   await live.getByText('When already running · Queue every run',{exact:true}).waitFor();
+   assert.deepEqual(f.ok(await f.api('GET',path+'/trigger')),paused,'The live trigger stays paused with its old policy until publication');
+   await back.click();
+   await reviewButton.click();
+   await inspector.getByText('After publishing · Every 15 minutes · Automatic runs paused · Run latest after current',{exact:true}).waitFor();
+   await inspector.getByRole('button',{name:'Publish workflow',exact:true}).click();
+   await inspector.waitFor({state:'hidden'});
+   const changed=f.ok(await f.api('GET',path+'/trigger'));
+   assert.equal(changed.enabled,false);
+   assert.equal(changed.nextFireAt,paused.nextFireAt,'A policy-only publication preserves the schedule cursor');
+   assert.deepEqual(changed.sourceConfig,{...paused.sourceConfig,whenRunning:'run_latest'});
+   await page.getByRole('button',{name:'Every 15 minutes',exact:true}).click();
+   await activate(live.getByRole('button',{name:'Resume schedule',exact:true}));
+   await live.getByText('Automatic runs on',{exact:true}).waitFor();
+   await activate(live.getByRole('button',{name:'Pause schedule',exact:true}));
+   await live.getByText('Automatic runs paused',{exact:true}).waitFor();
    await back.click();
    assert.equal(await run.isEnabled(),true);
    await run.click();
@@ -98,6 +132,7 @@ try{
    const runId=new URL(page.url()).searchParams.get('execution');
    const details=page.getByRole('region',{name:'Selected Run'});
    await details.getByRole('button',{name:'Approve',exact:true}).waitFor();
+   assert.doesNotMatch(await details.innerText(),/0 (steps? completed|running|retrying)/i);
    const execution=async()=>f.ok(await f.api('GET',`/api/branch-executions/${runId}`)).execution;
    assert.notEqual((await execution()).versionId,initial.versionId);
    assert.equal((await execution()).input,'Run while paused');
@@ -130,6 +165,10 @@ try{
    await page.waitForFunction(()=>document.querySelector('[aria-label="Workflow availability"]')?.checked===true);
    await details.getByRole('button',{name:'Approve',exact:true}).click();
    await details.getByRole('region',{name:'Results'}).waitFor();
+   const technical=details.locator('summary').filter({hasText:'Technical Details'});
+   assert.equal(await technical.evaluate(el=>el.parentElement.open),false);
+   await activate(technical);
+   await details.getByRole('button',{name:'Copy Run ID',exact:true}).waitFor();
 
    const overflow=page.getByRole('button',{name:'Workflow Actions'});
    await overflow.click();
@@ -149,20 +188,117 @@ try{
    await back.click();
    await reviewButton.click();
    await inspector.getByRole('heading',{name:'Review changes',exact:true}).waitFor();
-   assert.equal(await inspector.getByText(/After publishing · Every 15 minutes/).count(),0,'A rename preserves the live pause');
+   await inspector.getByText('Automatic runs stay paused.',{exact:true}).waitFor();
+   assert.equal(await inspector.getByText(/After publishing · Every 15 minutes/).count(),0,'A rename has no trigger diff');
    await inspector.getByRole('button',{name:'Publish workflow',exact:true}).click();
    await inspector.waitFor({state:'hidden'});
    assert.equal(f.ok(await f.api('GET',path+'/trigger')).enabled,false);
 
-   await page.getByRole('tab',{name:'Settings',exact:true}).click();
+   const publishedBeforeRepair=f.ok(await f.api('GET',path));
+   const beforeDefinition=f.ok(await f.api('GET',path+'/versions/'+publishedBeforeRepair.versionId)).definition;
+   const settingsTab=page.getByRole('tab',{name:'Settings',exact:true});
+   const workflowTab=page.getByRole('tab',{name:'Workflow',exact:true});
+   await settingsTab.click();
+   const advanced=page.getByRole('button',{name:'Advanced execution settings',exact:true});
+   assert.equal(await advanced.getAttribute('aria-expanded'),'false');
+   await activate(advanced);
+   const concurrency=page.getByRole('spinbutton',{name:'Concurrent Executions',exact:true});
+   const paths=page.getByRole('spinbutton',{name:'Maximum Paths',exact:true});
+   const issues=page.getByRole('region',{name:'Publication Issues',exact:true});
+   const repair=async(field,issue,value)=>{
+    await activate(advanced);
+    await activate(workflowTab);
+    await activate(reviewButton);
+    await activate(issues.getByRole('button',{name:issue}));
+    assert.equal(await settingsTab.getAttribute('aria-selected'),'true');
+    await field.waitFor();
+    await page.waitForFunction(id=>document.activeElement?.id===id,await field.getAttribute('id'));
+    assert.equal(await advanced.getAttribute('aria-expanded'),'true');
+    await field.fill(value);
+    await page.getByRole('alert').filter({hasText:issue}).waitFor({state:'hidden'});
+    assert.equal(await advanced.getAttribute('aria-expanded'),'true','Editing away a rejected revision keeps the disclosure open');
+   };
+   await concurrency.fill('0');
+   await paths.fill('0');
+   await repair(concurrency,/Branch concurrency/,'3');
+   await repair(paths,/maxPathInstances/,'500');
+   await page.getByRole('combobox',{name:'Failure Handling'}).click();
+   await page.getByRole('option',{name:'Retry Known Failure'}).click();
+   const attempts=page.getByRole('spinbutton',{name:'Maximum Attempts',exact:true});
+   await attempts.fill('0');
+   await repair(attempts,/retry attempts/,'4');
+   assert.equal(f.ok(await f.api('GET',path)).versionId,publishedBeforeRepair.versionId);
+   assert.deepEqual(f.ok(await f.api('GET',path+'/versions/'+publishedBeforeRepair.versionId)).definition,beforeDefinition);
+   await activate(workflowTab);
+   await page.getByRole('button',{name:'Every 15 minutes',exact:true}).click();
+   await activate(live.getByRole('button',{name:'Resume schedule',exact:true}));
+   await live.getByText('Automatic runs on',{exact:true}).waitFor();
+   const resumed=f.ok(await f.api('GET',path+'/trigger'));
+   await back.click();
+   await activate(reviewButton);
+   await inspector.getByText('Automatic runs stay on.',{exact:true}).waitFor();
+   await activate(inspector.getByRole('button',{name:'Publish workflow',exact:true}));
+   await inspector.waitFor({state:'hidden'});
+   const afterRepair=f.ok(await f.api('GET',path+'/trigger'));
+   assert.equal(afterRepair.enabled,true);
+   assert.equal(afterRepair.nextFireAt,resumed.nextFireAt);
+   const publishedAfterRepair=f.ok(await f.api('GET',path));
+   const afterDefinition=f.ok(await f.api('GET',path+'/versions/'+publishedAfterRepair.versionId)).definition;
+   assert.notEqual(publishedAfterRepair.versionId,publishedBeforeRepair.versionId);
+   assert.deepEqual(afterDefinition.steps,beforeDefinition.steps);
+   assert.deepEqual(afterDefinition.policy,{
+    ...beforeDefinition.policy,maxConcurrentExecutions:3,maxPathInstances:500,failure:{action:'retry',maxAttempts:4,delayMs:1000}
+   });
+   await settingsTab.click();
+   assert.equal(await advanced.getAttribute('aria-expanded'),'true');
+   const localLimit=page.getByRole('spinbutton',{name:'Graph Traversals',exact:true});
+   await localLimit.fill('0');
+   await page.getByText('Enter a positive whole number.',{exact:true}).waitFor();
+   const saveLimits=page.getByRole('button',{name:'Save local limits',exact:true});
+   assert.equal(await saveLimits.isDisabled(),true);
+   await localLimit.fill('321');
+   await activate(saveLimits);
+   await saveLimits.waitFor({state:'hidden'});
+   assert.equal(f.ok(await f.api('GET',path+'/settings')).configuration.limits.maxTraversals,321);
    await page.getByRole('button',{name:'Delete Workflow…',exact:true}).click();
    await inspector.getByRole('heading',{name:/Delete workflow/i}).waitFor();
    assert.equal(await inspector.getByRole('button',{name:'Delete workflow',exact:false}).isDisabled(),true);
    await back.click();
    assert.equal(f.ok(await f.api('GET',path)).id,branch.id);
 
+   const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+   for(const onceState of ['fired','expired','future']){
+    const at=new Date(Date.now()+(onceState==='future'?3600000:-3600000)).toISOString();
+    const legacyName='One-time '+onceState;
+    const legacy=f.ok(await f.api('POST','/api/branches',{name:legacyName,idempotencyKey:randomUUID()}));
+    const sourceConfig={scheduleKind:'once',at};
+    const deployed=branches.deploy({...deployment,branchId:legacy.id,expectedVersionId:legacy.versionId,idempotencyKey:randomUUID(),
+     definition:{...deployment.definition,name:legacyName},bindings:{...deployment.bindings,triggers:{schedule:{enabled:onceState==='fired',sourceConfig}}}},
+     undefined,{sourceConfig,nextFireAt:at});
+    const legacyPath='/api/branches/'+deployed.id;
+    if(onceState==='fired')branches.triggers.recordScheduledTriggerOccurrence({triggerId:deployed.triggerId,expectedNextFireAt:at,lastFiredAt:at,
+     occurrenceKey:'fixture-once',payload:{scheduledTimes:[at],missedCount:1},provenance:{source:'schedule'}});
+    const readTrigger=async()=>f.ok(await f.api('GET',legacyPath+'/trigger'));
+    const readOccurrences=async()=>f.ok(await f.api('GET',legacyPath+'/trigger/occurrences'));
+    const saved=await readTrigger(),occurrences=await readOccurrences();
+    assert.equal(saved.lastFiredAt,onceState==='fired'?at:undefined);
+    await page.goto(web.origin+'/branches?branch='+deployed.id);
+    await activate(page.getByRole('button',{name:/^Once on /}));
+    const resume=live.getByRole('button',{name:'Resume schedule',exact:true});
+    if(onceState==='future'){
+     await live.getByText('Automatic runs paused',{exact:true}).waitFor();
+     assert.equal(await resume.isEnabled(),true);
+    }else{
+     await live.getByText(onceState==='fired'?/already fired/:/expired before it fired/).waitFor();
+     assert.equal(await resume.count(),0);
+     await activate(inspector.getByRole('button',{name:'Change schedule type',exact:true}));
+     await inspector.getByRole('radiogroup',{name:'Schedule type',exact:false}).waitFor();
+    }
+    assert.deepEqual(await readTrigger(),saved);
+    assert.deepEqual(await readOccurrences(),occurrences);
+   }
    assert.deepEqual(pageErrors,[]);
-   console.log(`Workflow inspector passed at ${mobile?'390 × 844':'1440 × 900'}`);
+   console.log(`Schedule draft/live review, overlap, pause/resume, approval, technical evidence, Settings repair and one-time schedule states passed at ${mobile?'390 × 844':'1440 × 900'}`);
   }catch(error){
    await page.screenshot({path:`/tmp/pr111-inspector-${mobile?'phone':'desktop'}-failed.png`});
    throw error;

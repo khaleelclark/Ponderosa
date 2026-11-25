@@ -1,5 +1,9 @@
 import type {BranchDefinition,TriggerSourceConfig} from '@ponderosa/core';
-import {intervalParts} from '../TriggerSourceFields';
+import {intervalParts,scheduleOverlapLabels} from '../TriggerSourceFields';
+
+export function scheduleOverlapSummary(config?:TriggerSourceConfig):string|undefined {
+ if(config&&'scheduleKind'in config&&config.scheduleKind!=='once')return scheduleOverlapLabels[config.whenRunning??'queue_all'];
+}
 
 export function workflowTriggerSummary(kind:BranchDefinition['trigger']['kind'],config?:TriggerSourceConfig):string {
  if(kind==='manual')return 'Start manually';

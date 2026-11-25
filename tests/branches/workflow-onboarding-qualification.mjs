@@ -115,12 +115,23 @@ try{
    await instructions.waitFor();
    assert.equal(branchId(),blankId);
    assert.equal(await instructions.inputValue(),'Keep this draft when I check providers.');
+   await inspector.getByText('On failure · Stop This Path (workflow default)',{exact:true}).waitFor();
+   await click(inspector.getByRole('button',{name:'Change failure handling',exact:true}));
+   await inspector.getByRole('combobox',{name:/Failure Handling/}).waitFor();
    await back.click();
    const canvas=page.getByRole('region',{name:'Workflow Canvas'});
    await click(button('Undo',canvas));
    await click(button('Undo',canvas));
    await click(button('Add your first step',canvas));
    await click(page.getByRole('menuitem',{name:'Approval',exact:true}));
+   const trigger=button('Start manually',canvas);
+   await inspector.getByRole('textbox',{name:'Review Prompt',exact:true}).fill('Choose what the manual workflow returns.');
+   await inspector.getByRole('textbox',{name:'Choices (One Per Line, Optional)',exact:true}).fill('Keep draft\nPublish sample');
+   await back.click();
+   await click(trigger);
+   assert.equal(await inspector.getByRole('radio',{name:'Manually with Run once',exact:true}).isChecked(),true);
+   assert.equal(await inspector.getByRole('radiogroup',{name:'When already running'}).count(),0);
+   assert.equal(await inspector.getByRole('switch',{name:'Allow automatic runs in this draft'}).count(),0);
    await back.click();
    await click(button('Review changes',canvas));
    await inspector.getByText('This workflow starts only when you choose Run once.',{exact:true}).waitFor();
@@ -128,7 +139,20 @@ try{
    await inspector.waitFor({state:'hidden'});
    await page.waitForFunction(()=>document.activeElement?.textContent==='Run once');
    assert.equal(await button('Run once').isEnabled(),true);
-   steps.push('Empty Run once → first step; provider settings → same draft and step; manual review → Run once');
+   await click(button('Run once'));
+   await click(button('Run once',inspector));
+   await page.waitForURL(url=>url.searchParams.has('execution')&&url.searchParams.get('branch')===blankId);
+   const manualDetails=page.getByRole('region',{name:'Selected Run'});
+   await manualDetails.getByText('Choose what the manual workflow returns.',{exact:true}).waitFor();
+   const resultChoice=manualDetails.getByRole('radio',{name:'Publish sample',exact:true});
+   await click(resultChoice);
+   assert.equal(await resultChoice.isChecked(),true);
+   await click(button('Approve',manualDetails));
+   await manualDetails.getByRole('region',{name:'Results'}).getByText('Publish sample',{exact:true}).first().waitFor();
+   const manualRun=f.ok(await f.api('GET',`/api/branch-executions/${runId()}`));
+   assert.equal(manualRun.execution.admissionSource,'manual');
+   assert.equal(manualRun.steps[0].result.output,'Publish sample');
+   steps.push('Create manual workflow → publish → Run once → choose an inline approval result → Results');
 
    const file=(name,content)=>({name,mimeType:'application/json',buffer:Buffer.from(content)});
    const choose=async(control,value)=>{

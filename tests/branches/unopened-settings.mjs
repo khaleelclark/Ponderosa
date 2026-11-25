@@ -41,7 +41,7 @@ try{
  result.firstSelectionErrorVisible=true;failCapabilities=false;
  await page.getByRole('button',{name:'Reload Current Policy',exact:true}).click();
  await page.getByText('Branch Capabilities',{exact:true}).waitFor();
- await page.getByText('Advanced local execution limits',{exact:true}).click();
+ await page.getByText('Advanced execution settings',{exact:true}).click();
  const limit=page.getByLabel('Graph Traversals',{exact:true});await limit.waitFor();await limit.fill('321');
  await page.getByRole('tab',{name:'Chats',exact:true}).click();await page.getByLabel('Message',{exact:true}).waitFor();
  await page.getByRole('tab',{name:'Settings',exact:true}).click();
@@ -52,7 +52,7 @@ try{
  await open(base+'&tab=settings');
  await page.getByText('Execution Controls',{exact:true}).waitFor();
  await page.getByText('Branch Capabilities',{exact:true}).waitFor();
- await page.getByText('Advanced local execution limits',{exact:true}).click();
+ await page.getByText('Advanced execution settings',{exact:true}).click();
  assert.notEqual(await page.getByLabel('Graph Traversals',{exact:true}).inputValue(),'321','Unsaved local draft must not become stored settings');
  result.directSettingsAvailable=true;assert.deepEqual(result.pageErrors,[]);result.passed=true;
 }catch(error){result.error=error.stack;if(page)await page.screenshot({path:out+'/failure.png',timeout:3000}).catch(()=>{});}

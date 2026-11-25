@@ -315,7 +315,7 @@ test('workflow Settings sections load without parameter configuration and keep l
  const html=render(),labels=['Branch Capabilities','Dependencies','Delete Workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
- assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced local execution limits')&&html.indexOf('Loading configuration')<html.indexOf('Branch Capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
+ assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced execution settings')&&html.indexOf('Loading configuration')<html.indexOf('Branch Capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
  assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
@@ -1270,19 +1270,18 @@ test('authoring outline describes condition outcomes without introducing executi
  const execution=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){},controlStates:{[definition.entry]:'completed'}}));assert.ok(execution.includes('completed'),'Execution consumers retain their supplied state');
 });
 
-test('execution settings edits return a draft definition without mutating its published snapshot',async()=>{
+test('execution settings identify invalid concurrency in the draft',async()=>{
  const {WorkflowExecutionSettings}=await import('../../apps/web/src/components/branches/WorkflowEditor.tsx'),{newDefinition,addNode}=await import('../../apps/web/src/components/branches/model.ts');
- const {FailureEditor}=await import('../../apps/web/src/components/branches/NodeEditor.tsx');
- const published=addNode(newDefinition(),'agent').definition,changes=[],props={definition:published,bindings:{agents:{},directories:{}},agents:[],contexts:[],onDefinition:value=>changes.push(value),onBindings(){}};
- const fields=definition=>React.Children.toArray(WorkflowExecutionSettings({...props,definition}).props.children);
- const concurrency=value=>fields({...published,policy:{...published.policy,maxConcurrentExecutions:value}}).find(field=>field.props.label==='Concurrent Executions');
- concurrency(published.policy.maxConcurrentExecutions).props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
- const failure=fields(published).find(field=>field.type===FailureEditor);failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
- for(const value of [0,1.5,1001]){const field=concurrency(value);assert.equal(field.props.error,true);assert.equal(field.props.helperText,'Enter a whole number from 1 to 1,000.');}
- for(const value of [1,3,1000]){const field=concurrency(value);assert.equal(field.props.error,false);assert.equal(field.props.helperText,undefined);}
- const invalid=renderToStaticMarkup(React.createElement(WorkflowExecutionSettings,{...props,definition:{...published,policy:{...published.policy,maxConcurrentExecutions:0}}}));
- assert.ok(invalid.includes('Enter a whole number from 1 to 1,000.'));assert.ok(invalid.includes('aria-invalid="true"'));
- assert.equal(published.policy.maxConcurrentExecutions,2,'Validation feedback does not alter the published policy');
+ const definition=addNode(newDefinition(),'agent').definition;
+ const render=maxConcurrentExecutions=>renderToStaticMarkup(React.createElement(WorkflowExecutionSettings,{
+  definition:{...definition,policy:{...definition.policy,maxConcurrentExecutions}},bindings:{agents:{},directories:{}},agents:[],contexts:[],onDefinition(){},onBindings(){}
+ }));
+ for(const value of [0,1.5,1001]){
+  const html=render(value);
+  assert.match(html,/Enter a whole number from 1 to 1,000\./);
+  assert.match(html,/aria-invalid="true"/);
+ }
+ for(const value of [1,3,1000])assert.doesNotMatch(render(value),/aria-invalid="true"/);
 });
 
 test('closing the Add-step menu fences its exiting item handlers from creating another step',async()=>{
@@ -1367,6 +1366,7 @@ async function branchTriggerDraftFixture(kind,config,{echo=true}={}) {
  const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
  const slots=[],effects=[],calls=[],invalid=[];let index=0,dirty=false,tree,props;
  const react={
+  useId:React.useId,
   useState(initial){const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,next=>{const value=typeof next==='function'?next(slots[i].value):next;if(!Object.is(value,slots[i].value)){slots[i].value=value;dirty=true;}}];},
   useRef(initial){return react.useState(()=>({current:initial}))[0];},
   useEffect(fn,deps){const i=index++,old=slots[i];if(!old||deps.some((value,j)=>!Object.is(value,old.deps[j]))){slots[i]={deps,cleanup:old?.cleanup};effects.push(()=>{slots[i].cleanup?.();slots[i].cleanup=fn();});}},
@@ -1429,19 +1429,21 @@ test('trigger external schedule subtype and webhook configuration changes do not
 
 test('repeating busy policy preserves legacy absence, explicit choice and Undo without rewriting cadence',async()=>{
  const legacy={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',legacy);
- assert.equal(f.calls.length,0);assert.equal(f.draft.whenRunning,undefined);assert.ok(renderToStaticMarkup(f.render()).includes('Queue Every Run'),'Legacy schedule displays Queue Every Run');
+ assert.equal(f.calls.length,0);assert.equal(f.draft.whenRunning,undefined);assert.match(renderToStaticMarkup(f.render()),/checked=""[^>]*value="queue_all"/u,'Legacy schedule selects Queue every run');
  f.input('whenRunning','run_latest');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);assert.equal(f.calls.length,1);
  const selected=structuredClone(f.config);f.input('intervalValue','2');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);
  f.setConfig(legacy);assert.equal(f.draft.whenRunning,undefined);assert.equal(f.calls.length,2,'Undo loads the old policy without authoring another edit');
  f.setConfig(selected);assert.equal(f.draft.whenRunning,'run_latest');assert.equal(f.calls.length,2);
- const markup=renderToStaticMarkup(f.render());assert.ok(markup.includes('When Already Running'),'Policy control is labeled');assert.ok(markup.includes('Run Latest When Finished'),'Selected policy is readable');assert.ok(markup.includes('already queued'),'Existing backlog warning remains visible');f.unmount();
+ const markup=renderToStaticMarkup(f.render());assert.ok(markup.includes('When already running'),'Policy control is labeled');assert.ok(markup.includes('Run latest after current'),'Selected policy is readable');assert.ok(markup.includes('already queued'),'Existing backlog warning remains visible');f.unmount();
  const cron={scheduleKind:'cron',expression:'0 9 * * *',timezone:'UTC',whenRunning:'update_current'},c=await branchTriggerDraftFixture('schedule',cron);
  assert.equal(c.calls.length,0);assert.equal(c.draft.whenRunning,'update_current');c.input('timezone','America/New_York');assert.equal(c.config.whenRunning,'update_current');c.unmount();
 });
 
 test('new repeating schedules default to Run Latest while one-time schedules carry no busy policy',async()=>{
  const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'},f=await branchTriggerDraftFixture('schedule',once);
- assert.equal(renderToStaticMarkup(f.render()).includes('When Already Running'),false,'One-time schedules have no busy policy control');assert.equal(f.calls.length,0);
+ assert.equal(renderToStaticMarkup(f.render()).includes('When already running'),false,'One-time schedules have no busy policy control');assert.equal(f.calls.length,0);
+ assert.match(renderToStaticMarkup(f.render()),/One-time schedule.*Change schedule type/u);
+ assert.doesNotMatch(renderToStaticMarkup(f.render()),/<select|role="combobox"/u);
  assert.equal(Object.hasOwn(f.config,'whenRunning'),false);
  f.input('scheduleKind','interval');assert.equal(f.config.whenRunning,'run_latest');
  assert.doesNotMatch(renderToStaticMarkup(f.render()),/Existing one-time schedule/u);

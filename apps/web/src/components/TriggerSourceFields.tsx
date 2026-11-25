@@ -1,6 +1,6 @@
 import {MIN_SCHEDULE_INTERVAL_MS,nextIntervalTime} from "@ponderosa/core";
-import {useState} from 'react';
-import {FormControl,InputLabel,Select,MenuItem,Stack,TextField,Typography} from '@mui/material';
+import {useId,useState} from 'react';
+import {Button,FormControl,FormControlLabel,FormLabel,InputLabel,Select,MenuItem,Radio,RadioGroup,Stack,TextField,Typography} from '@mui/material';
 import type {TriggerScheduleConfig,TriggerScheduleWhenRunning,TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
 import {splitTriggerGlobText} from './triggerSourceValues';
 export function isoToDatetimeLocal(value: string): string {
@@ -89,17 +89,41 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
 }
 export function TriggerSourceFields({sourceKind,draft}:{sourceKind:TriggerSourceKind;draft:ReturnType<typeof useTriggerSourceDraft>}):JSX.Element{
  const {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,intervalError,cronFormatError,timezoneError}=draft;
+ const labelId=useId(),[changeOnce,setChangeOnce]=useState(false);
  return <>      {sourceKind === "schedule" ? <>
-        <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule Type</InputLabel><Select labelId="schedule-kind-label" label="Schedule Type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem>{scheduleKind==='once'&&<MenuItem value="once" disabled>Existing one-time schedule</MenuItem>}<MenuItem value="cron">Cron</MenuItem></Select></FormControl>
+        {scheduleKind==='once'&&<Stack direction="row" gap={1} alignItems="center" flexWrap="wrap">
+          <Typography>One-time schedule · {new Date(onceAt).toLocaleString()}</Typography>
+          {!changeOnce&&<Button onClick={()=>setChangeOnce(true)}>Change schedule type</Button>}
+        </Stack>}
+        {(scheduleKind!=='once'||changeOnce)&&<FormControl>
+          <FormLabel id={labelId}>Schedule type</FormLabel>
+          <RadioGroup row aria-labelledby={labelId} value={scheduleKind} onChange={(_,value)=>{setChangeOnce(false);setScheduleKind(value as 'interval'|'cron')}}>
+            <FormControlLabel value="interval" control={<Radio size="small" autoFocus={changeOnce}/>} label="Repeat at an interval"/>
+            <FormControlLabel value="cron" control={<Radio size="small"/>} label="Cron"/>
+          </RadioGroup>
+        </FormControl>}
         {scheduleKind === "interval" ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <TextField fullWidth label="Every" type="number" value={intervalValue} onChange={(event) => setIntervalValue(event.target.value)} inputProps={{ min: 1, step: 1 }} error={intervalInvalid} helperText={intervalError??"At least 1 minute"} />
           <FormControl fullWidth><InputLabel id="trigger-interval-unit-label">Unit</InputLabel><Select labelId="trigger-interval-unit-label" label="Unit" value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as IntervalUnit)}><MenuItem value="minutes">Minutes</MenuItem><MenuItem value="hours">Hours</MenuItem><MenuItem value="days">Days</MenuItem><MenuItem value="weeks">Weeks</MenuItem></Select></FormControl>
         </Stack> : null}
-        {scheduleKind === "once" ? <TextField label="Run At" type="datetime-local" value={onceAt} InputProps={{readOnly:true}} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
         {scheduleKind === "cron" ? <><TextField label="Cron Expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} error={Boolean(cronFormatError)} helperText={cronFormatError ?? "Five fields; minimum frequency is once per minute."} /><TextField label="IANA Timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} error={Boolean(timezoneError)} helperText={timezoneError} /></> : null}
-        {scheduleKind !== "once" ? <><FormControl fullWidth><InputLabel id="schedule-when-running-label">When Already Running</InputLabel><Select labelId="schedule-when-running-label" label="When Already Running" value={whenRunning??'queue_all'} onChange={event=>setWhenRunning(event.target.value as TriggerScheduleWhenRunning)}><MenuItem value="update_current">Update Current Run</MenuItem><MenuItem value="run_latest">Run Latest When Finished</MenuItem><MenuItem value="queue_all">Queue Every Run</MenuItem></Select></FormControl><Typography variant="caption" color="text.secondary">{whenRunning==='update_current'?'New events → supported active Agent; otherwise latest only → next Run':whenRunning==='run_latest'?'Latest scheduled event only → next Run after current work':'Every schedule check → separate queued Run'} · already queued Runs retained without clearing/merging</Typography></> : null}
+        {scheduleKind !== "once" && <FormControl>
+          <FormLabel id={labelId+'-overlap'}>When already running</FormLabel>
+          <RadioGroup aria-labelledby={labelId+'-overlap'} aria-describedby={labelId+'-overlap-help'} value={whenRunning??'queue_all'} onChange={(_,value)=>setWhenRunning(value as TriggerScheduleWhenRunning)}>
+            {Object.entries(scheduleOverlapLabels).map(([value,label])=><FormControlLabel key={value} value={value} control={<Radio size="small"/>} label={label}/>)}
+          </RadioGroup>
+          <Typography id={labelId+'-overlap-help'} variant="body2" color="text.secondary">
+            {whenRunning==='update_current'?'Send the next event to a supported Agent in the active run. Otherwise keep only the latest event for the next run.':whenRunning==='run_latest'?'Keep only the latest event for a run after the current one finishes.':'Queue a separate run for each scheduled event.'} Runs already queued stay queued.
+          </Typography>
+        </FormControl>}
       </> : null}
       {sourceKind === "filesystem" ? <><TextField label="Include Globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude Globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet Window (Seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum Window (Seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
       {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">JSON + stable X-Ponderosa-Event-Id · same ID/input: original occurrence · conflicting input: refused</Typography> : null}
 </>;
 }
+
+export const scheduleOverlapLabels:Record<TriggerScheduleWhenRunning,string>={
+ queue_all:'Queue every run',
+ run_latest:'Run latest after current',
+ update_current:'Update current run',
+};

@@ -85,9 +85,13 @@ function validateDefinition(value: unknown): BranchDefinition {
   }
   const policy = keys(d.policy, ["maxConcurrentExecutions", "maxPathInstances", "maxStepInvocations", "maxEphemeralAgents", "pauseOnSpeakerRemoval", "failure"]);
   if (policy.pauseOnSpeakerRemoval !== undefined && typeof policy.pauseOnSpeakerRemoval !== "boolean") throw new BranchValidationError("pauseOnSpeakerRemoval must be a boolean", {section:"settings",field:"pauseOnSpeakerRemoval"});
-  boundedInteger(policy.maxConcurrentExecutions, 1, 1000, "Branch concurrency");
+  const policyInteger = (field: string, max: number, label = field) => {
+    try { boundedInteger(policy[field], 1, max, label); }
+    catch (error) { throw new BranchValidationError((error as Error).message, { section: "settings", field }); }
+  };
+  policyInteger("maxConcurrentExecutions", 1000, "Branch concurrency");
   try { failurePolicy(policy.failure); } catch (error) { throw new BranchValidationError((error as Error).message, { ...(error instanceof BranchValidationError ? error.issue : {}), section: 'settings' }); }
-  for (const key of ["maxPathInstances", "maxStepInvocations", "maxEphemeralAgents"]) if (policy[key] !== undefined) boundedInteger(policy[key], 1, 100_000, key);
+  for (const key of ["maxPathInstances", "maxStepInvocations", "maxEphemeralAgents"]) if (policy[key] !== undefined) policyInteger(key, 100_000);
   if (!Array.isArray(d.steps) || !d.steps.length || d.steps.length > 100) throw new Error("Branch requires 1–100 steps");
   if (!Array.isArray(d.controls) || d.controls.length > 100) throw new Error("Invalid control nodes");
   const nodes = new Map<string, Record<string, unknown>>();

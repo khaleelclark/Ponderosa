@@ -539,7 +539,11 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       const before=live?{sourceKind:live.sourceKind,sourceConfig:live.sourceConfig,enabled:live.enabled}:null;
       const source=input.definition.trigger;
       const after=source.kind!=='manual'&&projected?{sourceKind:source.kind,sourceConfig:projected.sourceConfig,enabled:projected.enabledOverride??input.bindings.triggers![source.configRef]!.enabled}:null;
-      return stableJson(before)===stableJson(after)?preview:{...preview,triggerChange:{before,after}};
+      if(stableJson(before)!==stableJson(after))return {...preview,triggerChange:{before,after}};
+      if(after?.sourceKind==='schedule'&&'scheduleKind' in after.sourceConfig&&after.sourceConfig.scheduleKind!=='once'){
+        return {...preview,unchangedScheduleEnabled:after.enabled};
+      }
+      return preview;
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview',...(error instanceof BranchValidationError?{issues:[error.issue]}:{})})}
   });
   app.post<{Body:unknown}>('/api/branches/import-preview',{

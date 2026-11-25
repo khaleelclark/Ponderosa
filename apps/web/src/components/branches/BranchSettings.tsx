@@ -68,19 +68,31 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
   const setParameter=(key:string,value:string|number|boolean|undefined)=>{const parameters={...draft.parameters};if(value===undefined)delete parameters[key];else parameters[key]=value;setDraft({...draft,parameters})};
   const parameterErrors=Object.keys(draft.parameters).filter(key=>!definition?.parameters?.[key]||definition.parameters[key]!.type==='secret').map(key=>`Variable “${key}” is no longer editable in the published workflow.`).concat(Object.entries(definition?.parameters??{}).flatMap(([key,p])=>{if(p.type==='secret')return [];const value=draft.parameters[key]??p.default;return p.required&&(value===undefined||value==='')?[`${p.label??key} is required.`]:value!==undefined&&(typeof value!==(p.type==='path'?'string':p.type==='text'?'string':p.type)||typeof value==='number'&&!Number.isFinite(value))?[`${p.label??key} must be ${p.type==='number'?'a finite number':p.type==='boolean'?'true or false':'text'}.`]:[]}));
   const invalidLimits=Object.values(draft.limits).some(value=>!Number.isSafeInteger(value)||value<1);
+  const settingsError=reloadAction.error?.message||save.error?.message;
   if(parameters)return <Stack spacing={2} component={hasVariables?'section':'div'} ref={variablesSection} id={hasVariables?'branch-workflow-variables':undefined} aria-label={hasVariables?'Workflow Variables':undefined} tabIndex={hasVariables?-1:undefined} sx={{minWidth:0,scrollMarginTop:16}}>
-    <WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>{(save.error||reloadAction.error)&&<Box component="details"><summary>Settings Action Needs Attention</summary>{reloadAction.error?.message||save.error?.message}{reload}</Box>}
-    {parameterErrors.length>0&&<Alert severity="warning">{parameterErrors.join(' ')}{reload}</Alert>}
+    <WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>
+    {(settingsError||parameterErrors.length>0)&&<Alert severity="warning" action={reload}>{[settingsError,...parameterErrors].filter(Boolean).join(' ')}</Alert>}
     {hasVariables?<Paper variant="outlined" sx={{p:{xs:2,sm:2.5}}}><Stack spacing={2}><Typography variant="h6" fontWeight={650}>Workflow Variables</Typography>
       {Object.entries(definition?.parameters??{}).map(([key,p])=>p.type==="secret"?<Alert severity="info" key={key}>{p.label??key}: {settings.data?.secretStatus?.[key]==="configured"?"Configured local binding":"Missing local binding"}. Secrets are available only to supported Engine-owned integrations.</Alert>:p.type==="boolean"?<FormControlLabel key={key} label={p.label??key} control={<Switch disabled={save.isPending||reloadAction.isPending} checked={Boolean(draft.parameters[key]??p.default??false)} onChange={(_,v)=>setParameter(key,v)}/>}/>:<TextField disabled={save.isPending||reloadAction.isPending} key={key} label={p.label??key} required={p.required} helperText={p.help} type={p.type==="number"?"number":"text"} value={draft.parameters[key]??p.default??""} onChange={e=>setParameter(key,p.type==="number"?(e.target.value===''?undefined:Number(e.target.value)):e.target.value)}/>)}
       {dirty&&<Button variant="contained" sx={{alignSelf:"start"}} aria-busy={save.isPending||undefined} disabled={save.isPending||reloadAction.isPending||!branch.versionId||parameterErrors.length>0} onClick={()=>save.mutate()}>{save.isPending?'Saving Variables…':'Save Variables'}</Button>}
     </Stack></Paper>:dirty&&parameterErrors.length===0?<Alert severity="warning">The published workflow no longer declares variables. {reload}</Alert>:null}
   </Stack>;
-  return <Stack spacing={2}><WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>{(save.error||reloadAction.error)&&<Box component="details"><summary>Settings Action Needs Attention</summary>{reloadAction.error?.message||save.error?.message}{(save.error||reloadAction.error)&&reload}</Box>}<Box><Typography variant="h6" fontWeight={650}>Limits Within An Execution</Typography><Typography variant="body2" color="text.secondary">These ceilings stop runaway recursion and traversal with an explicit workflow failure.</Typography></Box>{([['maxCallDepth','Nested Branch Depth'],['maxLoopIterations','Loop Iterations'],['maxTraversals','Graph Traversals']] as const).map(([key,label])=><TextField disabled={save.isPending||reloadAction.isPending} key={key} label={label} type="number" error={!Number.isSafeInteger(draft.limits[key])||draft.limits[key]<1} helperText="A positive whole number is required." value={draft.limits[key]} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/>)}<Button variant="contained" sx={{alignSelf:"start"}} disabled={save.isPending||reloadAction.isPending||!branch.versionId||invalidLimits} onClick={()=>save.mutate()}>Save Execution Settings</Button></Stack>;
+  return <Stack spacing={2}><WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>
+   {settingsError&&<Alert severity="error" action={reload}>{settingsError}</Alert>}
+   <Typography fontWeight={650}>Local limits</Typography>
+   <Typography variant="body2" color="text.secondary">A run fails if it exceeds one of these limits.</Typography>
+   {([['maxCallDepth','Nested Branch Depth'],['maxLoopIterations','Loop Iterations'],['maxTraversals','Graph Traversals']] as const).map(([key,label])=>{
+    const value=draft.limits[key],invalid=!Number.isSafeInteger(value)||value<1;
+    return <TextField disabled={save.isPending||reloadAction.isPending} key={key} label={label} type="number" error={invalid} helperText={invalid?'Enter a positive whole number.':undefined} value={value} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/>;
+   })}
+   {dirty&&<Button variant="contained" sx={{alignSelf:"start"}} disabled={save.isPending||reloadAction.isPending||!branch.versionId||invalidLimits} onClick={()=>save.mutate()}>{save.isPending?'Saving…':'Save local limits'}</Button>}
+  </Stack>;
 }
 
-export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,focusExecutionControls=false,variablesFeedback,executionSettings,deletionTarget,onDeletionOpen,onDeleted}:{executionSettings?:ReactNode;deletionTarget?:HTMLElement|null;onDeletionOpen?(open:boolean):void;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;focusExecutionControls?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
+export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,focusExecutionControls=false,variablesFeedback,executionSettings,executionSettingsError,deletionTarget,onDeletionOpen,onDeleted}:{executionSettings?:ReactNode;executionSettingsError?:string;deletionTarget?:HTMLElement|null;onDeletionOpen?(open:boolean):void;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;focusExecutionControls?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
  const client=useQueryClient(),[capabilityDirty,setCapabilityDirty]=useState(false),[deleteOpen,setDeleteOpen]=useState(false),[acknowledged,setAcknowledged]=useState(false);
+ const [advancedOpen,setAdvancedOpen]=useState(false);
+ useLayoutEffect(()=>{if(settingsActive&&executionSettingsError)setAdvancedOpen(true)},[settingsActive,executionSettingsError]);
  useEffect(()=>{onDeletionOpen?.(deleteOpen)},[deleteOpen,onDeletionOpen]);
  useEffect(()=>()=>onDeletionOpen?.(false),[onDeletionOpen]);
  const executionControls=useRef<HTMLDivElement>(null);
@@ -115,8 +127,13 @@ export function BranchSettings({branch,definition,active:settingsActive=true,foc
   <Stack component="section" aria-label="Execution Controls" id="branch-execution-controls" ref={executionControls} tabIndex={-1} spacing={2} sx={{minWidth:0,scrollMarginTop:16}}>
    <Typography variant="h6" fontWeight={650}>Execution Controls</Typography>
    <BranchExecutionBudget key={branch.id} branchId={branch.id} settings active={settingsActive}/>
-   <Accordion disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Advanced local execution limits</AccordionSummary><AccordionDetails><BranchLocalLimits key={branch.id} branch={branch} definition={definition}/></AccordionDetails></Accordion>
-   {executionSettings}
+   {executionSettingsError&&<Alert severity="error">{executionSettingsError}</Alert>}
+   <Accordion disableGutters expanded={advancedOpen||Boolean(executionSettingsError)} onChange={(_,open)=>setAdvancedOpen(open)}><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Advanced execution settings</AccordionSummary><AccordionDetails>
+    <Stack spacing={3}>
+     {executionSettings}
+     <BranchLocalLimits key={branch.id} branch={branch} definition={definition} active={settingsActive}/>
+    </Stack>
+   </AccordionDetails></Accordion>
   </Stack>
   <WorkspaceQueryError active={settingsActive} read={workspaceRead(`branch:${branch.id}`,"Lifecycle",lifecycle)}/>
       {!lifecycle.data?.deleting&&!remove.data?.pending&&<CapabilityPolicyEditor endpoint={`/api/branches/${branch.id}/capabilities`} scopeKind="branch" title="Branch Capabilities" immediateSave onDirtyChange={setCapabilityDirty}/>}

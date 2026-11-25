@@ -45,7 +45,7 @@ try{
     row.coldScripts=row.requests.filter(request=>request.type==='script').map(request=>request.path);
     const chatDraft=`Retained ${cell} ${kind} Chat draft λ😀`;await page.getByLabel('Message',{exact:true}).fill(chatDraft);
     if(kind==='settings-first'){
-     await tab('Settings');const policy=page.getByRole('spinbutton',{name:'Concurrent Executions',exact:true});await policy.waitFor();await policy.fill('9');
+     await tab('Settings');await page.getByRole('button',{name:'Advanced execution settings',exact:true}).click();const policy=page.getByRole('spinbutton',{name:'Concurrent Executions',exact:true});await policy.waitFor();await policy.fill('9');
      assert(row.requests.some(request=>request.path===editorChunk),'First Settings loads its own export from editor module');
      assert.equal(await page.locator('.react-flow').count(),0,'Settings first-use must not mount the workflow canvas');
      await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
@@ -63,16 +63,19 @@ try{
       const script=page.getByRole('textbox',{name:'Script',exact:true});await script.waitFor();const authored='console.log("retained workflow draft");';await script.fill(authored);
       const advanced=page.getByRole('button',{name:'Advanced',exact:true});if(await advanced.getAttribute('aria-expanded')!=='true')await advanced.click();
       const directory=page.getByRole('textbox',{name:'Working Directory',exact:true});await directory.waitFor();await directory.fill('.');if(await advanced.getAttribute('aria-expanded')!=='true')await advanced.click();await directory.waitFor();
+      if(mobile)await page.getByRole('button',{name:'Back to workflow',exact:true}).click();
       await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
-      await tab('Workflow');await page.getByText('Step Settings',{exact:true}).waitFor();
+      await tab('Workflow');
+      if(mobile)await page.locator('[aria-label="Select Transform Input"]').click();
+      await page.getByText('Step Settings',{exact:true}).waitFor();
       assert.equal(await script.inputValue(),authored);assert.equal(await directory.inputValue(),'.');assert.equal(await advanced.getAttribute('aria-expanded'),'true');assert.equal(await directory.isVisible(),true,'Open Advanced editor state stays mounted');
-      await page.getByRole('button',{name:'Back to workflow',exact:true}).click();await page.getByRole('button',{name:'Explore Workflow',exact:true}).click();
+      await page.getByRole('button',{name:'Back to workflow',exact:true}).click();await page.getByRole('button',{name:'Expand Workflow',exact:true}).click();
       const viewport=page.locator('#branch-workflow-panel .react-flow__viewport'),before=await viewport.getAttribute('style');await page.getByRole('button',{name:'Zoom In',exact:true}).click();
       await page.waitForFunction(before=>document.querySelector('#branch-workflow-panel .react-flow__viewport')?.getAttribute('style')!==before,before);
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));row.retainedViewport=await viewport.getAttribute('style');
-      await tab('Settings');const policy=page.getByRole('spinbutton',{name:'Concurrent Executions',exact:true});await policy.waitFor();await policy.fill('7');
+      await tab('Settings');await page.getByRole('button',{name:'Advanced execution settings',exact:true}).click();const policy=page.getByRole('spinbutton',{name:'Concurrent Executions',exact:true});await policy.waitFor();await policy.fill('7');
       await tab('Chats');await chatReady();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
-      await tab('Workflow');await page.getByRole('button',{name:'Return To Workflow',exact:true}).waitFor();
+      await tab('Workflow');await page.getByRole('button',{name:'Collapse Workflow',exact:true}).waitFor();
       assert.equal(await viewport.getAttribute('style'),row.retainedViewport,'Actual explored viewport survives Settings and Chat navigation');
       await tab('Settings');assert.equal(await policy.inputValue(),'7','Execution settings retain authored policy through another route');
      }else{

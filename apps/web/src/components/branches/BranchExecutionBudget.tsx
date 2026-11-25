@@ -12,7 +12,7 @@ import {productApiPath} from '../../api/productScope';
 import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
 
-const countedSources='Counted once at start · automatic executions + incoming Branch Calls · exempt: manual runs + trigger Run once';
+const countedSources='The budget counts automatic runs and calls from other workflows when they start. Run once is exempt.';
 export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
  const client=useQueryClient(),notify=useMutationNotification(),queryKey=['branch-execution-budget',branchId];
  const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),enabled:active,refetchInterval:active?5000:false});
@@ -45,7 +45,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
   </Stack>
   <WorkspaceQueryError read={workspaceRead(`branch:${branchId}`,"Execution Budget",query)}/>{!query.error&&<Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'baseline',justifyContent:'space-between',flexWrap:'wrap'}}>
    <Typography variant="body2" role={!query.data?"status":undefined}>{presentation.message}</Typography>
-   {query.data&&<Typography variant="caption" color={query.data.heldCount?'warning.main':'text.secondary'}>{query.data.heldCount} waiting</Typography>}
+   {Boolean(query.data?.heldCount)&&<Typography variant="caption" color="warning.main">{query.data?.heldCount} waiting</Typography>}
   </Stack>}
   {editorVisible&&draft!==undefined&&<Stack spacing={1.5}>
    {draft&&<Stack direction={{xs:'column',sm:'row'}} spacing={1.5}><TextField fullWidth label="Executions Per Period" type="number" value={draft.limit} disabled={policyLocked} error={!valid} helperText="A whole number from 1 to 1,000,000,000." onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}/><TextField fullWidth select label="Budget Period" value={draft.period} disabled={policyLocked} onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}>{(['day','week','month','lifetime'] as const).map(period=><MenuItem key={period} value={period}>{period}</MenuItem>)}</TextField></Stack>}
