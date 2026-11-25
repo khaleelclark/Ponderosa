@@ -3,6 +3,7 @@ import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination
 import {heldHumanRollovers,heldHumanRolloverKey,canRetryHeldHumanRollover} from './coordination-v3-rollover-held-task.js';
 import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
+import { communicationRecipientQuery } from "./communication-recipient-query.js";
 import type {
   RuntimeArtifactV3,
   RuntimeCommunicationV3View,
@@ -838,15 +839,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
     return (this.sqlite.prepare(`
       SELECT DISTINCT activation.agent_id
-      FROM activation_sources source
-      JOIN agent_activations activation ON activation.id = source.activation_id
-      JOIN runtime_communications communication ON communication.id = source.source_id
-      WHERE source.source_kind = 'communication'
-        AND communication.project_id = ?
-        AND activation.project_id = communication.project_id
-        AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
+      ${communicationRecipientQuery}
       ORDER BY activation.agent_id
-    `).all(projectId, communicationId, communicationId) as Array<{ agent_id: string }>)
+    `).all(communicationId, communicationId, projectId) as Array<{ agent_id: string }>)
       .map((row) => row.agent_id);
   }
 }
