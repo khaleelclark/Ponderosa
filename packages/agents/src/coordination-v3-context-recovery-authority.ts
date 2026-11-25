@@ -1,3 +1,4 @@
+import { failedSettingsHandoffUnsubmittedSql } from "./coordination-v3-transition-unsubmitted.js";
 import { heldTaskDecisionRepairs } from "./coordination-v3-task-decision-repair-hold.js";
 import { heldHumanRollover } from "./coordination-v3-rollover-held-task.js";
 import { chatArchiveActivationSql } from "./chat-archive.js";
@@ -331,7 +332,13 @@ export class CoordinationV3ContextRecoveryAuthority {
    * that whole attempt, including prepared-but-unaccepted replacement input.
    * ponytail: one historical predecessor; multiple transfers need an audited lineage. */
   reconstructionPredecessor(recovery:ProviderContextRecoveryRequest,excludeRolloverId?:string):string|undefined {
-    const rows=this.sqlite.prepare(`SELECT id FROM context_rollovers WHERE agent_id=? AND provider_session_generation=? AND id<>coalesce(?,'')`)
+    const rows=this.sqlite.prepare(`SELECT prior.id FROM context_rollovers prior
+      WHERE prior.agent_id=? AND prior.provider_session_generation=? AND prior.id<>coalesce(?,'')
+        AND NOT (${failedSettingsHandoffUnsubmittedSql('prior')} AND EXISTS(
+          SELECT 1 FROM activation_sources source
+          JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+          WHERE source.source_kind='context_rollover' AND source.source_id=prior.id
+            AND json_type(handoff.payload_json,'$.settingsTransition')='object'))`)
       .all(recovery.agentId,recovery.providerSessionId,excludeRolloverId??null) as {id:string}[];
     const deliveryRetry=recovery.progress?.deliveryRetryActivationId;
     if(!rows.length && !deliveryRetry)return undefined;

@@ -141,6 +141,19 @@ export function providerRuntimeSessionContractHash(
   return retainedHash === previous ? previous : current;
 }
 
+/** Hash the exact runtime fields used by both reservation and dispatch. */
+export function settingsHandoffContractHash(
+  selection: {engineId: string; workingCopyId: string; model?: string; effort?: string; speed?: string; observedBillingMode?: "subscription" | "api"},
+  toolHash: string, systemPromptHash: string, scopeKey: string | undefined, retainedHash: string | undefined,
+): string {
+  return providerRuntimeSessionContractHash({
+    runtimeSessionContractHash: providerSessionContractHash(selection.engineId, selection.workingCopyId, selection.model, selection.effort, toolHash),
+    speed: selection.speed,
+    billingMode: selection.observedBillingMode,
+    systemPromptHash, scopeKey,
+  }, retainedHash);
+}
+
 function runtimeModelOptions(adapter: Adapter, additionalModels?: ModelOption[]): ModelOption[] {
   return projectProviderModelOptions(additionalModels ?? adapter.listModels());
 }

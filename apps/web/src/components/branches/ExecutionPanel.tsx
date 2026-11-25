@@ -120,13 +120,12 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   return previous&&(previous.revision>incoming.revision||
     previous.revision===incoming.revision&&previous.observedAt>incoming.observedAt)?previous:incoming;
  },refetchInterval:query=>shouldPollOperations(execution.state,query.state.data)?5000:false});
- const [recoveryKeys]=useState(()=>new Map<string,string>());
  const retryContext=useMutation({mutationFn:(wait:BranchOperationalSummaryDto['agentWaits'][number])=>{
   const activationId=wait.contextRetryActivationId!;
-  const commandKey=recoveryKeys.get(activationId)??createClientId();
-  recoveryKeys.set(activationId,commandKey);
+  const expectedHold=wait.contextRetryKey;
+  const commandKey=`step-context:${wait.stepExecutionId}:${expectedHold??activationId}`;
   return requestJson(`/api/branch-executions/${execution.id}/steps/${wait.stepExecutionId}/retry-context`,{
-   method:'POST',body:JSON.stringify({requestId:wait.requestId,activationId,expectedRevision:execution.revision,commandKey})
+   method:'POST',body:JSON.stringify({requestId:wait.requestId,activationId,expectedRevision:execution.revision,commandKey,expectedHold})
   });
  },onSettled:()=>operations.refetch()});
  const ongoing=['queued','running','waiting'].includes(execution.state);
@@ -254,6 +253,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   const manual=operational&&['provider_attention','waiting_human','needs_reconciliation'].includes(operational.state)
    || ['approval','reconciliation','disabled_branch'].includes(wait.kind);
   const held=operational?.state==='context_blocked'||operational?.state==='context_uncertain';
+  const checking=retryContext.isPending&&retryContext.variables?.requestId===operational?.requestId;
   const retryAt=held||operational?.state==='context_recovering'?undefined:operational?.nextRetryAt??wait.availableAt;
   return <Alert key={i} severity={manual||held?'warning':'info'}>
    <Typography fontWeight={600}>{operational&&wait.stepId?`${stepLabel(wait.stepId)} · ${operational.label}`:wait.message}</Typography>
@@ -263,7 +263,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    {!manual&&!held&&<Typography variant="body2">No action needed.</Typography>}
    {operational?.state==='context_blocked'&&!operational.contextRetryActivationId&&
     <SavedResultReview execution={execution} stepExecutionId={operational.stepExecutionId} disabled={!authorityFresh} onChanged={refresh}/>}
-   {held&&operational?.contextRetryActivationId&&<Button disabled={!authorityFresh||retryContext.isPending} onClick={()=>retryContext.mutate(operational)}>Retry step</Button>}
+   {held&&operational?.contextRetryActivationId&&<Button disabled={!authorityFresh||retryContext.isPending} onClick={()=>retryContext.mutate(operational)}>{checking?'Checking session…':'Retry step'}</Button>}
    {held&&retryContext.error&&retryContext.variables?.requestId===operational?.requestId&&<Typography color="error">{retryContext.error.message}</Typography>}
    {held&&!operational?.contextRetryActivationId&&detail.steps.some(item=>item.id===operational?.stepExecutionId)&&<Button onClick={()=>{const step=detail.steps.find(item=>item.id===operational?.stepExecutionId);if(step)inspectEvidence(step)}}>Inspect step evidence</Button>}
    {operational?.state==='provider_attention'&&<Button href={providerSettings}>Open Provider Settings</Button>}

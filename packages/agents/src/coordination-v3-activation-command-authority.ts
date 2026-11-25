@@ -1,4 +1,4 @@
-import { settingsTransitionDeliveryHolds, retrySettingsTransitionHold } from "./coordination-v3-settings-transition-hold.js";
+import { settingsTransitionDeliveryHolds, retrySettingsTransitionHold, unsettledSettingsTransitionPredecessor } from "./coordination-v3-settings-transition-hold.js";
 import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
@@ -58,7 +58,7 @@ export class CoordinationV3ActivationCommandAuthority {
   ) {}
 
   /** Read an exact still-open peer Request, never an inferred or successor task. */
-  settingsTransitionRequestHold(input:{projectId:string;requestId:string}):{activationId:string;retryable:boolean}|undefined {
+  settingsTransitionRequestHold(input:{projectId:string;requestId:string}):{activationId:string;retryable:boolean;recoveryKey:string}|undefined {
     const rows=this.sqlite.prepare(`SELECT a.id,a.agent_id,a.scope_key,a.state AS activation_state,r.conversation_id,
         r.state AS request_state,r.superseded_by_request_id
       FROM coordination_requests r
@@ -78,22 +78,31 @@ export class CoordinationV3ActivationCommandAuthority {
       AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')
       UNION ALL
       SELECT 1 FROM scheduler_run_activations attached JOIN provider_process_authority owned ON owned.run_id=attached.run_id
-      WHERE attached.activation_id=? LIMIT 1`).get(row.id,row.id);
-    return {activationId:row.id,retryable:rows.length===1 && held.length===1 && authorized &&
+      WHERE attached.activation_id=?
+      UNION ALL
+      SELECT 1 FROM provider_context_recovery_requests recovery
+      WHERE recovery.agent_id=? AND recovery.project_id=? AND recovery.scope_key=? AND recovery.state='unsupported_fenced'
+      LIMIT 1`).get(row.id,row.id,row.agent_id,input.projectId,row.scope_key) ||
+      unsettledSettingsTransitionPredecessor(this.sqlite,input.projectId,row.agent_id,row.scope_key,row.id);
+    return {activationId:row.id,recoveryKey:hold.recoveryKey,retryable:rows.length===1 && held.length===1 && authorized &&
       row.request_state==='open' && !row.superseded_by_request_id && ['pending','retry_pending'].includes(row.activation_state) && hold.retryable && !otherHold};
   }
 
-  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;expectedActivationId?:string;now?:string}):
+  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;expectedActivationId?:string;expectedHold?:string;allowNew?:boolean;now?:string}):
     {accepted:boolean;replayed:boolean;activationId?:string;targetAgentId?:string} {
     if(!input.idempotencyKey.trim())throw Error('Request retry idempotency key is required');
     const now=input.now??new Date().toISOString();
     return this.sqlite.transaction(()=>{
-      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId,...(input.expectedActivationId?{expectedActivationId:input.expectedActivationId}:{})});
+      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId,
+        ...(input.expectedActivationId?{expectedActivationId:input.expectedActivationId}:{}),
+        ...(input.expectedHold?{expectedHold:input.expectedHold}:{})});
       const replay=this.idempotentReplay<{accepted:boolean;activationId?:string;targetAgentId?:string}>(
         input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash);
       if(replay)return {...replay,replayed:true};
+      if(input.allowNew===false)return {accepted:false,replayed:false};
       const match=this.settingsTransitionRequestHold(input);
-      if(!match?.retryable || input.expectedActivationId && match.activationId!==input.expectedActivationId)return {accepted:false,replayed:false};
+      if(!match?.retryable || input.expectedActivationId && match.activationId!==input.expectedActivationId ||
+        input.expectedHold && match.recoveryKey!==input.expectedHold)return {accepted:false,replayed:false};
       const row=this.sqlite.prepare('SELECT agent_id FROM agent_activations WHERE id=? AND project_id=?').get(match.activationId,input.projectId) as {agent_id:string}|undefined;
       if(!row)return {accepted:false,replayed:false};
       const hold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[match.activationId],"request").get(match.activationId);

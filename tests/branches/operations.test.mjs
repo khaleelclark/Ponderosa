@@ -429,6 +429,74 @@ test('an unacknowledged provider send does not make a held Branch Request retrya
 });
 
 
+test('a leased settings handoff with uncertain submission stays held across reopen and a later Workflow run',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0],db=f.store.sqlite,stamp=new Date().toISOString(),hash='a'.repeat(64);
+ const activation=db.prepare(`SELECT a.id,a.scope_key FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+  WHERE s.source_kind='request' AND s.source_id=?`).get(attempt.requestId);
+ db.prepare('UPDATE agents SET active_session_id=?,active_session_contract_hash=? WHERE id=?').run('old-session',hash,f.agent.id);
+ db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,scope_key,status,lease_owner,lease_expires_at,
+  fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at)
+  VALUES('source-run',?,?,?,'completed','fixture',?,1,'injected','old-session',?,?,?,?)`)
+  .run(f.project.id,f.agent.id,activation.scope_key,stamp,stamp,stamp,stamp,stamp);
+ db.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)').run(f.agent.id);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+   threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+   source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,cycle_number)
+   VALUES('uncertain-settings',?,?,'requested','old-session','old-session',100,50,1,'event','[]','[]','source-run','[]',?,?,?,2)`)
+  .run(f.project.id,f.agent.id,activation.scope_key,stamp,stamp);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+  cycle_number,threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,
+  recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+  SELECT 'settled-preparation',project_id,agent_id,'failed',old_provider_session_id,provider_session_generation,
+    1,threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,
+    recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,created_at
+  FROM context_rollovers WHERE id='uncertain-settings'`).run();
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+   VALUES('exact-handoff',?,?,'context_rollover_handoff',100,'next_run','blocker','pending','exact-handoff',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,JSON.stringify({rolloverId:'uncertain-settings',settingsTransition:{
+   activationId:activation.id,oldSessionId:'old-session',oldContractHash:hash}}),stamp,stamp,stamp,activation.scope_key);
+ db.prepare("INSERT INTO activation_sources VALUES('exact-handoff','context_rollover','uncertain-settings')").run();
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key,terminal_at)
+   SELECT 'safe-older-handoff',project_id,agent_id,kind,priority,dispatch_policy,prompt_class,'failed',
+    'safe-older-handoff',json_set(payload_json,'$.settingsTransition.activationId','canceled-old-task'),available_at,created_at,updated_at,scope_key,created_at
+   FROM agent_activations WHERE id='exact-handoff'`).run();
+ db.prepare("INSERT INTO activation_sources VALUES('safe-older-handoff','context_rollover','settled-preparation')").run();
+ const lease=f.coordination.leaseNextRun({workerId:'handoff-owner'});
+ assert.deepEqual(lease.activationIds,['exact-handoff']);
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Handoff only'});
+ f.coordination.markPromptSubmitted(lease);
+ assert.equal(f.coordination.failRun({...lease,workerId:'handoff-owner',sameRunResumable:false}),'outcome_unknown');
+
+ const reopened=new AgentStore(f.root);
+ try{
+  const coordination=new CoordinationV3Store(reopened.sqlite),branches=new BranchStore(reopened.sqlite,coordination);
+  const retry=(requestId,activationId)=>coordination.retryHeldSettingsTransitionRequest({projectId:f.project.id,requestId,
+   idempotencyKey:requestId,expectedActivationId:activationId});
+  assert.equal(coordination.contextRecovery.reconstructionPredecessor({agentId:f.agent.id,projectId:f.project.id,
+   scopeKey:activation.scope_key,providerSessionId:'old-session',sourceFence:lease.fencingToken}),
+  'uncertain-settings','safe pre-submission history does not block the existing reconstruction path');
+  assert.equal(retry(attempt.requestId,activation.id).accepted,false);
+  const summary=await branchOperationalSummary(reopened.sqlite,branches.execution(f.execution.id),async()=>healthy,true,coordination);
+  assert.equal(summary.agentWaits[0].state,'context_uncertain');
+  branches.cancel(f.execution.id);
+  assert.equal(branches.execution(f.execution.id).state,'canceled','the original task was never submitted');
+  const later=branches.accept(f.execution.branchId,'new-run','New input');
+  branches.advance();
+  const requestId=branches.detail(later.id).attempts[0].requestId;
+  const laterActivation=db.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?").get(requestId).activation_id;
+  // The admission preflight keeps this new task queued behind prior effects.
+  assert.equal(coordination.holdUncertainSettingsTransitionReservation({projectId:f.project.id,agentId:f.agent.id,
+   activationId:laterActivation,scopeKey:activation.scope_key,fingerprint:'b'.repeat(64)}),true);
+  assert.equal(retry(requestId,laterActivation).accepted,false);
+  assert.equal(coordination.peekNextRunnable(),undefined);
+ }finally{reopened.close();}
+ f.pass();
+});
+
 test('Branch provider admission rechecks after async preflight and leases the same work once',async t=>{
  const f=fixture(t);f.branches.advance();
  const original=f.coordination.peekNextRunnable();

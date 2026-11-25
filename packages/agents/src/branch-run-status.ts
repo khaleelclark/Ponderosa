@@ -1,3 +1,5 @@
+import { runExitUnprovenSql } from "./coordination-v3-transition-unsubmitted.js";
+export { runExitUnprovenSql };
 import type Database from 'better-sqlite3';
 import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
 import {settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from './coordination-v3-settings-transition-hold.js';
@@ -76,24 +78,6 @@ const workingSteps = `
       WHERE request.id=current.request_id AND ${branchStartedRequestRunSql('request')}
     ))
   )`;
-
-/** True when nothing yet proves the exact Run's provider processes exited: an
- * unexited registration, a live authority, an unsettled or unknown start, or no
- * registration at all. A never-injected Run with no durable start admission is
- * proven never started, because every provider spawn requires one. */
-export function runExitUnprovenSql(run:string,injection:string):string {
-  return `(EXISTS(SELECT 1 FROM provider_process_authority live WHERE live.run_id=${run})
-    OR EXISTS(SELECT 1 FROM host_lifecycle_commits registration WHERE registration.kind='provider-process-registration'
-      AND json_extract(registration.receipt_json,'$.runId')=${run} AND NOT EXISTS(SELECT 1 FROM host_lifecycle_commits exited
-        WHERE exited.kind='provider-process-exit' AND exited.identity=json_extract(registration.receipt_json,'$.authorityId')
-          AND json_extract(exited.receipt_json,'$.result')='observed_exited'))
-    OR EXISTS(SELECT 1 FROM host_lifecycle_commits claim WHERE claim.kind='provider-start-admission'
-      AND json_extract(claim.receipt_json,'$.runId')=${run} AND (EXISTS(SELECT 1 FROM host_lifecycle_commits unknown
-        WHERE unknown.kind='provider-start-unknown' AND unknown.identity=claim.identity) OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits settled
-        WHERE settled.kind='provider-start-settlement' AND settled.identity=claim.identity)))
-    OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.runId')=${run})
-      AND (${injection}<>'not_injected' OR EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=${run})))`;
-}
 
 /** A held Stop/Skip that can no longer finish by itself: a terminal Run whose exit
  * is unproven while no live authority remains to observe it. Settlement uses the

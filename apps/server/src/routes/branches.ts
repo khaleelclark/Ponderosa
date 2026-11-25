@@ -740,26 +740,32 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>('/api/branch-executions/:id/steps/:stepExecutionId/retry-context', (request,reply)=>{
     try{
       const input=validatedObject(request.body,'Step recovery');
-      exactObjectFields(input,['requestId','activationId','expectedRevision','commandKey'],'Step recovery');
-      const {requestId,activationId,expectedRevision,commandKey}=input;
+      exactObjectFields(input,['requestId','activationId','expectedRevision','commandKey','expectedHold'],'Step recovery');
+      const {requestId,activationId,expectedRevision,commandKey,expectedHold}=input;
       if(typeof requestId!=='string'||typeof activationId!=='string'||!Number.isSafeInteger(expectedRevision)
-        ||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Invalid step recovery');
+        ||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200
+        ||expectedHold!==undefined&&(typeof expectedHold!=='string'||!expectedHold||expectedHold.length>200))throw Error('Invalid step recovery');
       const result=store.sqlite.transaction(()=>{
-        const target=store.sqlite.prepare(`SELECT r.project_id FROM branch_step_executions s
+        const target=store.sqlite.prepare(`SELECT r.project_id,
+          e.revision=? AND e.cancel_requested=0 AND e.state IN ('queued','running','waiting')
+            AND s.state='waiting' AND a.state='waiting' AND a.cancel_requested=0 AND p.step_execution_id=s.id
+            AND NOT EXISTS (SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number) AS eligible
+          FROM branch_step_executions s
           JOIN branch_executions e ON e.id=s.execution_id
           JOIN branch_attempts a ON a.step_execution_id=s.id
-          JOIN branch_paths p ON p.id=s.path_id AND p.step_execution_id=s.id
+          JOIN branch_paths p ON p.id=s.path_id
           JOIN coordination_requests r ON r.id=a.request_id
-          WHERE s.id=? AND e.id=? AND e.revision=? AND e.cancel_requested=0 AND e.state IN ('queued','running','waiting')
-            AND s.state='waiting' AND a.state='waiting' AND a.cancel_requested=0 AND r.id=?
-            AND NOT EXISTS(SELECT 1 FROM branch_commands cmd WHERE cmd.execution_id=e.id AND cmd.command_key='portable-runtime-data')
-            AND NOT EXISTS (SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)`)
-          .get(request.params.stepExecutionId,request.params.id,expectedRevision,requestId) as {project_id:string}|undefined;
+          WHERE s.id=? AND e.id=? AND r.id=?
+            AND NOT EXISTS(SELECT 1 FROM branch_commands cmd WHERE cmd.execution_id=e.id AND cmd.command_key='portable-runtime-data')`)
+          .get(expectedRevision,request.params.stepExecutionId,request.params.id,requestId) as {project_id:string;eligible:number}|undefined;
         if(!target)throw Error('This step changed. Refresh the run to see the current status.');
         const recovered=context.coordination.retryHeldSettingsTransitionRequest({
           projectId:target.project_id,requestId,idempotencyKey:commandKey,expectedActivationId:activationId,
+          expectedHold,allowNew:Boolean(target.eligible),
         });
-        if(!recovered.accepted)throw Error('This step is still held. Ponderosa could not verify that retry is safe.');
+        if(!recovered.accepted)throw Error(target.eligible
+          ? 'This step is still held. Review its current session status before retrying.'
+          : 'This step changed. Refresh the run to see the current status.');
         return recovered;
       })();
       notify();
@@ -784,7 +790,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   });
   app.get<{ Params: { id: string } }>("/api/branch-executions/:id/operations", async (request, reply) => {
     const execution=branches.execution(request.params.id);
-    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus,true,context.coordination):reply.code(404).send({error:"Execution not found"});
+    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus,true,context.coordination,
+      (activationId,projectId,agentId)=>context.workspace?.findNotification(notice=>
+        notice.projectId===projectId&&notice.agentId===agentId&&notice.status==='open'&&!notice.recoveredAt&&
+        ['blocked','contract_evidence_pending'].includes(notice.workContext?.state??'')&&
+        Boolean(notice.workContext?.activationIds?.includes(activationId)),true)?.body
+    ):reply.code(404).send({error:"Execution not found"});
   });
   app.get<{Params:{id:string};Querystring:{cursor?:string}}>('/api/branch-executions/:id/actions',async(request,reply)=>{
     try{const page=branches.currentActions(request.params.id,request.query.cursor,context.workspace);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}

@@ -23,6 +23,7 @@ export async function branchOperationalSummary(
   providerStatus?: ProviderStatus,
   includeAgentWaits = true,
   coordination?: CoordinationV3Store,
+  contextHoldReason?: (activationId: string, projectId: string, agentId: string) => string | undefined,
 ): Promise<BranchOperationalSummaryDto> {
   const now = new Date().toISOString();
   const running = readBranchWorkingStepCount(db,execution.id,now);
@@ -84,6 +85,8 @@ export async function branchOperationalSummary(
               AND NOT EXISTS (SELECT 1 FROM activation_sources released WHERE released.activation_id=retry.id
                 AND released.source_kind='settings_transition_release' AND released.source_id=rollover.id)
           ) THEN 'context_uncertain' ELSE 'context_blocked' END
+        WHEN EXISTS(SELECT 1 FROM activation_sources pending WHERE pending.activation_id=retry.id
+          AND pending.source_kind='settings_transition_retry_pending') THEN 'context_checking'
         WHEN attached_run THEN 'agent_running' WHEN active_run THEN 'agent_busy'
         ELSE 'waiting_agent' END base_state
     -- A held unknown outcome is never a scheduled retry, whatever stale activation remains.
@@ -96,22 +99,23 @@ export async function branchOperationalSummary(
   const groups = db.prepare(`${waitCte} SELECT engine_id,base_state,COUNT(*) total,
     retry_at IS NOT NULL retry_pending,provider_failure_category FROM evidence
     GROUP BY engine_id,base_state,retry_at IS NOT NULL,provider_failure_category`).all(bindings) as Row[];
-  const engineIds=[...new Set(groups.filter(row=>row.base_state==='waiting_agent').map(row=>row.engine_id).filter((id):id is string=>typeof id==='string'))];
+  const engineIds=[...new Set(groups.filter(row=>['waiting_agent','context_checking','context_recovering'].includes(row.base_state)).map(row=>row.engine_id).filter((id):id is string=>typeof id==='string'))];
   const engines=new Map(await Promise.all(engineIds.map(async id=>{
     try{return [id,await providerStatus?.(id)] as const;}
     catch{return [id,{authentication:'error' as const,intakeReady:false}] as const;}
   })));
   const classify=(a:Row)=>{
     const provider=engines.get(a.engine_id);
-    let state:BranchOperationalSummaryDto['agentWaits'][number]['state']=a.base_state;
+    const checkingSession=a.base_state==='context_checking';
+    let state:BranchOperationalSummaryDto['agentWaits'][number]['state']=checkingSession?'context_recovering':a.base_state;
     let label=state==='needs_reconciliation'?'Agent result unknown':state==='waiting_human'?'Agent needs an answer':state==='waiting_dependency'?'Agent waiting on another task':state==='agent_running'?'Agent work in progress':state==='agent_busy'?'Agent busy - queued':'Waiting for Agent';
     let reason:string|undefined=state==='agent_busy'?'Another Run is active for this Agent.':undefined;
     if(state==='context_uncertain')return {state,label:'Step outcome unconfirmed',reason:'The earlier attempt may have run. Check its results and any changes it could have made.'};
     if(state==='context_blocked')return {state,label:'Session recovery required',reason:'Ponderosa could not finish restoring the session. This step is on hold.'};
-    if(state==='context_recovering')return {state,label:'Restoring session',reason:'Ponderosa is restoring context for this step.'};
+    const sessionRecovery=state==='context_recovering';
     const retryScheduled=Boolean(a.retry_at||a.retry_pending);
     let nextRetryAt:string|undefined;
-    if(state==='waiting_agent'){
+    if(state==='waiting_agent'||sessionRecovery){
       if(provider?.enabled===false){state='provider_attention';label='Provider paused';reason='Provider intake is disabled in settings.';}
       else if(provider?.resourceAdmission?.state==='held'){state='provider_unavailable';label='Waiting for host resources';reason=provider.availabilityDetail||'Accepted work remains queued until host resources recover.';}
       else if(provider?.installed===false){state='provider_attention';label='Provider installation required';reason='Install the provider CLI on the Ponderosa host, then select Recheck Sign-In in Provider Settings.';}
@@ -120,15 +124,20 @@ export async function branchOperationalSummary(
         state='provider_attention';label='Provider access needs attention';reason='The provider rejected the last access attempt. Recheck Sign-In in Provider Settings.';
       }
       else if(provider?.authentication==='checking'){
+        if(sessionRecovery)state='waiting_agent';
         if(retryScheduled){state='retry_pending';nextRetryAt=a.retry_at;}
         label='Checking provider sign-in';reason='The check is pending; accepted work remains queued.';
       }
-      else if(retryScheduled){
+      else if(retryScheduled&&!sessionRecovery){
         state=['rate_limit','capacity'].includes(a.provider_failure_category)?'provider_retry':'retry_pending';
         label=state==='provider_retry'?'Provider retry scheduled':'Retry scheduled';nextRetryAt=a.retry_at;
         reason=a.provider_failure_category==='rate_limit'?'Provider quota is unavailable; the Request remains queued for retry.':a.provider_failure_category==='capacity'?'Provider capacity is unavailable; the Request remains queued for retry.':'This Request remains queued for retry.';
       }else if(provider&&!provider.intakeReady){state='provider_unavailable';label='Provider unavailable - queued for recovery';reason=provider.availabilityDetail||'The Request remains queued until provider access recovers.';}
     }
+    if(state==='context_recovering')return {
+      state:'context_recovering' as const,label:checkingSession?'Checking session':'Restoring session',
+      reason:checkingSession?'Ponderosa is checking the saved session for this step.':'Ponderosa is restoring context for this step.',
+    };
     return {state,label,...(reason?{reason}:{}),...(nextRetryAt?{nextRetryAt}:{})};
   };
   const classifiedWaits=waitingAttempts.map(a=>{
@@ -136,10 +145,11 @@ export async function branchOperationalSummary(
     const hold=status.state==='context_blocked'
       ? coordination?.settingsTransitionRequestHold({projectId:a.project_id,requestId:a.request_id})
       : undefined;
+    const reason=hold&&!hold.retryable&&contextHoldReason?.(hold.activationId,a.project_id,a.agent_id);
     return {requestId:a.request_id as string,agentId:a.agent_id as string,
       stepId:a.step_id as string,stepExecutionId:a.step_execution_id as string,agentName:a.agent_title||'Agent',
-      engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...status,
-      ...(hold?.retryable&&hold.activationId===a.retry_id?{contextRetryActivationId:hold.activationId}:{})};
+      engineId:a.engine_id||undefined,since:a.request_created_at||a.updated_at,...status,...(reason?{reason}:{}),
+      ...(hold?.retryable&&hold.activationId===a.retry_id?{contextRetryActivationId:hold.activationId,contextRetryKey:hold.recoveryKey}:{})};
   });
   const classifications=groups.map(group=>({...classify(group),total:Number(group.total)}));
   const unknown=Number(attempts.unknown??0)+classifications.filter(row=>row.state==='needs_reconciliation'||row.state==='context_uncertain').reduce((n,row)=>n+row.total,0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
@@ -157,7 +167,7 @@ export async function branchOperationalSummary(
   else if (execution.state === "merged") { state = "merged"; label = "Merged into another execution"; }
   else if (unknown) { state = "needs_reconciliation"; label = "Needs reconciliation"; }
   else if (classifications.some(wait => wait.state === "context_blocked")) { state = "blocked"; label = "Session recovery required"; }
-  else if (classifications.some(wait => wait.state === "context_recovering")) { state = "waiting_agent"; label = "Restoring session"; }
+  else if (classifications.some(wait => wait.state === "context_recovering")) { state = "waiting_agent"; label = classifications.some(wait=>wait.label==="Restoring session")?"Restoring session":"Checking session"; }
   else if (classifications.some(wait => wait.state === "provider_attention")) { state = "provider_attention"; label = "Provider needs attention"; }
   else if (classifications.some(wait => wait.state === "provider_unavailable")) { state = "provider_unavailable"; label = "Provider unavailable"; }
   else if (pendingGates || humanRequests) { state = "waiting_human"; label = "Waiting on a person"; }

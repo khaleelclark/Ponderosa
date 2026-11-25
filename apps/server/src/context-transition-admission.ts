@@ -1,6 +1,6 @@
 import { freshFailureDiagnostic } from './working-copy-diagnostic.js';
 import { createHash } from 'node:crypto';
-import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
+import { CapabilityPolicyStore, unsettledSettingsTransitionPredecessor, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
 import { CAPABILITY_IDS, isGrantOnlyRestrictionsChange, filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from '@ponderosa/core/seed-history';
 import { ClaudeAdapter, CodexAdapter } from '@ponderosa/engines';
@@ -11,7 +11,7 @@ import { localMemoryFor } from './local-memory.js';
 import { runtimeManagedRules, runtimeSystemPrompt } from './prompts.js';
 import { runtimeEnvironmentFacts, environmentFactsPrompt } from './runtime-environment-facts.js';
 import { evaluateContextRolloverPressure } from './context-rollover-pressure.js';
-import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, retainedRuntimeTools, providerDynamicTools, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash } from './runtime-selection.js';
+import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, retainedRuntimeTools, providerDynamicTools, settingsHandoffContractHash, providerToolContractHash } from './runtime-selection.js';
 
 type TransitionDispatch={engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown};
 export function settingsTransitionTarget(agent:AgentDto,project:ProjectDto,adapter:Adapter,
@@ -105,7 +105,7 @@ export function independentProviderSwitchInput(store:AgentStore,agent:AgentDto,a
 export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"workspace">&Partial<Pick<TransitionContext,"coordinationV3">>,projectId:string,agentId:string,activationId:string):string{
  const {app,store,workspace}=ctx,agent=store.getAgent(agentId),chat=agent&&store.getConversation(agent.conversationId),
   project=agent&&store.getChatContext(agent.conversationId),memory=localMemoryFor(app),session=store.resumeSessionState(agentId);
- const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
+ const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId) as {scope_key:string}|undefined;
  let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
  let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
  let contractEvidence:unknown;
@@ -119,7 +119,8 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
   agent&&[agent.id,agent.projectId,agent.conversationId,agent.title,agent.handle,agent.role,agent.activeEngine,agent.model,agent.effort,agent.speed,agent.workingCopy,agent.presetSnapshot],
   project&&[project.id,project.hostPath,project.instructions,project.defaultEngine,project.defaultModel,project.defaultEffort],
   [prefs.globalInstructions,prefs.profile,prefs.engineDefaults,prefs.contextRolloverTokens,prefs.contextRolloverWindowFraction,prefs.claudeModelOptions],
-  grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)];
+  grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId),
+  row&&unsettledSettingsTransitionPredecessor(store.sqlite,projectId,agentId,row.scope_key,activationId)];
  // A newly drained interrupted session changes admission only for independent input.
  if(ctx.coordinationV3 && agent && row) {
   const boundary=interruptedProviderSwitch({...ctx,coordinationV3:ctx.coordinationV3},agent,(row as {scope_key:string}).scope_key);
@@ -350,6 +351,8 @@ export async function requestSettingsTransition(input: {
       .run(pending.id,pending.id,providerSwitch.sourceRunId);
     return true;
    }
+   if(agent&&row&&unsettledSettingsTransitionPredecessor(store.sqlite,pending.projectId,pending.agentId,row.scope_key,pending.id))
+    return hold('An earlier session handoff still needs cleanup or review. Open the Agent to check Context recovery.');
    if(stopped&&row){
     if(!stopped.cleanupConfirmed)return hold('The earlier task stays stopped while its exact input or cleanup requires review. The new instruction remains queued; no provider input was sent.');
     if(row.scope_key!==stopped.scopeKey)return hold('The new instruction changes scope from the stopped context. Its earlier work is preserved; review the context before continuing.');
@@ -513,7 +516,7 @@ export async function requestSettingsTransition(input: {
    // current guidance after the handoff is verified.
    const systemPrompt=packet.exactSystemPrompt,systemPromptHash=createHash('sha256').update(systemPrompt).digest('hex');
    const ordinaryToolHash=providerToolContractHash(tools,communicationPrompt),toolHash=handoffPolicy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinaryToolHash,restrictions:handoffRestrictions})).digest('hex'):ordinaryToolHash;
-   const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,contract.model,contract.effort,toolHash),speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash,scopeKey:row.scope_key},contract.contractHash);
+   const oldHash=settingsHandoffContractHash(contract,toolHash,systemPromptHash,row.scope_key,contract.contractHash);
    if(oldHash!==contract.contractHash)return hold('The saved provider contract cannot yet be verified. Ponderosa retains this message without repeating earlier work.',true);
    const acceptedTail=store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!acceptedTail)return hold('The prior context boundary is unavailable. The original work remains queued; review the Agent’s context before retrying.');
    const measured=store.acceptedProviderSessionContextUsage(agent.id)?.usage;

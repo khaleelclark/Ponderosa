@@ -64,7 +64,7 @@ for (const source of ['saved settings','message override']) test(`a Codex model 
   const chat=await f.createChat('Retained model context');
   f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Preserve these Chat instructions.'}));
   const agent=await f.createIdleAgent(chat,'Worker');
-  await f.send(agent.id,'Remember the entire original objective.');
+  await f.send(agent.id,'Remember the entire original objective.',source==='saved settings'?{effort:''}:{});
   await until(async()=>(await native.requests()).find(x=>x.method==='turn/start'),'first native turn');
   const text='Continue the same objective with the new model.';
   if (source==='message override') {
@@ -78,6 +78,9 @@ for (const source of ['saved settings','message override']) test(`a Codex model 
   await native.sendTool('ponderosa_message',{text:'First task complete.'});
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(firstRun.id),'first task settled');
   const accepted=store.resumeSessionState(agent.id);assert.ok(accepted?.toolContractHash);
+  if(source==='saved settings'){
+   assert.equal(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract.effort,undefined);
+  }
   if (source==='saved settings') {
    f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
    await f.send(agent.id,text);

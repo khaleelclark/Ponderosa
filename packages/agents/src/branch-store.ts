@@ -3865,7 +3865,7 @@ export class BranchStore {
     for (const run of runs) {
       const key = `branch-cancel:${attempt.id}:${run.id}`;
       if (['failed', 'cancelled'].includes(run.status) && !cleanupOperation(run.id) &&
-          this.coordination.canRetryUninjectedRun(run.id)) continue;
+          this.coordination.canRetryUninjectedRun(run.id) && this.runProcessesExited(run)) continue;
       // A Run that already left leased/running has no live work to interrupt. Its
       // owned cleanup is settled only by observed process exits, never by status alone.
       if (!['leased','running'].includes(run.status) && !cleanupOperation(run.id) && this.runProcessesExited(run)) {
@@ -3924,7 +3924,7 @@ export class BranchStore {
     // Pending original deliveries/notices must not start replacement work after
     // an exclusive cancellation. Shared active work retains its cancellation steering.
     if (settled || runs.every(run => Boolean(cleanupOperation(run.id)) ||
-        (['failed','cancelled'].includes(run.status) && this.coordination.canRetryUninjectedRun(run.id)))) {
+        (['failed','cancelled'].includes(run.status) && this.coordination.canRetryUninjectedRun(run.id) && this.runProcessesExited(run)))) {
       for (const activation of this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
         SELECT DISTINCT a.id FROM agent_activations a JOIN request_source_lineage source ON source.activation_id=a.id
         WHERE source.request_id=? AND a.agent_id=? AND a.kind IN ('coordination_request','coordination_cancelled') AND a.state IN ('pending','retry_pending')`, request.id, request.recipientAgentId)) {

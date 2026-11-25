@@ -357,9 +357,13 @@ return new CoordinationV3Scheduler(
     const communication = activationPayloads
       .map((payload) => payload.communication)
       .find((value): value is CommunicationEvent => value !== null && typeof value === "object" && "eventId" in value);
-    const dispatch = activationPayloads
-      .map((payload) => payload.dispatch)
-      .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+    const dispatchActivation = lease.activations.find(({payload}) =>
+      payload && typeof payload === "object" && "dispatch" in payload &&
+      payload.dispatch && typeof payload.dispatch === "object");
+    const dispatchPayload = dispatchActivation?.payload as {dispatch: Record<string, unknown>;settingsTransition?: unknown} | undefined;
+    const dispatch = dispatchPayload?.dispatch;
+    const exactTransition = dispatchPayload?.settingsTransition &&
+      (dispatchActivation?.kind === "context_rollover_handoff" || dispatchActivation?.kind === "context_rollover_continuation");
     const managedOpeningRequest = activationPayloads
       .map((payload) => payload.request)
       .find((value): value is Record<string, unknown> =>
@@ -401,7 +405,8 @@ return new CoordinationV3Scheduler(
         text: dispatchText,
         ...(typeof dispatch?.engine === "string" ? { engine: dispatch.engine } : {}),
         ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : {}),
-        ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
+        ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort }
+          : exactTransition ? { effort: "" } : {}),
         ...(typeof dispatch?.speed === "string"
           ? { speed: dispatch.speed }
           : typeof managedOpeningRuntimeSelection?.speed === "string"
