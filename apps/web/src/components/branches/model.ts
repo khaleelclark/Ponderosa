@@ -8,7 +8,7 @@ export function makeTemplate(organization:boolean):AgentPortablePackageDto{
  const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow Team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team Lead':'Agent',engine:'default',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
 }
-export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
+export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled Workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
 export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'parallel'|'for_each',after?:string):{definition:BranchDefinition;selected:string}{
  const d=structuredClone(definition),id='step_'+createClientId(),previous=after?[...d.steps,...d.controls].find(n=>n.id===after):undefined;
  if(!d.steps.length&&!d.controls.length)d.entry=id;

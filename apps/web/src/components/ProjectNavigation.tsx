@@ -1,3 +1,5 @@
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
+import {branchRoutePath} from '../branchesRouting';
 import {AssistantEntry} from "./AssistantEntry";
 import {assistantReturnPath} from "../assistantRouting";
 import {routeToPath} from "../routeRegistry";
@@ -139,6 +141,9 @@ export function ProjectRail({
         }}
       >
         <AssistantEntry wide selected={sections.active==="assistant"} href={route.kind==="assistant"?routeToPath(route):routeToPath({kind:"assistant",returnTo:assistantReturnPath(routeToPath(route))})} onOpen={onOpenAssistant}/>
+        <ButtonBase href={branchRoutePath({tab:'workflow'})} sx={{gridColumn:'1 / -1',minHeight:44,gap:1,px:1,borderRadius:1.5,color:'text.secondary','&:hover':{bgcolor:'action.hover'}}}>
+          <AccountTreeOutlinedIcon sx={{fontSize:19}}/><Typography component="span" sx={{fontSize:'.8125rem',fontWeight:600}}>Workflows</Typography>
+        </ButtonBase>
         {PROJECT_MODES.map(mode => (
           <ButtonBase
             key={mode.id}

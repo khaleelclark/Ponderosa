@@ -233,6 +233,9 @@ export interface BranchHomeDto {
   branchNames: Record<string, string>;
 }
 export interface BranchDecisionDto { id:string; kind:string; nodeId?:string; failed?:boolean; message:string; at:string }
+export type CreateBranchRequest =
+  | {name:string;idempotencyKey:string;example?:never}
+  | {example:'approval';idempotencyKey:string};
 export interface DeployBranchRequest {
   chatId: string; branchId?: string; expectedVersionId?: string;
   idempotencyKey: string; definition: BranchDefinition; bindings: BranchBindings;
@@ -338,6 +341,11 @@ export interface BranchFullImportAgentReviewDto {
 }
 export interface BranchMemoryUpdateSelectionDto {newAgents:Array<{chatRef:string;agentRef:string}>;teamChats:string[]}
 export interface BranchMemoryUpdateReviewDto {selection:BranchMemoryUpdateSelectionDto;incoming:Array<{chatRef:string;agentRef:string;snapshot:import('./dto/agents.js').PortableChatMemorySnapshotDto}>;destination:import('./dto/agents.js').PortableChatMemorySnapshotDto[];excludedRows:number}
+export interface BranchImportFolderIssue {ref:string;sourceBranchId?:string;message:string}
+export function requiredWorkflowImportDirectories(definition:BranchDefinition,hasChats:boolean):string[]{
+  const scripts=definition.steps.flatMap(step=>step.kind==='script'?[step.cwdRef]:[]);
+  return [...new Set(hasChats?['workspace',...scripts]:scripts)];
+}
 export interface BranchInstallationPreviewDto {id:string;definitionTreeReview?:{manifestSha256:string;reviewSha256:string;branches:number;bindings:Record<string,BranchBindings>};memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];runtimeDataReview?:{manifestSha256:string;owners:number;facts:number;disposition:'held';currentAuthority:false};fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */

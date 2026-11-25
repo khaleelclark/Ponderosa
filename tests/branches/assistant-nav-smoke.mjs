@@ -31,7 +31,7 @@ try{
   else await page.goto(origin+'/assistant');
   await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();await page.getByLabel('Message',{exact:true}).waitFor();
   assert.equal(new URL(page.url()).pathname,'/assistant');assert.equal(await page.locator('iframe').count(),0);
-  assert.equal(await page.locator('aside[aria-label="Branches Navigation"]').count(),0);
+  assert.equal(await page.locator('aside[aria-label="Workflows Navigation"]').count(),0);
   assert.equal(await page.evaluate(()=>window.__ponderosaAssistantMount?.productScope()),'branches');
   if(phone)await page.getByRole('button',{name:'Open Workspace Navigation'}).click();
   const nav=page.locator('aside[aria-label="Workspace Navigation"]:visible');await nav.waitFor();

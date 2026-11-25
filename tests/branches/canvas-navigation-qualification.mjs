@@ -58,7 +58,7 @@ try{
    row.checks.push('map controls, no native scrollbars, keyboard reveal, pan/modifier gestures, immutable graph');
    if(name==='wide'){
     // Existing navigation owner and Map stay mounted; no page reload.
-    const before=await stableCamera(page);row.memorySavedBefore=await cameraMemory(page);for(const branchName of ['long','wide']){const link=page.getByRole('link',{name:'Open Branch UI008 '+branchName,exact:true});if(!await link.isVisible())await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();await link.click();await settled(page);}row.memory={before,after:await stableCamera(page),savedAfter:await cameraMemory(page)};sameCenter(before,row.memory.after,'Per-Branch camera memory');
+    const before=await stableCamera(page);row.memorySavedBefore=await cameraMemory(page);for(const branchName of ['long','wide']){const link=page.getByRole('link',{name:'Open Workflow UI008 '+branchName,exact:true});if(!await link.isVisible())await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();await link.click();await settled(page);}row.memory={before,after:await stableCamera(page),savedAfter:await cameraMemory(page)};sameCenter(before,row.memory.after,'Per-Branch camera memory');
     await page.getByRole('button',{name:'Outline',exact:true}).click();
     const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
     await outline.getByRole('button',{name:'Script p7 Script',exact:true}).click();

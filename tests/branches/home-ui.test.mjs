@@ -8,7 +8,7 @@ const {BranchNotifications}=await import('../../apps/web/src/components/branches
 const {BranchHome}=await import('../../apps/web/src/components/branches/BranchHome.tsx');
 const {branchHomeItems,useBranchHome}=await import('../../apps/web/src/hooks/useBranchHome.ts');
 const {queryKeys}=await import('../../apps/web/src/queryKeys.ts');
-const props={engines:[],enginesLoaded:true,onRetryEngines(){},onNavigate(){},onCreate(){},onImport(){},creating:false};
+const props={engines:[],enginesLoaded:true,onRetryEngines(){},onNavigate(){},onCreate(){},onExample(){},onImport(){},creating:false};
 const execution=(id,state='running')=>({id,branchId:'outside-sidebar',branchName:'Workflow outside the filtered sidebar',state,createdAt:'2026-10-23T12:00:00Z',updatedAt:'2026-10-23T12:00:00Z',operational:{state,label:state==='waiting_human'?'Waiting for approval':state[0].toUpperCase()+state.slice(1)}});
 const home=()=>({observedAt:'2026-10-23T12:00:00Z',workflowCount:150,activeExecutionCount:120,openActionCount:55,branchNames:{'outside-sidebar':'Workflow outside the filtered sidebar'},activeExecutions:{items:[execution('run-one'),execution('run-two','waiting_human')],nextCursor:'active-next'},recentOutcomes:{items:['completed','failed','canceled','skipped','merged'].map(state=>execution(state,state)),nextCursor:'outcome-next'},attention:{items:[{id:'approval',branchId:'outside-sidebar',kind:'decision',status:'open',severity:'attention',title:'Approve this step',body:'Approval is required',createdAt:'2026-10-23T12:00:00Z'}]}});
 function fixture(){
@@ -24,9 +24,9 @@ test('workflow Home uses exact cross-workflow totals and distinct execution card
  assert.match(html,/Across your workflows/);assert.match(html,/>120</);assert.match(html,/>55</);
  assert.match(html,/Execution run-one/);assert.match(html,/Execution run-two/);assert.match(html,/Waiting for approval/);
  for(const state of ['Completed','Failed','Canceled','Skipped','Merged'])assert.match(html,new RegExp(`>${state}<`));
- assert.doesNotMatch(html,/No executions are active|loaded workflow directory|Start Your First Workflow|No Agents/);
+ assert.doesNotMatch(html,/No executions are active|loaded workflow directory|Start your first workflow|No Agents/);
  assert.match(html,/Load More Active Executions/);assert.match(html,/Load More Outcomes/);assert.match(html,/View All/);
- assert.match(html,/Script-only workflows available/);
+ assert.match(html,/Workflows without Agent steps are available/);
 });
 
 test('Home distinguishes loading and initial failure from valid zero and preserves cached cards on refresh failure',t=>{
@@ -34,7 +34,7 @@ test('Home distinguishes loading and initial failure from valid zero and preserv
  f.fail('active');f.fail('outcomes');html=f.render();assert.match(html,/Active Executions Could Not Be Loaded/);assert.match(html,/Unavailable/);assert.doesNotMatch(html,/Nothing currently needs your attention|No executions are active/);
  f.set('active',home());f.set('outcomes',home());f.fail('active');html=f.render();assert.match(html,/Active Executions Unavailable/);assert.match(html,/Execution run-one/);assert.match(html,/>120</);assert.match(html,/Retry Active Executions/);
  f.set('active',home());f.fail('outcomes',{fetchMeta:{fetchMore:{direction:'forward'}}});html=f.render();assert.match(html,/Next page unavailable · current results retained/);assert.doesNotMatch(html,/Home could not refresh/);assert.match(html,/Execution run-one/);assert.match(html,/Retry Next Page/);
- const empty=home();empty.workflowCount=0;empty.activeExecutionCount=0;empty.openActionCount=0;empty.activeExecutions={items:[]};empty.recentOutcomes={items:[]};empty.attention={items:[]};f.set('active',empty);f.set('outcomes',empty);html=f.render();assert.match(html,/Start Your First Workflow/);assert.match(html,/New Workflow/);assert.match(html,/Import Workflow/);assert.match(html,/Nothing currently needs your attention/);assert.match(html,/No executions are active right now/);assert.doesNotMatch(html,/could not|Retry Next Page|Load More/);
+ const empty=home();empty.workflowCount=0;empty.activeExecutionCount=0;empty.openActionCount=0;empty.activeExecutions={items:[]};empty.recentOutcomes={items:[]};empty.attention={items:[]};f.set('active',empty);f.set('outcomes',empty);html=f.render();assert.match(html,/Start your first workflow/);assert.match(html,/Try an example/);assert.match(html,/New Workflow/);assert.match(html,/Import Workflow/);assert.match(html,/Nothing currently needs your attention/);assert.match(html,/No executions are active right now/);assert.doesNotMatch(html,/could not|Retry Next Page|Load More/);
 });
 
 test('one section may fail or remain pending without claiming the other section is empty',t=>{

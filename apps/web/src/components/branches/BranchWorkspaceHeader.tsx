@@ -1,4 +1,4 @@
-import {useCallback,type ReactNode} from 'react';
+import {useCallback,type ReactNode,type RefObject} from 'react';
 import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined';
 import {PrimaryHeaderActionsOutlet} from '../PrimaryHeaderActions';
 import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
@@ -15,9 +15,9 @@ import type {BranchRunCountsDto} from '@ponderosa/core';
 import {branchRunStatus} from './branchRunStatus';
 
 /** Branch actions adapt the shared workspace chrome; publication stays with its owner. */
-export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runPending=false,runDisabled=false,availability,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onVariables,onDiscard,discardDisabled=true}:{
+export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runButton,runPending=false,runDisabled=false,availability,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onVariables,onDiscard,discardDisabled=true}:{
  name:string;tab:BranchTab;published:boolean;dirty:boolean;runCounts?:BranchRunCountsDto;executionsUnavailable?:boolean;
- onRun?():void;runPending?:boolean;runDisabled?:boolean;availability?:ReactNode;
+ onRun?():void;runButton?:RefObject<HTMLButtonElement>;runPending?:boolean;runDisabled?:boolean;availability?:ReactNode;
  onTab(tab:BranchTab):void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onHistory?():void;onEditJson?():void;onVariables?():void;onDiscard?():void;discardDisabled?:boolean;
 }):JSX.Element{
  const activity=branchRunStatus(runCounts,executionsUnavailable);
@@ -26,8 +26,8 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,execut
   <Box component="span" aria-hidden sx={theme=>({position:'absolute',top:-3,right:-4,color:semanticStatusColorToken(activity.status,theme.palette.mode)})}><SemanticStatusCircle/></Box>
  </Box></Tooltip>;
  const tabItems={workflow:{label:'Workflow',icon:<AccountTreeOutlined/>},executions:{label:'Executions',icon:executionIcon,description:activity.label,disabled:!published},chats:{label:'Chats',icon:<ChatBubbleOutline/>},settings:{label:'Settings',icon:<SettingsOutlined/>}};
- const tabs={idPrefix:'branch',value:tab,label:'Branch Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
- const runAction=onRun&&<Button variant="outlined" disabled={runPending||runDisabled} aria-describedby={runDisabled?'branch-availability-feedback':undefined}
+ const tabs={idPrefix:'branch',value:tab,label:'Workflow Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
+ const runAction=onRun&&<Button ref={runButton} variant="outlined" disabled={runPending||runDisabled} aria-describedby={runDisabled?'branch-availability-feedback':undefined}
   onClick={onRun} startIcon={<PlayArrowOutlined/>} sx={{minHeight:44,whiteSpace:'nowrap',px:{xs:1,sm:1.5},'& .MuiButton-startIcon':{display:{xs:'none',sm:'inline-flex'}}}}>{runPending?'Submitting…':'Run once'}</Button>;
  return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile collapsedIconTabs retainCollapsedActions statusBeforePrimaryActions
   titleControl={<Stack sx={{minWidth:0}}><Typography component="h1" variant="body2" fontWeight={800} noWrap title={name}>{name}</Typography><Stack direction="row" useFlexGap flexWrap="wrap" alignItems="flex-start" gap={.5}>
@@ -40,7 +40,7 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,execut
 
 /** The existing global usage observer renders into the Branch's own menu. */
 function BranchHeaderActions({onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson,onVariables}:Pick<Parameters<typeof BranchWorkspaceHeader>[0],'onRename'|'onDiscard'|'discardDisabled'|'onExport'|'onUpdate'|'onHistory'|'onEditJson'|'onVariables'>):JSX.Element{
- const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Branch Actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
+ const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Workflow Actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
   ...(openUsage&&!fullTrigger?[{label:'Provider Usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
   {label:'Rename…',onSelect:onRename},
   ...(onHistory?[{label:'Version History',onSelect:onHistory}]:[]),

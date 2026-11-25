@@ -64,8 +64,8 @@ try{
  await page.goto(origin+'/branches');
  const chooserPromise=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Import Workflow',exact:true}).first().click();
  await (await chooserPromise).setFiles({name:'workflow.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(workflow))});
- const branchDialog=page.getByRole('dialog',{name:'Import As A New Branch',exact:true});await branchDialog.waitFor();
- await branchDialog.getByLabel('Default Working Directory',{exact:true}).fill(f.root);
+ const branchDialog=page.getByRole('dialog',{name:'Import Workflow',exact:true});await branchDialog.waitFor();
+ await branchDialog.getByLabel('Default Working Folder',{exact:true}).fill(f.root);
  await branchDialog.getByLabel('Engine: codex',{exact:true}).click();await page.getByRole('option',{name:'codex',exact:true}).click();
  await branchDialog.getByRole('button',{name:'Review Changes',exact:true}).click();
  await branchDialog.getByText('You already have a Ponderosa Speaker. The imported speaker will be disabled.',{exact:true}).waitFor();

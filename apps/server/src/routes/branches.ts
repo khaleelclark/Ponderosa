@@ -6,7 +6,7 @@ import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
-import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,describeBranchDeletionFailure,type BranchInstallationService} from '../branch-installation-service.js';
+import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,describeBranchDeletionFailure,BranchImportFolderError,type BranchInstallationService} from '../branch-installation-service.js';
 import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
@@ -15,7 +15,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { branchDeletionErrorResourceId, readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type CoordinationV3Store, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
-import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type CreateBranchRequest, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {readPublishedBranchResult} from '../branch-result-publication.js';
@@ -268,7 +268,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;treeBindings?:Record<string,import('@ponderosa/core').BranchBindings>}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
-    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection,request.body.fileSelections,request.body.treeBindings)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection,request.body.fileSelections,request.body.treeBindings)}catch(error){return reply.code(400).send({error:(error as Error).message,...(error instanceof BranchImportFolderError?{folderIssue:error.issue}:{})})}
   });
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/role-review',async(request,reply)=>{try{return context.installations.reviewPublishedRoles(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}});
   app.post<{Params:{id:string};Body?:{acknowledgeFullImport?:boolean;acknowledgeMemoryUpdate?:boolean;outputRoleReviewId?:string;acknowledgeRuntimeDataSha256?:string;acknowledgeDefinitionTreeSha256?:string}}>('/api/branches/installations/:id/confirm',async(request,reply)=>{
@@ -311,8 +311,23 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     try{return await exportPackage(request.params.id,{mode:request.query.mode,includeValues:request.query.includeValues==='true',fileSelections:request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined},reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}
   });
 
-  app.post<{Body:{name:string;idempotencyKey:string}}>('/api/branches',async(request,reply)=>{
-    try{return branches.create(request.body.name,request.body.idempotencyKey)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+  app.post<{Body:CreateBranchRequest}>('/api/branches',async(request,reply)=>{
+    try {
+      if(request.body.example===undefined)return branches.create(request.body.name,request.body.idempotencyKey);
+      if(request.body.example!=='approval')throw new Error('Choose an available workflow example.');
+      const definition:DeployBranchRequest['definition']={
+        schema:'ponderosa.branch.v1',name:'Approve a sample request',trigger:{kind:'manual'},entry:'approve',
+        steps:[{id:'approve',kind:'human_gate',label:'Review sample request',prompt:'Approve this sample request to finish the workflow.',choices:['Sample request approved'],editable:false}],
+        controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}},
+      };
+      const result=branches.unitTransaction(()=>{
+        const branch=branches.create(definition.name,request.body.idempotencyKey);
+        const input:DeployBranchRequest={branchId:branch.id,chatId:'',expectedVersionId:'',idempotencyKey:`sample-approval:${branch.id}`,definition,bindings:{agents:{},directories:{}}};
+        return branches.deploymentReplay(input)??branches.deploy(input,new Date().toISOString(),validateLocal(input));
+      }).immediate();
+      notify();
+      return result;
+    }catch(error){return reply.code(400).send({error:(error as Error).message})}
   });
   app.post<{Params:{id:string};Body:import('@ponderosa/core').CreateProjectRequest}>('/api/branches/:id/chats',async(request,reply)=>{
     try{

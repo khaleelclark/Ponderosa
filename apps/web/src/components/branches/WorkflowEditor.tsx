@@ -43,7 +43,7 @@ function BranchTriggerSource({kind,config,onChange,onInvalid}:{kind:'schedule'|'
  useEffect(()=>()=>callbacks.current.onInvalid(false),[]);
  return <TriggerSourceFields sourceKind={kind} draft={draft}/>;
 }
-export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;onInvalidStep?():void;onSettingsIssue?():void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
+export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,firstStepRequest=0,onProviderSetup,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;firstStepRequest?:number;onProviderSetup?():void;onInvalidStep?():void;onSettingsIssue?():void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
  const retainedTemplates=useRef<NonNullable<BranchDefinition['templates']>>({});retainedTemplates.current={...retainedTemplates.current,...definition.templates,...Object.fromEntries(definition.steps.flatMap(step=>{const template=step.kind==='agent'&&'templateRef'in step.target?definition.templates?.[step.target.templateRef]:undefined;return template?[[step.id+'_'+template.kind+'_template',template]]:[]}))};
  const [setup,setSetup]=useState<AgentSetupRequest>(),[setupPending,setSetupPending]=useState(false),[setupNotice,setSetupNotice]=useState(''),[issueFocus,setIssueFocus]=useState(0),[chosenIssue,setChosenIssue]=useState<import('@ponderosa/core').BranchValidationIssue>();
  useBranchDraftGuard('workflow-agent-setup',setupPending);
@@ -104,6 +104,24 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   })
  };
  const openAdd=(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement,label?:string)=>{setInsertionTarget(target);setInsertionLabel(label);setBranching(false);dismissedInsertion.current=null;setAddAnchor(workflowInsertionAnchor(anchor,returnTo));setInsertError('')};
+ const servedFirstStep=useRef(0);
+ useEffect(()=>{
+  if(!active||!firstStepRequest||firstStepRequest===servedFirstStep.current||definition.steps.length||definition.controls.length)return;
+  const workspace=canvas.current;
+  if(!workspace)return;
+  const focusFirstStep=()=>{
+   const button=(view==='outline'?outlineEntry:addButton).current;
+   if(!button?.getClientRects().length||button.closest('[aria-busy="true"]'))return;
+   servedFirstStep.current=firstStepRequest;
+   button.focus({preventScroll:true});
+   openAdd({kind:'entry'},button);
+   observer.disconnect();
+  };
+  const observer=new MutationObserver(focusFirstStep);
+  observer.observe(workspace,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','aria-busy']});
+  focusFirstStep();
+  return()=>observer.disconnect();
+ },[active,firstStepRequest,view,definition.steps.length,definition.controls.length]);
  const closeAdd=()=>{dismissedInsertion.current=addAnchor;setAddAnchor(null)};
  const add=(kind:GuidedStepKind)=>{if(!addAnchor)return;const result=insertGuidedStep(definition,kind,insertionTarget);if(!result.ok){setInsertError(result.reason);return;}onDraft({definition:result.definition});openEditor(result.selected);setFocusRequest(value=>value+1);dismissedInsertion.current=null;setAddAnchor(null)};
  const removeSelected=(id:string)=>{const result=removeWorkflowNode(definition,id);if(!result.ok){setInsertError(result.reason);return;}onDefinition(result.definition);setSelected(result.nextSelected);setFocusRequest(value=>value+1)};
@@ -171,7 +189,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
    </WorkflowInspectorPage>}
    {selectedNode&&<Box ref={stepPanel} hidden={!editorVisible} {...(!editorVisible?{inert:''}:{})} sx={{height:'100%'}}>
     <WorkflowInspectorPage title="Step Settings" onBack={closeEditor} headerAction={<IconButton aria-label="Expand Workflow" onClick={toggleExpanded} sx={{width:44,height:44}}><OpenInFullIcon/></IconButton>}>
-     <NodeEditor active={editorVisible} key={selectedNode.id} onDraft={value=>{if(canEditInspector())owner.current.onDraft(value)}} validationRequest={active?validationRequest+issueFocus:0} retainedTemplates={retainedTemplates.current} branchId={branchId} onSetup={value=>{if(canEditInspector()){setupButton.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setSetup(value)}}} validationIssue={chosenIssue?.nodeId===selectedNode.id?chosenIssue:validationIssues.find(issue=>issue.nodeId===selectedNode.id)} definition={definition} nodeId={selectedNode.id} onChange={value=>{if(canEditInspector())owner.current.onDefinition(value)}} onRemove={next=>{if(canEditInspector()){setSelected(next);setFocusRequest(value=>value+1)}}} bindings={bindings} onBindings={value=>{if(canEditInspector())owner.current.onBindings(value)}} contexts={contexts} agents={agents} engines={engines}/>
+     <NodeEditor active={editorVisible} key={selectedNode.id} onProviderSetup={onProviderSetup} onDraft={value=>{if(canEditInspector())owner.current.onDraft(value)}} validationRequest={active?validationRequest+issueFocus:0} retainedTemplates={retainedTemplates.current} branchId={branchId} onSetup={value=>{if(canEditInspector()){setupButton.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setSetup(value)}}} validationIssue={chosenIssue?.nodeId===selectedNode.id?chosenIssue:validationIssues.find(issue=>issue.nodeId===selectedNode.id)} definition={definition} nodeId={selectedNode.id} onChange={value=>{if(canEditInspector())owner.current.onDefinition(value)}} onRemove={next=>{if(canEditInspector()){setSelected(next);setFocusRequest(value=>value+1)}}} bindings={bindings} onBindings={value=>{if(canEditInspector())owner.current.onBindings(value)}} contexts={contexts} agents={agents} engines={engines}/>
     </WorkflowInspectorPage>
    </Box>}
    {setup&&<Box hidden={!inspectorActive||inspectorPane!=='step'} sx={{height:'100%'}}><Suspense fallback={<Typography role="status">Loading Agent Setup…</Typography>}><WorkflowAgentSetup key={`${branchId}:${setup.nodeId}:${setup.kind}`} branchId={branchId} chatId={setup.chatId??chatId??''} request={setup} engines={engines} onComplete={finishSetup} onClose={()=>{setSetup(undefined);setSetupPending(false);restoreSetupFocus()}} onPendingChange={setSetupPending}/></Suspense></Box>}

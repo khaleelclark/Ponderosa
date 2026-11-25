@@ -131,7 +131,7 @@ try{
    await details.getByRole('button',{name:'Approve',exact:true}).click();
    await details.getByRole('region',{name:'Results'}).waitFor();
 
-   const overflow=page.getByRole('button',{name:'Branch Actions'});
+   const overflow=page.getByRole('button',{name:'Workflow Actions'});
    await overflow.click();
    await page.getByRole('menuitem',{name:'Version History',exact:true}).click();
    await inspector.getByRole('heading',{name:'Version history',exact:true}).waitFor();

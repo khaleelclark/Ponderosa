@@ -47,8 +47,8 @@ test('Branch header reuses ordered shared icon tabs and unpublished status witho
 
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
  const html=renderBranchHeader({name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}});
- assert.ok(html.includes('aria-label="Branch Views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- for(const label of ['Owning workflow','Branch Actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ assert.ok(html.includes('aria-label="Workflow Views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
+ for(const label of ['Owning workflow','Workflow Actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
@@ -291,7 +291,7 @@ test('both products share ordered accessible sidebar controls and preserve norma
   const render=element=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},React.createElement(MutationNotificationProvider,null,element))));
   const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenInbox:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
   const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onAssistant:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
-  for(const [html,home,search,bell]of [[normal,'Ponderosa Home','Search','Notifications, 7 Unread'],[branches,'Ponderosa Home','Search Branch Chats','Branches notifications, 7 unread']]){
+  for(const [html,home,search,bell]of [[normal,'Ponderosa Home','Search','Notifications, 7 Unread'],[branches,'Ponderosa Home','Search Workflow Chats','Branches notifications, 7 unread']]){
    const end=drawer?'Close Workspace Navigation':'Collapse Sidebar';
    const labels=[home,search,bell,end].map(label=>html.indexOf('aria-label="'+label+'"'));
    assert.ok(labels.every(i=>i>=0));assert.deepEqual([...labels].sort((a,b)=>a-b),labels);
@@ -1138,7 +1138,7 @@ test('Editing label has the Unpublished Changes tooltip and disappears at every 
 
 test('compact shared tabs keep canonical IDs, selection, disabled eligibility and names while omitting visible labels',async()=>{
  const {WorkspaceTabBar}=await import('../../apps/web/src/components/WorkspaceFrame.tsx');const items=[{value:'workflow',label:'Workflow',icon:React.createElement('svg',{'data-icon':'workflow'})},{value:'chats',label:'Chats',icon:React.createElement('svg',{'data-icon':'chats'})},{value:'executions',label:'Executions',disabled:true,icon:React.createElement('svg',{'data-icon':'executions'})},{value:'settings',label:'Settings',icon:React.createElement('svg',{'data-icon':'settings'})}];
- const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch Views',items,value,onChange(){}}));
+ const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Workflow Views',items,value,onChange(){}}));
  const html=render('chats'),tabs=[...html.matchAll(/<button[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g)].map(m=>m[0]);assert.equal(tabs.length,4);assert.equal((html.match(/role="tablist"/g)??[]).length,1);
  for(let i=0;i<items.length;i++){const item=items[i];assert.ok(tabs[i].includes(`id="branch-${item.value}-tab"`));assert.ok(tabs[i].includes(`aria-controls="branch-${item.value}-panel"`));assert.ok(tabs[i].includes(`aria-label="${item.label}"`));assert.ok(tabs[i].includes(`aria-selected="${item.value==='chats'}"`));assert.ok(tabs[i].includes(`data-icon="${item.value}"`));assert.ok(!tabs[i].includes(`>${item.label}<`),'Compact labels remain accessible instead of consuming row width')}
  assert.ok(tabs[2].includes('disabled=""'));assert.ok(!html.includes('<span aria-disabled="true"'),'Disabled tab remains a direct semantic child of tablist');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
@@ -1200,7 +1200,7 @@ test('Branch usage reuses its canonical menu and forwards the persistent usage a
  let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
  const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onHistory:undefined,onEditJson:undefined,onVariables:undefined,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
  const render=vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),menu=render(open).props.children[1],anchor={isConnected:true};
- assert.equal(menu.props.label,'Branch Actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider Usage','Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.equal(menu.props.actions[2].disabled,true);
+ assert.equal(menu.props.label,'Workflow Actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider Usage','Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
  const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
  const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onRename(){},onExport(){},onUpdate(){}}).props.children;

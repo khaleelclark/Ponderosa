@@ -16,9 +16,9 @@ import {branchOperationalStatusKinds} from './executionPresentation';
 import {BranchNotifications} from './BranchNotifications';
 
 
-export function BranchHome({engines, enginesLoaded, enginesError, onNavigate, onCreate, onImport, creating}: {
+export function BranchHome({engines, enginesLoaded, enginesError, onNavigate, onCreate, onExample, onImport, creating}: {
  engines: EngineDto[]; enginesLoaded: boolean; enginesError?: string; onRetryEngines():void;
- onNavigate(route:BranchRoute):void; onCreate():void; onImport():void; creating:boolean;
+ onNavigate(route:BranchRoute):void; onCreate():void; onExample():void; onImport():void; creating:boolean;
 }):JSX.Element {
  const {data, active, outcomes}=useBranchHome();
  const working=useRef<HTMLDivElement>(null);
@@ -44,7 +44,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onNavigate, on
    {query.hasNextPage?<Button sx={{alignSelf:'flex-start'}} disabled={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage({cancelRefetch:false})}>{query.isFetchingNextPage?'Loading…':query.isFetchNextPageError?'Retry Next Page':section==='activeExecutions'?'Load More Active Executions':'Load More Outcomes'}</Button>:null}
   </Stack>;
  };
- return <BranchNotifications onNavigate={onNavigate}>{({openInbox,openNotification})=><HomeLayout fill context="Across your workflows" loading={loading} status={loading?'Loading Home summary':initialError?'Home summary unavailable':partialError?'Home summary could not be fully loaded':refreshError?'Home refresh failed. Last loaded results are still available.':'Home summary loaded'}>
+ return <BranchNotifications onNavigate={onNavigate}>{({openInbox,openNotification})=><HomeLayout fill title="Workflows" context="Across your workflows" loading={loading} status={loading?'Loading Home summary':initialError?'Home summary unavailable':partialError?'Home summary could not be fully loaded':refreshError?'Home refresh failed. Last loaded results are still available.':'Home summary loaded'}>
    <Box sx={homeSummaryGridSx}>
     <HomeSummaryCard label="Active Executions" value={data?.activeExecutionCount??(initialError?'Unavailable':'Loading')} onClick={()=>{working.current?.scrollIntoView({block:'start'});working.current?.focus({preventScroll:true})}}/>
     <HomeSummaryCard label="Needs Attention" value={data?.openActionCount??(initialError?'Unavailable':'Loading')} onClick={openInbox}/>
@@ -52,9 +52,9 @@ export function BranchHome({engines, enginesLoaded, enginesError, onNavigate, on
    </Box>
    <WorkspaceQueryErrors reads={reads} reportOnly={Boolean(initialError)}/>
    {initialError&&<WorkspaceQueryError initial read={reads.find(read=>read.error)!}/>}
-   {!enginesError&&enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Agent provider access needs attention · Script-only workflows available</Alert>:null}
-   {data?.workflowCount===0?<HomeFirstItem icon={<AccountTreeOutlinedIcon color="action" sx={{fontSize:42,mb:1}}/>} title="Start Your First Workflow" description="Build a repeatable workflow or import a Branch package.">
-    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="center"><Button variant="contained" startIcon={<AddIcon/>} disabled={creating} onClick={onCreate}>{creating?'Creating Workflow…':'New Workflow'}</Button><Button startIcon={<FileUploadOutlinedIcon/>} onClick={onImport}>Import Workflow</Button></Stack>
+   {data?.workflowCount!==0&&!enginesError&&enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Agent provider access needs attention · Workflows without Agent steps are available</Alert>:null}
+   {data?.workflowCount===0?<HomeFirstItem icon={<AccountTreeOutlinedIcon color="action" sx={{fontSize:42,mb:1}}/>} title="Start your first workflow" description="Try a sample approval. It runs without an AI provider or a working folder.">
+    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="center"><Button variant="contained" disabled={creating} onClick={onExample}>Try an example</Button><Button startIcon={<AddIcon/>} disabled={creating} onClick={onCreate}>New Workflow</Button><Button startIcon={<FileUploadOutlinedIcon/>} onClick={onImport}>Import Workflow</Button></Stack>
    </HomeFirstItem>:null}
    <HomeSection title="Needs Attention" description="Decisions and blockers that still need you." action={data?.openActionCount?<Button onClick={openInbox}>View All</Button>:undefined}>
     {data?.attention.items.length?<Box sx={homeItemsGridSx}>{data.attention.items.filter(isOpenAttention).map(item=>{const presentation=attentionPresentation(item);return <HomeItemCard key={item.id} icon={<WarningAmberOutlinedIcon color="warning"/>} title={item.branchId?data.branchNames[item.branchId]??'Workflow Unavailable':'Workflow Attention'} detail={presentation.summary} status="needs_attention" statusLabel={item.severity==='urgent'?'Urgent':'Review'} statusBelow multilineDetail onClick={()=>openNotification(item)}/>})}</Box>

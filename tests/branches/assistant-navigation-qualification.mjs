@@ -80,7 +80,7 @@ try{
    await page.goto(origin+corePath);await page.getByLabel('Message',{exact:true}).waitFor();
    await page.goto(origin+'/assistant');await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
    await page.goBack();await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,corePath);row.noAliasHistoryEntry=true;
-   await page.goto(origin+app.url);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,app.url);assert.equal(await page.locator('aside[aria-label="Branches Navigation"]').count(),0);row.designatedAppStandalone=true;
+   await page.goto(origin+app.url);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,app.url);assert.equal(await page.locator('aside[aria-label="Workflows Navigation"]').count(),0);row.designatedAppStandalone=true;
    await page.screenshot({path:path.join(output,label+'-designated-output-app.png')});assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();continue;
   }
   // The shared settings view must expose Assistant configuration only in Ponderosa.
@@ -103,7 +103,7 @@ try{
   const direct=page.getByLabel('Message',{exact:true});await direct.waitFor();
   assert.equal(new URL(page.url()).pathname,'/assistant');
   assert.equal(await page.locator('iframe').count(),0,'Assistant is actual React in the main workspace');
-  assert.equal(await page.locator('aside[aria-label="Branches Navigation"]').count(),0,'Assistant never mounts the Branches drawer');
+  assert.equal(await page.locator('aside[aria-label="Workflows Navigation"]').count(),0,'Assistant never mounts the Branches drawer');
   assert.equal(await page.getByText('Provider Usage',{exact:true}).count(),phone?0:1,'Assistant owns the desktop provider usage control without a duplicate Core header');
   assert.equal(await page.getByRole('tab',{name:'Workflow',exact:true}).count(),0,'Assistant has no workflow editor tabs');
   assert.equal(await page.getByRole('tab',{name:'Subagents',exact:true}).count(),0,'Assistant has no Agent audit tabs');
