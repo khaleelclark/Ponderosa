@@ -83,7 +83,12 @@ export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
    reached.add(target);
   }
   for(const target of shared)boundaries.set(target,'Continue at');
-  for(const path of paths)items.push({kind:'path',path,items:visitPath(path,boundaries)});
+  const branches=paths.map(path=>({kind:'path' as const,path,items:visitPath(path,boundaries)}));
+  const straight=!joinId&&node.kind!=='condition'&&node.kind!=='route'&&branches.find(({path,items})=>items[0]?.kind==='step'&&(
+   path.label==='On success'||(path.label==='If approved'&&paths.every(other=>other===path||other.target.kind==='terminal'))
+  ));
+  for(const branch of branches)if(branch!==straight)items.push(branch);
+  if(straight)items.push(...straight.items);
   const incoming=new Map([...shared].map(target=>[target,0]));
   for(const target of shared)for(const path of pathsByNode.get(target)!){
    if(path.to&&!path.loop&&shared.has(path.to))incoming.set(path.to,incoming.get(path.to)!+1);

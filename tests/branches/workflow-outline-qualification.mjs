@@ -104,17 +104,34 @@ try{
    assert.equal(await footer(outline,'Outline'),loadingOffset);
    assert.equal((await outline.boundingBox()).y,panel.y,'Outline starts at the top of the Workflow panel');
    await row('Check input').waitFor();
+   const path=label=>outline.locator('summary').filter({has:page.getByText(label,{exact:true})});
+   const otherwise=path('Otherwise'),matches=path('If it matches');
+   const isOpen=summary=>summary.evaluate(node=>node.parentElement.open);
+   const toggle=async summary=>{
+    await summary.scrollIntoViewIfNeeded();
+    const top=(await summary.boundingBox()).y;
+    await activate(summary);
+    assert.ok(Math.abs((await summary.boundingBox()).y-top)<=2,'The toggled header stays at its viewport position');
+    assert.equal(await summary.evaluate(node=>node===document.activeElement),true);
+   };
    assert.equal(await row('Fallback input').count(),0,'Secondary path starts collapsed');
-   await activate(outline.getByText('Otherwise',{exact:true}));
+   await toggle(matches);
+   assert.equal(await isOpen(matches),false);
+   await matches.getByText('→ Matched input',{exact:true}).waitFor();
+   await otherwise.getByText('→ Fallback input',{exact:true}).waitFor();
+   await toggle(otherwise);
    await row('Fallback input').waitFor();
+   assert.equal(await isOpen(matches),false,'Sibling expansion stays unchanged');
+   await toggle(otherwise);
+   await otherwise.getByText('→ Fallback input',{exact:true}).waitFor();
+   await toggle(otherwise);
+   await toggle(matches);
    await row('Matched input').waitFor();
    assert.equal(await row('Shared work').count(),1);
    const shared=outline.getByRole('button',{name:'Continue at Shared work',exact:true});
    assert.equal(await shared.count(),2);
    await activate(shared.first());
    assert.equal(await row('Shared work').evaluate(node=>node===document.activeElement),true);
-   const primary=outline.locator('details').filter({has:page.getByText('If it matches',{exact:true})});
-   assert.equal(await primary.getByRole('button',{name:'Matched input Script',exact:true}).count(),1);
 
    const matched=row('Matched input');
    await activate(matched);
@@ -150,16 +167,16 @@ try{
    await page.getByRole('alert').getByText('Fixture layout failure').waitFor();
    await switchTo('Outline');
    await row('Fallback input').waitFor();
-   await activate(outline.getByText('On failure',{exact:true}).first());
+   await activate(path('On failure'));
    await row('Recover input').waitFor();
-   assert.equal(await outline.getByRole('button',{name:'Continue at Run workers',exact:true}).count(),2);
+   assert.equal(await row('Run workers').count(),1);
+   assert.equal(await path('On success').count(),0);
+   assert.equal(await outline.getByRole('button',{name:/Continue at Run workers$/}).count(),2);
    assert.equal(await outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).count(),2);
    assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Second worker|Combine workers) /}).allTextContents(),['First workerScript','Second workerScript','Combine workersJoin']);
    await activate(outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).last());
    assert.equal(await row('Combine workers').evaluate(node=>node===document.activeElement),true);
-   const retryPath=outline.locator('details').filter({has:page.getByText('On failure',{exact:true})}).last();
-   await activate(retryPath.locator('summary'));
-   const loop=outline.getByRole('button',{name:'Loop to Follow-up 0',exact:true});
+   const loop=outline.getByRole('button',{name:'On failure → Loop to Follow-up 0',exact:true});
    await activate(loop);
    assert.equal(await row('Follow-up 0').evaluate(node=>node===document.activeElement),true);
 
@@ -216,6 +233,8 @@ try{
    await activate(outline.getByRole('button',{name:'Redo',exact:true}));
    await row('Review fallback').waitFor();
 
+   await toggle(matches);
+   assert.equal(await isOpen(matches),false);
    if(mobile)await page.setViewportSize({width:320,height:844});
    await activate(outline.getByRole('button',{name:'Expand Workflow',exact:true}));
    await row('Follow-up 13').scrollIntoViewIfNeeded();
@@ -229,6 +248,8 @@ try{
    await switchTo('Outline');
    await outline.getByRole('button',{name:'Collapse Workflow',exact:true}).waitFor();
    assert.equal(await scroll.evaluate(node=>node.scrollTop),before);
+   assert.equal(await isOpen(matches),false);
+   assert.equal(await isOpen(otherwise),true);
    assert.equal(await row('Review fallback').getAttribute('aria-pressed'),'true');
 
    const review=outline.getByRole('button',{name:'Review changes',exact:true});

@@ -24,13 +24,16 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
  const rows=useRef(new Map<string,HTMLButtonElement>()),scroll=useRef<HTMLDivElement>(null);
  const lastFocus=useRef(focusRequest),lastReveal=useRef(revealRequest);
  const [menu,setMenu]=useState<{id:string;anchor:HTMLElement}>();
+ const showInViewport=(row:HTMLElement,region:HTMLElement)=>{
+  const viewport=region.getBoundingClientRect(),rect=row.getBoundingClientRect();
+  if(rect.top<viewport.top)region.scrollTop+=rect.top-viewport.top;
+  else if(rect.bottom>viewport.bottom)region.scrollTop+=rect.bottom-viewport.bottom;
+ };
  const showRow=(id:string,focus:boolean)=>{
   const row=rows.current.get(id),region=scroll.current;
   if(!row||!region)return;
   for(let parent=row.parentElement;parent&&parent!==region;parent=parent.parentElement)if(parent instanceof HTMLDetailsElement)parent.open=true;
-  const viewport=region.getBoundingClientRect(),rect=row.getBoundingClientRect();
-  if(rect.top<viewport.top)region.scrollTop+=rect.top-viewport.top;
-  else if(rect.bottom>viewport.bottom)region.scrollTop+=rect.bottom-viewport.bottom;
+  showInViewport(row,region);
   if(focus)row.focus({preventScroll:true});
  };
  useLayoutEffect(()=>{if(active&&scroll.current)scroll.current.scrollTop=scrollPosition.current;else setMenu(undefined)},[active,scrollPosition]);
@@ -45,13 +48,30 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
  },[active,selected,focusRequest,revealRequest,entryButtonRef]);
  const menuNode=menu&&nodes.get(menu.id);
  const remove=menuNode&&removeWorkflowNode(definition,menuNode.id);
+ const pathIndent={xs:1,sm:2};
+ const link=(id:string,label:string,key:string,indent:number|typeof pathIndent=0)=><Button key={key} size="small" onClick={()=>showRow(id,true)} sx={{ml:indent,minHeight:44,justifyContent:'start',textAlign:'left',textTransform:'none',overflowWrap:'anywhere'}}>{label}</Button>;
  const render=(entries:OutlineItem[],depth=0):ReactNode=>entries.map((item,index)=>{
-  if(item.kind==='link')return <Button key={`link:${item.id}:${index}`} size="small" onClick={()=>showRow(item.id,true)} sx={{minHeight:44,alignSelf:'start',textAlign:'left',textTransform:'none'}}>{item.label}</Button>;
+  if(item.kind==='link')return link(item.id,item.label,`link:${item.id}:${index}`);
   if(item.kind==='missing')return <Typography key="missing" variant="body2" color="error.main">Choose a destination</Typography>;
-  if(item.kind==='path')return <Box component="details" key={`path:${item.path.key}`} open={!item.path.secondary} sx={{ml:depth<4?{xs:1,sm:2}:0,pl:depth<4?1:0,borderLeft:depth<4?1:0,borderColor:'divider',minWidth:0}}>
-   <Box component="summary" sx={{py:1.25,minHeight:44,cursor:'pointer',fontSize:'0.875rem',fontWeight:600,overflowWrap:'anywhere'}}>{item.path.label}</Box>
-   <Stack spacing={.5} sx={{pb:.5}}>{item.items.length?render(item.items,depth+1):<Typography variant="body2" color="text.secondary">End this path</Typography>}</Stack>
-  </Box>;
+  if(item.kind==='path'){
+   const {path,items}=item,key=`path:${path.key}`,first=items[0],indent=depth<4?pathIndent:0;
+   if(first?.kind==='link')return link(first.id,`${path.label} → ${first.label}`,key,indent);
+   if(!first||first.kind==='missing')return <Typography key={key} variant="body2" color={first?'error.main':'text.secondary'} sx={{ml:indent,py:.25}}>{path.label} → {first?'Choose a destination':'End this path'}</Typography>;
+   return <Box component="details" key={key} open={!path.secondary} sx={{ml:indent,minWidth:0,'&[open] > summary .outline-destination':{display:'none'}}}>
+    <Box component="summary" onClick={event=>{
+     const summary=event.currentTarget,details=summary.parentElement as HTMLDetailsElement,region=scroll.current;
+     if(!region)return;
+     event.preventDefault();
+     summary.focus({preventScroll:true});
+     details.open=!details.open;
+     showInViewport(summary,region);
+     scrollPosition.current=region.scrollTop;
+    }} sx={{py:1.25,minHeight:44,cursor:'pointer',fontSize:'0.875rem',fontWeight:600,overflowWrap:'anywhere'}}>
+     <span>{path.label}</span>{first.kind==='step'&&<Box component="span" className="outline-destination" sx={{fontWeight:400,color:'text.secondary'}}> → {nodeName(first.node)}</Box>}
+    </Box>
+    <Stack spacing={.5} sx={{ml:.5,pl:depth<4?1.25:.5,pb:.5,borderLeft:1,borderColor:'divider'}}>{render(items,depth+1)}</Stack>
+   </Box>;
+  }
   if(item.kind==='unconnected')return <Fragment key="unconnected"><Typography variant="body2" color="text.secondary" sx={{mt:1}}>Unconnected steps</Typography>{render(item.items,depth)}</Fragment>;
   const {node,paths}=item,chosen=node.id===selected,problem=issues.some(issue=>issue.nodeId===node.id);
   const agentId=node.kind==='agent'&&'ref' in node.target?bindings.agents[node.target.ref]:undefined;
@@ -80,7 +100,7 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   event.preventDefault();
   if(event.shiftKey)undoRedo.onRedo();else undoRedo.onUndo();
  }}>
-  <Box ref={scroll} onScroll={event=>{if(active)scrollPosition.current=event.currentTarget.scrollTop}} sx={{flex:1,minHeight:0,overflowY:'auto',overscrollBehavior:'contain',p:{xs:1.5,sm:2}}}>
+  <Box ref={scroll} onScroll={event=>{if(active)scrollPosition.current=event.currentTarget.scrollTop}} sx={{flex:1,minHeight:0,overflowY:'auto',overscrollBehavior:'contain',overflowAnchor:'none',p:{xs:1.5,sm:2}}}>
    <Stack spacing={.75} sx={{maxWidth:760,mx:'auto'}}>
     <Box sx={{alignSelf:'start'}}>{startControl}</Box>
     {!guidedInsertionRestriction(definition,{kind:'entry'})&&<Button ref={entryButtonRef} variant={definition.entry?'text':'outlined'} startIcon={<AddIcon/>} onClick={event=>onInsert({kind:'entry'},event.currentTarget)} sx={{alignSelf:'start',minHeight:44}}>
