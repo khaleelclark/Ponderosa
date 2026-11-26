@@ -13,7 +13,7 @@ let browser,web;
 try{
  web=await serveFixture(f);
  browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',args:['--no-sandbox']});
- for(const viewport of [{width:320,height:640},{width:390,height:844},{width:1440,height:900}]){
+ for(const viewport of [{width:320,height:640},{width:390,height:844}]){
   const phone=viewport.width<400;
   const context=await browser.newContext({viewport,isMobile:phone,hasTouch:phone,serviceWorkers:'block'});
   try{

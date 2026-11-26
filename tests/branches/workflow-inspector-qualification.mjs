@@ -41,7 +41,7 @@ try{
     const nav=page.getByRole('button',{name:'Open Workspace Navigation',exact:true});
     if(mobile)await activate(nav);
     await directoryStatus.getByText(label).waitFor();
-    if(mobile)await page.keyboard.press('Escape');
+    if(mobile)await activate(page.getByRole('button',{name:'Close Workspace Navigation',exact:true}));
    }
    const busy=inspector.getByRole('radiogroup',{name:'When already running',exact:true});
    await page.goto(url);
