@@ -102,7 +102,9 @@ try{
    await page.getByRole('heading',{name:'Untitled Workflow',exact:true}).waitFor();
    const blankId=branchId();
    assert.notEqual(blankId,sampleId);
-   await click(button('Run once'));
+   assert.equal(await button('Run once').count(),0);
+   assert.equal(await page.getByRole('switch',{name:'Workflow availability'}).count(),0);
+   await click(button('Add your first step'));
    await page.getByRole('menu').getByText('First Step',{exact:true}).waitFor();
    await click(page.getByRole('menuitem',{name:'Agent Task',exact:true}));
    const instructions=inspector.getByRole('textbox',{name:'Agent Instructions'});
@@ -133,7 +135,7 @@ try{
    assert.equal(await inspector.getByRole('radiogroup',{name:'When already running'}).count(),0);
    assert.equal(await inspector.getByRole('switch',{name:'Allow automatic runs in this draft'}).count(),0);
    await back.click();
-   await click(button('Review changes',canvas));
+   await click(button('Publish to run'));
    await inspector.getByText('This workflow starts only when you choose Run once.',{exact:true}).waitFor();
    await click(button('Publish workflow',inspector));
    await inspector.waitFor({state:'hidden'});

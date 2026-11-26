@@ -89,6 +89,7 @@ try{
   try{
    const approvalRun=await run(reviewed,'Enter the final structured decision.');
    await open(reviewed,approvalRun.id);
+   await activate(selected.getByText('If approved · Edit proposed result',{exact:true}));
    const proposed=selected.getByRole('textbox',{name:'Proposed Result'});
    await proposed.fill(approvedJson);
    await activate(button('Approve Edited Text'));

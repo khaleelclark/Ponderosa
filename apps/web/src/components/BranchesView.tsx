@@ -335,12 +335,15 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const runUnconfirmed=Boolean(run.isError&&run.variables?.branchId===draft.branchId&&!(run.error instanceof ApiRequestError&&run.error.status>=400&&run.error.status<500));
  const runInputError=unicodeCodePointLength(normalizeCanonicalText(input))>INLINE_TEXT_MAX_CODE_POINTS?'Run Input · maximum 10,000 characters · larger input: managed artifact reference':undefined;
  const runUnavailable=!current&&selectedBranch.isPending?'Checking workflow availability…':selectedBranch.error?'Workflow availability could not be verified. Retry loading the workflow.':availability.isPending?'Workflow availability is changing.':!current?.versionId?'Publish the workflow before running it.':current.enabled===false?'Enable the workflow to run it.':lifecycle.data?.deleting?'This workflow is being deleted.':undefined;
+ const needsFirstStep=!draft.definition.steps.length&&!draft.definition.controls.length;
  const openRun=()=>{
   const owner=routeOwner.current;
   if(run.isPending||actionLocks.current.has('run')||owner.global||owner.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;
-  if(!runUnconfirmed&&current&&current.id===draft.branchId&&!current.versionId&&!draft.definition.steps.length&&!draft.definition.controls.length){
+  if(!runUnconfirmed&&current&&current.id===draft.branchId&&!current.versionId){
    navigate({...owner,settingsSection:undefined,tab:'workflow'},false,()=>{
-    setInspectorPane(undefined);requestFirstStep(value=>value+1);
+    setInspectorPane(undefined);
+    if(needsFirstStep)requestFirstStep(value=>value+1);
+    else reviewChanges();
    });
    return;
   }
@@ -527,7 +530,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const pausedOnce=trigger.data?.enabled===false&&onceAt!==undefined;
  const onceFired=pausedOnce&&!trigger.data?.nextFireAt&&Date.parse(trigger.data?.lastFiredAt??'')===onceAt;
  const onceExpired=pausedOnce&&onceAt<=trigger.dataUpdatedAt;
- const publishedIntake=current?.versionId&&(current.triggerId||draftTrigger.kind!=='manual')&&<Paper component="section" aria-label="Published trigger" variant="outlined" sx={{p:1.5}}>
+ const publishedIntake=current?.versionId&&<Paper component="section" aria-label="Published trigger" variant="outlined" sx={{p:1.5}}>
   {trigger.data?<Stack spacing={1}>
    <Typography fontWeight={600}>Published · {workflowTriggerSummary(trigger.data.sourceKind,trigger.data.sourceConfig)}</Typography>
    {onceFired||onceExpired?<Typography variant="body2" role="status">
@@ -594,7 +597,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  </WorkflowInspectorPage>;
  const runForm=<ConfirmDialog inWorkflowInspector open={runOpen} title={rerunVersion?'Run again with edited input':dirty&&current?.versionId?'Run Published Workflow':'Run once'} confirmLabel={runAccepted?'View Run':runUnconfirmed?'Retry Run Submission':rerunVersion?'Start new run':dirty&&current?.versionId?'Run Published Workflow':'Run once'} pendingLabel="Submitting…" pending={run.isPending} error={run.error?.message} confirmDisabled={!runAccepted&&!runUnconfirmed&&Boolean(runUnavailable||runInputError)} onCancel={()=>setRunOpen(false)} onConfirm={submitRun}>
    <Stack spacing={2} sx={{pt:1}}>
-    {dirty&&current?.versionId&&<Alert severity="info">Run uses published workflow · unpublished edits excluded</Alert>}
+    {dirty&&current?.versionId&&<Alert severity="info">Run uses published version {runUnconfirmed?run.variables?.expectedVersionId:current.versionId} · unpublished edits excluded</Alert>}
     {rerunVersion&&current?.versionId&&rerunVersion!==(runUnconfirmed?run.variables?.expectedVersionId:current.versionId)&&!runAccepted&&<Alert severity="info">
      The new run will use published version {runUnconfirmed?run.variables?.expectedVersionId:current.versionId}. The canceled run used {rerunVersion}.
     </Alert>}
@@ -619,7 +622,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
   <input ref={workflowImportInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(mobileNavOpen)closeMobileNavigation();void importFile(e.target.files?.[0]);e.target.value=''}}/>
   <Box component="a" href="#main-content" sx={{position:'absolute',left:8,top:-80,zIndex:1500,p:1,bgcolor:'background.paper','&:focus':{top:8}}}>Skip to main content</Box>
   <Box component="main" id="main-content" tabIndex={-1} sx={{position:'relative',minWidth:0,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden',...(dirty&&!route.global&&route.branchId===draft.branchId?{'&::after':{content:'""',position:'absolute',inset:0,border:'1px solid',borderColor:'warning.main',pointerEvents:'none',zIndex:1}}:{})}}>
-   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!openingWorkspace&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} dirty={dirty} runCounts={lifecycle.data?.runCounts} executionsUnavailable={Boolean(selectedBranch.error||lifecycle.error)} onRun={openRun} runButton={runButton} runDisabled={current?.enabled===false&&!runUnconfirmed||availability.isPending} runPending={run.isPending} availability={current&&<BranchAvailability branch={current} mutation={availability} disabled={availabilityLocked} onDisable={()=>setDisableId(current.id)}/>} onTab={setTab} discardDisabled={discardDisabled} onDiscard={requestDiscard} onRename={()=>current&&requestRename(current)} onHistory={()=>setHistoryBranch(draft.branchId)} onVariables={()=>{setTab('workflow');setInspectorPane('variables')}} onEditJson={()=>{setTab('workflow');setInspectorPane('json')}} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
+   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!openingWorkspace&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} dirty={dirty} runCounts={lifecycle.data?.runCounts} executionsUnavailable={Boolean(selectedBranch.error||lifecycle.error)} onRun={current&&(current.versionId||runUnconfirmed||!needsFirstStep||tab!=='workflow')?openRun:undefined} runButton={runButton} runLabel={current?.versionId||runUnconfirmed?'Run once':needsFirstStep?'Add your first step':'Publish to run'} runDisabled={runUnconfirmed?false:current?.versionId?Boolean(runUnavailable):!needsFirstStep&&saveDisabled} runPending={run.isPending} availability={current?.versionId?<BranchAvailability branch={current} mutation={availability} disabled={availabilityLocked} onDisable={()=>setDisableId(current.id)}/>:current&&<Typography variant="caption" color="text.secondary">Unpublished</Typography>} onTab={setTab} discardDisabled={discardDisabled} onDiscard={requestDiscard} onRename={()=>current&&requestRename(current)} onHistory={()=>setHistoryBranch(draft.branchId)} onVariables={()=>{setTab('workflow');setInspectorPane('variables')}} onEditJson={()=>{setTab('workflow');setInspectorPane('json')}} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
    {!route.global&&!home&&(openingWorkspace||failedOpening||!draft.branchId||route.branchId!==draft.branchId)&&<CompactWorkspaceHeader icon={<AccountTreeOutlinedIcon/>} title={failedOpening?'Workflow Unavailable':'Opening Workflow…'}/>}
    <input ref={packageUpdateInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(packageUpdateSelection.current===selection.current)void importFile(e.target.files?.[0],true);e.target.value=''}}/>
    <WorkspaceQueryErrors reportOnly={Boolean(route.global&&!preferences.data)} reads={[workspaceRead("workspace","Preferences",preferences),workspaceRead("workspace","Engines",engines),workspaceRead("branches","Workflows",branches),workspaceRead("branches","Organized Workflows",organized),workspaceRead(`branch:${draft.branchId}`,"Chats",contextList),workspaceRead(`branch:${draft.branchId}`,"Agents",agents),workspaceRead(`branch:${draft.branchId}`,"Workflow",selectedBranch),workspaceRead(`branch:${draft.branchId}`,"Trigger",trigger),workspaceRead(`branch:${draft.branchId}`,"Lifecycle",lifecycle),workspaceRead("branches","Unread Status",branchUnread),workspaceRead(`execution:${executionId}`,"Execution",detailPages),{...workspaceRead(`branch:${draft.branchId}`,"Published Variables",publishedVersion),active:tab==='settings'}]}/>

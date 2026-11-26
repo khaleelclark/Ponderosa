@@ -35,17 +35,33 @@ function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:Branc
  const choiceLabel=useId(),choices=gate.choices??[];
  const changeChoice=(value:string)=>{setChoice(value);setKey(createClientId())};
  const resolve=useMutation({mutationFn:(decision:BranchGateResolution['decision'])=>requestJson(`/api/branch-gates/${gate.id}/resolve`,{method:'POST',body:JSON.stringify({commandKey:key,expectedRevision:gate.revision,decision,...(decision==='approve'?(gate.choices?.length?{choice}:gate.editable?{output:text}:{}):{})} satisfies BranchGateResolution)}),onSuccess:onChanged});
- return <Paper variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={2}><Typography variant="caption" color="text.secondary">{label}{refreshing?' · Refreshing status':gate.openedAt?` · Waiting since ${new Date(gate.openedAt).toLocaleString()}`:''}</Typography><Typography variant="h6">{refreshing?'Refreshing Review…':gate.purpose==='recovery'?'A Failed Step Needs Your Decision':'Approval Requested'}</Typography><Typography>{gate.prompt}</Typography>{resolve.error&&<Alert severity="error">{/revision|stale|conflict/i.test(resolve.error.message)?'This decision changed while you were reviewing it. Refresh the execution and try again. ':''}{resolve.error.message}</Alert>}
-  {choices.length?<><Typography sx={{whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{gate.proposal}</Typography>
-   {choices.length===1?<Typography>Result · {choice}</Typography>:choices.length<=3?<FormControl disabled={disabled||resolve.isPending||resolve.isSuccess}>
-    <FormLabel id={choiceLabel}>Choose a result</FormLabel>
-    <RadioGroup row aria-labelledby={choiceLabel} value={choice} onChange={(_,value)=>changeChoice(value)}>
-     {choices.map(option=><FormControlLabel value={option} key={option} control={<Radio size="small"/>} label={option}/>)}
-    </RadioGroup>
-   </FormControl>:<TextField select label="Choose a result" disabled={disabled||resolve.isPending||resolve.isSuccess} value={choice} onChange={e=>changeChoice(e.target.value)}>{choices.map(option=><MenuItem value={option} key={option}>{option}</MenuItem>)}</TextField>}
-  </>:gate.editable&&gate.purpose==='approval'?<TextField label="Proposed Result" disabled={disabled||resolve.isPending||resolve.isSuccess} multiline minRows={4} value={text} onChange={e=>{setText(e.target.value);setKey(createClientId())}}/>:<Typography sx={{whiteSpace:'pre-wrap',maxHeight:260,overflow:'auto'}}>{gate.proposal}</Typography>}
-  <Stack direction="row" spacing={1}><Button variant="contained" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate(gate.purpose==='recovery'?'retry':'approve')}>{resolve.isPending?'Saving Decision…':gate.purpose==='recovery'?'Retry Step':text!==gate.proposal?'Approve Edited Text':'Approve'}</Button><Button color="error" disabled={disabled||resolve.isPending||resolve.isSuccess} onClick={()=>resolve.mutate('reject')}>Reject</Button></Stack>
- </Stack></Paper>;
+ const choicePending=disabled||resolve.isPending||resolve.isSuccess;
+ const editable=!choices.length&&gate.editable&&gate.purpose==='approval';
+ return <Paper component="section" aria-labelledby={choiceLabel+'-step'} variant="outlined" sx={{p:{xs:1.25,sm:2},borderColor:'warning.main',minWidth:0}}>
+  <Stack spacing={1}>
+   <Typography id={choiceLabel+'-step'} component="h2" fontWeight={650}>{label}</Typography>
+   {(refreshing||gate.purpose==='recovery')&&<Typography role="status" variant="body2">{refreshing?'Refreshing Review…':'A Failed Step Needs Your Decision'}</Typography>}
+   <Typography sx={{overflowWrap:'anywhere'}}>{gate.prompt}</Typography>
+   {choices.length===1?<Typography variant="body2">If approved · {choice}</Typography>:choices.length>1&&(
+    choices.length<=3?<FormControl disabled={choicePending}>
+     <FormLabel id={choiceLabel}>If approved</FormLabel>
+     <RadioGroup row aria-labelledby={choiceLabel} value={choice} onChange={(_,value)=>changeChoice(value)}>
+      {choices.map(option=><FormControlLabel value={option} key={option} control={<Radio size="small"/>} label={option}/>)}
+     </RadioGroup>
+    </FormControl>:<TextField select label="If approved" disabled={choicePending} value={choice} onChange={e=>changeChoice(e.target.value)}>{choices.map(option=><MenuItem value={option} key={option}>{option}</MenuItem>)}</TextField>
+   )}
+   {resolve.error&&<Alert severity="error">{/revision|stale|conflict/i.test(resolve.error.message)?'This decision changed while you were reviewing it. Refresh the execution and try again. ':''}{resolve.error.message}</Alert>}
+   <Stack direction="row" gap={1} flexWrap="wrap">
+    <Button variant="contained" disabled={choicePending} onClick={()=>resolve.mutate(gate.purpose==='recovery'?'retry':'approve')} sx={{minHeight:44}}>{resolve.isPending?'Saving Decision…':gate.purpose==='recovery'?'Retry Step':text!==gate.proposal?'Approve Edited Text':'Approve'}</Button>
+    <Button color="error" disabled={choicePending} onClick={()=>resolve.mutate('reject')} sx={{minHeight:44}}>Reject</Button>
+   </Stack>
+   {(editable||gate.proposal.trim())&&<Box component="details" sx={{minWidth:0,overflowWrap:'anywhere'}}>
+    <Typography component="summary" variant="body2" sx={{cursor:'pointer',minHeight:44,py:1.5}}>{editable?'If approved · Edit proposed result':choices.length||gate.purpose==='recovery'?'Supporting evidence':'If approved'}</Typography>
+    {editable?<TextField fullWidth label="Proposed Result" disabled={choicePending} multiline minRows={3} maxRows={8} value={text} onChange={e=>{setText(e.target.value);setKey(createClientId())}}/>:
+     <EvidenceText text={gate.proposal} markdownFallback/>}
+   </Box>}
+  </Stack>
+ </Paper>;
 }
 type SavedResult = {available:false}|{available:true;sourceRunId:string;text:string;outputHash:string};
 function SavedResultReview({execution,stepExecutionId,disabled,onChanged}:{execution:BranchExecutionDto;stepExecutionId:string;disabled:boolean;onChanged():void}):JSX.Element|null {
@@ -202,18 +218,23 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  // the current Run revision. React Query retains coherent pages during refetch.
  const actionItems=currentActions??currentExecutionActions({id:execution.id,revision:actions.data?.pages[0]?.revision??execution.revision},actions.data?.pages);
  const actionsCurrent=!execution.runtimeData&&!execution.stopping&&authorityFresh&&Boolean(currentActions)&&!actions.error;
+ const resolvedGateIds=new Set(authorityFresh?detail.gates.filter(gate=>gate.state==='resolved').map(gate=>gate.id):[]);
+ const waitingGates=actionItems?.filter(item=>item.kind==='gate'&&!resolvedGateIds.has(item.gate.id))??[];
+ const approvalSteps=new Set(waitingGates.map(({step})=>step.id));
+ const approvalHeadline=ongoing&&!execution.stopping&&waitingGates.length>0&&
+  (op?.state==='waiting_human'?op.counts.waitingHuman<=waitingGates.length:!op&&execution.state==='waiting'&&Boolean(detail.waits?.length)&&detail.waits!.every(wait=>wait.kind==='approval'&&wait.stepExecutionId&&approvalSteps.has(wait.stepExecutionId)));
+ const otherReviews=(op?.counts.waitingHuman??0)-waitingGates.length;
  const progress=op?[
   op.counts.mapItems&&`${op.counts.mapSettled} of ${op.counts.mapItems} For Each items settled`,
   op.counts.completed&&`${op.counts.completed} ${op.counts.completed===1?'step':'steps'} completed`,
   op.counts.running&&`${op.counts.running} running`,
   op.counts.retrying&&`${op.counts.retrying} retrying`,
-  actionsCurrent&&op.counts.waitingHuman&&`${op.counts.waitingHuman} waiting for review`,
+  actionsCurrent&&otherReviews>0&&`${otherReviews} waiting for review`,
  ].filter(Boolean):[];
  useEffect(()=>{if(actions.data?.pages[0]&&actions.data.pages[0].revision!==execution.revision)void client.invalidateQueries({queryKey:actionsKey,exact:true})},[client,execution.id,execution.revision]);
  const pendingDecisions=Array.from(new Map<string,DecisionPrompt>([...retainedDecisionForms,...(actionItems?.filter(item=>item.kind==='decision').map(item=>[item.decision.id,item.decision] as const)??[])]).values());
  const guidanceReviews=actionItems?.filter(item=>item.kind==='guidance_review')??[];
  const scheduleUpdates=actionItems?.filter(item=>item.kind==='schedule_update')??[];
- const waitingGates=actionItems?.filter(item=>item.kind==='gate')??[];
  const stopping=execution.stopping;
  const manualWait=op&&['provider_attention','waiting_human','needs_reconciliation'].includes(op.state)
   || detail.waits?.some(wait=>['approval','reconciliation','disabled_branch'].includes(wait.kind));
@@ -307,6 +328,8 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   ? execution.waitReason || (execution.state==='failed'&&!detail.executionOutputTechnical?execution.output:undefined)
     || attemptReason(detail.attempts.find(attempt=>attempt.state===execution.state&&attempt.error))
   :undefined;
+ const recordedApproval=detail.gates.findLast(gate=>gate.purpose==='approval'&&gate.state==='resolved'&&gate.resolution);
+ const recordedApprovalStep=recordedApproval&&detail.steps.find(step=>step.id===recordedApproval.stepExecutionId);
  const selectedResource=summaryStep&&detail.resources?.find(resource=>resource.stepExecutionId===summaryStep.id);
  const technicalOutput=Boolean(detail.executionOutputTechnical||detail.steps.some(step=>step.resultOutputTechnical||step.publishedResult)||detail.attempts.some(attempt=>attempt.scriptEvidence));
  const primaryBlock=agentWaits.find(wait=>wait.state==='context_blocked'||wait.state==='context_uncertain');
@@ -315,7 +338,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const leadingWait=primaryBlock&&waits.find(wait=>wait.requestId===primaryBlock.requestId);
  const waitRows=(leadingWait?[leadingWait,...waits.filter(wait=>wait!==leadingWait)]:waits).map(wait=>{
   const operational=wait.requestId?agentWaits.find(item=>item.requestId===wait.requestId):undefined;
-  if(operational?.state==='agent_running')return null;
+  if(operational?.state==='agent_running'||wait.kind==='approval'&&wait.stepExecutionId&&approvalSteps.has(wait.stepExecutionId))return null;
   const manual=operational&&['provider_attention','waiting_human','needs_reconciliation'].includes(operational.state)
    || ['approval','reconciliation','disabled_branch'].includes(wait.kind);
   const held=operational?.state==='context_blocked'||operational?.state==='context_uncertain';
@@ -342,12 +365,14 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    ...(summaryStep?{[sideBySide]:{gridTemplateColumns:'minmax(0,1fr) minmax(16rem,44%)'}}:{})}}>
  <Stack spacing={2} sx={{minWidth:0,...(summaryStep?{display:'none',[sideBySide]:{display:'flex'}}:{})}}>
   {execution.runtimeData&&<BranchRuntimeOwnerReadback key={`${execution.id}:${execution.runtimeData.manifestSha256}`} planId={execution.runtimeData.planId} branchId={execution.branchId} executionId={execution.id} sourceExecutionId={execution.runtimeData.sourceExecutionId} manifestSha256={execution.runtimeData.manifestSha256}/>}
+  {(waitingGates.length>1||Boolean(gateSearch))&&<TextField size="small" label="Find Waiting Decision" value={gateSearch} onChange={event=>setGateSearch(event.target.value)} sx={{maxWidth:340}}/>}
+  {waitingGates.filter(item=>!gateSearch.trim()||(item.gate.prompt+' '+stepLabel(item.step.stepId)).toLowerCase().includes(gateSearch.trim().toLowerCase())).map(({gate,step})=><Gate key={gate.id+':'+gate.revision} gate={gate} disabled={!actionsCurrent} refreshing={!actionsCurrent} label={stepLabel(step.stepId)} onChanged={refresh}/>)}
   <Stack spacing={1}>
    <Typography variant="body2" color="text.secondary">{new Date(execution.admittedAt??execution.createdAt).toLocaleString()} · {execution.runtimeData?'Imported held data':execution.admissionSource==='automatic'?'Triggered':execution.admissionSource==='call'?'Called by another workflow':'Manual'}</Typography>
    <Stack direction="row" gap={1} alignItems="center" justifyContent="space-between" flexWrap="wrap">
     <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap" role="status">
-     {!primaryBlock&&<SemanticStatus {...headline}/>}
-     {!primaryBlock&&explanation&&explanation!==headline.label&&<Typography variant="body2" color="text.secondary">{explanation}</Typography>}
+     {!primaryBlock&&!approvalHeadline&&<SemanticStatus {...headline}/>}
+     {!primaryBlock&&!approvalHeadline&&explanation&&explanation!==headline.label&&<Typography variant="body2" color="text.secondary">{explanation}</Typography>}
     </Stack>
     {canManageRun&&<>
      <Button size="small" aria-haspopup="menu" aria-expanded={Boolean(actionsAnchor)} onClick={event=>setActionsAnchor(event.currentTarget)}>Run actions</Button>
@@ -360,11 +385,14 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
     {execution.state==='canceled'&&onRerun&&!execution.runtimeData&&<Button size="small" disabled={rerunDisabled||!authorityFresh||Boolean(detail.executionInputTruncated&&!fullInput.data)}
      onClick={()=>onRerun(execution,fullInput.data?.input??execution.input)}>Run again with edited input</Button>}
    </Stack>
+   {recordedApproval?.resolution&&<Typography variant="body2">
+    {recordedApprovalStep&&`${stepLabel(recordedApprovalStep.stepId)} · `}{recordedApproval.resolution.decision==='reject'?'Rejected':recordedApproval.resolution.choice?`Approved · ${recordedApproval.resolution.choice}`:'Approved'}
+   </Typography>}
    {recordedReason&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{notificationPreviewText(recordedReason)}</Typography>}
    {execution.state==='canceled'&&detail.executionInputTruncated&&fullInput.error&&<Alert severity="warning" action={<Button onClick={()=>void fullInput.refetch()}>Retry</Button>}>Previous input could not be loaded.</Alert>}
    {cancel.isPending&&<Typography role="status">Requesting stop…</Typography>}
    {stopping?<Alert severity={stopping.blocked?'warning':'info'}>{stopping.blocked??`${stopping.outcome==='skipped'?'Skip':stopping.outcome==='merged'?'Merge':'Stop'} accepted. Waiting for this Run's provider work to finish stopping; it will show as ${stopping.outcome==='skipped'?'Skipped':stopping.outcome==='merged'?'Merged':'Canceled'} automatically.`}</Alert>
-    :waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:ongoing&&execution.waitReason&&headline.status!=='running'&&<Alert severity="info">{execution.waitReason}</Alert>}
+    :waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:ongoing&&!approvalHeadline&&execution.waitReason&&headline.status!=='running'&&<Alert severity="info">{execution.waitReason}</Alert>}
    {!execution.runtimeData&&op&&<>{progress.length>0&&<Typography variant="body2" color="text.secondary">{progress.join(' · ')}</Typography>}{op.additionalAgentWaits>0&&<Typography variant="caption">{op.additionalAgentWaits} more Agent waits are recorded in the run evidence.</Typography>}{op.state==='provider_attention'&&!waits.some(wait=>agentWaits.some(agent=>agent.requestId===wait.requestId&&agent.state==='provider_attention'))&&<Button sx={{alignSelf:'start'}} href={providerSettings}>Open Provider Settings</Button>}</>}
    {operations.error&&<Alert severity="warning" action={<Button onClick={()=>void operations.refetch()}>Retry Status</Button>}>Run status could not refresh. {operations.error.message}</Alert>}
    {cancel.error&&<Alert severity="error">{cancel.error.message}</Alert>}
@@ -381,8 +409,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   {guidanceReviews.map(update=><Paper key={update.attemptId+':'+update.injectionId} variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={1}><Typography fontWeight={650}>Guidance Delivery Needs Review</Typography><Typography>Inspect Agent work and external effects; delivery is unconfirmed and no separate Agent result is expected.</Typography><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Attempt {update.attemptId} · injection {update.injectionId}</Typography><Button sx={{alignSelf:'start'}} disabled={!actionsCurrent} onClick={()=>open({action:'resolve_guidance',attemptId:update.attemptId,injectionId:update.injectionId})}>Review Guidance Delivery</Button></Stack></Paper>)}
   {scheduleUpdates.map(update=><Paper key={update.occurrenceId+':'+update.injectionId} variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={1}><Typography fontWeight={650}>Scheduled Update Needs Reconciliation</Typography><Typography>Scheduled delivery uncertain · inspect Agent work + external effects before reconciliation</Typography><Typography variant="caption" color="text.secondary">{update.eventCount} scheduled event{update.eventCount===1?'':'s'} · Latest: {new Date(update.lastScheduledAt).toLocaleString()}</Typography><Button sx={{alignSelf:'start'}} disabled={!actionsCurrent} onClick={()=>open({action:'resolve_schedule_update',occurrenceId:update.occurrenceId})}>Reconcile Scheduled Update</Button></Stack></Paper>)}
   {!execution.runtimeData&&pendingDecisions.map(decision=><DecisionCard key={decision.id} decision={decision} onRetentionChange={retainDecisionForm} onResolved={()=>{retainDecisionForm(decision,false);refresh()}}/>)}
-  {(waitingGates.length>1||Boolean(gateSearch))&&<TextField size="small" label="Find Waiting Decision" value={gateSearch} onChange={event=>setGateSearch(event.target.value)} sx={{maxWidth:340}}/>}
-  {waitingGates.filter(item=>!gateSearch.trim()||((item.gate.prompt+' '+(definition?.steps.find(node=>node.id===item.step.stepId)?.label??item.step.stepId)).toLowerCase().includes(gateSearch.trim().toLowerCase()))).map(({gate,step})=><Gate key={gate.id+':'+gate.revision} gate={gate} disabled={!actionsCurrent} refreshing={!actionsCurrent} label={definition?.steps.find(node=>node.id===step.stepId)?.label??step.stepId} onChanged={refresh}/>)}
+
   {attentionAttempts.map(({attempt,step,current})=>{const node=definition?.steps.find(node=>node.id===step.stepId),unknown=attempt.state==='outcome_unknown'||attempt.requestOutcomeUnknown,snapshotRetry=attempt.state==='prepared'&&!unknown&&(attempt as typeof attempt&{snapshotRetryAvailable?:boolean}).snapshotRetryAvailable===true;return <Paper key={attempt.id} variant="outlined" sx={{p:2,borderColor:unknown?'warning.main':'error.main'}}><Stack spacing={1}><Typography fontWeight={650}>{node?nodeName(node):step.stepId} · {unknown?'Outcome Needs Reconciliation':snapshotRetry?'Copy Preparation Needs Retry':current?'Step Failed':'Earlier Step Failure'}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{attemptReason(attempt)||(step.resultOutputTechnical?undefined:step.result?.output)||(unknown?'The operation may already have changed files or external systems. Inspect and reconcile its effects before retrying.':'The Step did not complete successfully.')}</Typography>{attempt.retryBlockedReason&&<Typography variant="body2" color="text.secondary">{attempt.retryBlockedReason}</Typography>}{attempt.childExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:attempt.childExecutionId})}>Open {attempt.calledBranch?.name??'Called Workflow'} Run</Button>}<Stack direction="row" gap={1} flexWrap="wrap"><Button onClick={event=>openStep(step,event.currentTarget)}>Inspect Details</Button>{current&&!attempt.retryBlockedReason&&(attempt.state!=='prepared'||snapshotRetry)&&<><Button disabled={!actionsCurrent} onClick={()=>open({action:'retry',attemptId:attempt.id,unknown,snapshotRetry})}>{snapshotRetry?'Retry Preparing Copy':unknown?'Retry Anyway':'Retry Step'}</Button>{node?.kind==='script'&&attempt.state==='outcome_unknown'&&<Button disabled={!actionsCurrent} onClick={()=>open({action:'resolve_script',attemptId:attempt.id,unknown:true})}>Mark Observed Result</Button>}</>}</Stack></Stack></Paper>})}
   {detail.resources?.filter(resource=>resource.error).map(resource=><Alert key={resource.stepExecutionId} id={`branch-resource-${resource.stepExecutionId}`} tabIndex={-1} severity="warning"
    action={<BranchResourceReview branchId={execution.branchId} executionId={execution.id} stepId={resource.stepExecutionId} enabled={authorityFresh&&!execution.runtimeData} onChanged={refresh}/>}>

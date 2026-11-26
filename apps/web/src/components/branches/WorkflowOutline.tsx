@@ -1,5 +1,6 @@
 import {Fragment,useLayoutEffect,useMemo,useRef,useState,type ReactNode,type RefObject} from 'react';
 import {Box,Button,IconButton,Menu,MenuItem,Stack,Tooltip,Typography} from '@mui/material';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import AddIcon from '@mui/icons-material/Add';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import UndoIcon from '@mui/icons-material/Undo';
@@ -57,17 +58,23 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
    const {path,items}=item,key=`path:${path.key}`,first=items[0],indent=depth<4?pathIndent:0;
    if(first?.kind==='link')return link(first.id,`${path.label} → ${first.label}`,key,indent);
    if(!first||first.kind==='missing')return <Typography key={key} variant="body2" color={first?'error.main':'text.secondary'} sx={{ml:indent,py:.25}}>{path.label} → {first?'Choose a destination':'End this path'}</Typography>;
-   return <Box component="details" key={key} open={!path.secondary} sx={{ml:indent,minWidth:0,'&[open] > summary .outline-destination':{display:'none'}}}>
+   return <Box component="details" key={key} open={!path.secondary} sx={{ml:indent,minWidth:0,'&[open] > summary .outline-destination':{display:'none'},'&[open] > summary > svg':{transform:'rotate(90deg)'}}}>
     <Box component="summary" onClick={event=>{
      const summary=event.currentTarget,details=summary.parentElement as HTMLDetailsElement,region=scroll.current;
      if(!region)return;
      event.preventDefault();
      summary.focus({preventScroll:true});
+     const top=summary.getBoundingClientRect().top;
      details.open=!details.open;
+     region.scrollTop+=summary.getBoundingClientRect().top-top;
      showInViewport(summary,region);
      scrollPosition.current=region.scrollTop;
-    }} sx={{py:1.25,minHeight:44,cursor:'pointer',fontSize:'0.875rem',fontWeight:600,overflowWrap:'anywhere'}}>
-     <span>{path.label}</span>{first.kind==='step'&&<Box component="span" className="outline-destination" sx={{fontWeight:400,color:'text.secondary'}}> → {nodeName(first.node)}</Box>}
+    }} sx={{display:'flex',alignItems:'flex-start',gap:.5,px:.5,py:1.5,minHeight:44,cursor:'pointer',borderRadius:1,bgcolor:'action.hover',
+     '&::-webkit-details-marker':{display:'none'},'&:hover':{bgcolor:'action.selected'},'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:-2}}}>
+     <ChevronRightIcon fontSize="small" sx={{flexShrink:0,color:'text.secondary'}}/>
+     <Typography component="span" variant="body2" sx={{minWidth:0,overflowWrap:'anywhere'}}>
+      <Box component="span" fontWeight={600}>{path.label}</Box>{first.kind==='step'&&<Box component="span" className="outline-destination" sx={{color:'text.secondary'}}> → {nodeName(first.node)}</Box>}
+     </Typography>
     </Box>
     <Stack spacing={.5} sx={{ml:.5,pl:depth<4?1.25:.5,pb:.5,borderLeft:1,borderColor:'divider'}}>{render(items,depth+1)}</Stack>
    </Box>;

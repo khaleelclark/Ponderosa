@@ -15,9 +15,9 @@ import type {BranchRunCountsDto} from '@ponderosa/core';
 import {branchRunStatus} from './branchRunStatus';
 
 /** Branch actions adapt the shared workspace chrome; publication stays with its owner. */
-export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runButton,runPending=false,runDisabled=false,availability,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onVariables,onDiscard,discardDisabled=true}:{
+export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,executionsUnavailable=false,onRun,runButton,runLabel='Run once',runPending=false,runDisabled=false,availability,onTab,onExport,onUpdate,onRename,onHistory,onEditJson,onVariables,onDiscard,discardDisabled=true}:{
  name:string;tab:BranchTab;published:boolean;dirty:boolean;runCounts?:BranchRunCountsDto;executionsUnavailable?:boolean;
- onRun?():void;runButton?:RefObject<HTMLButtonElement>;runPending?:boolean;runDisabled?:boolean;availability?:ReactNode;
+ onRun?():void;runButton?:RefObject<HTMLButtonElement>;runLabel?:string;runPending?:boolean;runDisabled?:boolean;availability?:ReactNode;
  onTab(tab:BranchTab):void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onHistory?():void;onEditJson?():void;onVariables?():void;onDiscard?():void;discardDisabled?:boolean;
 }):JSX.Element{
  const activity=branchRunStatus(runCounts,executionsUnavailable);
@@ -27,8 +27,8 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,execut
  </Box></Tooltip>;
  const tabItems={workflow:{label:'Workflow',icon:<AccountTreeOutlined/>},executions:{label:'Executions',icon:executionIcon,description:activity.label,disabled:!published},chats:{label:'Chats',icon:<ChatBubbleOutline/>},settings:{label:'Settings',icon:<SettingsOutlined/>}};
  const tabs={idPrefix:'branch',value:tab,label:'Workflow Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
- const runAction=onRun&&<Button ref={runButton} variant="outlined" disabled={runPending||runDisabled} aria-describedby={runDisabled?'branch-availability-feedback':undefined}
-  onClick={onRun} startIcon={<PlayArrowOutlined/>} sx={{minHeight:44,whiteSpace:'nowrap',px:{xs:1,sm:1.5},'& .MuiButton-startIcon':{display:{xs:'none',sm:'inline-flex'}}}}>{runPending?'Submitting…':'Run once'}</Button>;
+ const runAction=onRun&&<Button ref={runButton} variant="outlined" disabled={runPending||runDisabled} aria-describedby={runDisabled&&runLabel==='Run once'?'branch-availability-feedback':undefined}
+  onClick={onRun} startIcon={runLabel==='Run once'?<PlayArrowOutlined/>:undefined} sx={{minHeight:44,whiteSpace:'nowrap',px:{xs:1,sm:1.5},'& .MuiButton-startIcon':{display:{xs:'none',sm:'inline-flex'}}}}>{runPending?'Submitting…':runLabel}</Button>;
  return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile collapsedIconTabs retainCollapsedActions statusBeforePrimaryActions
   titleControl={<Stack sx={{minWidth:0}}><Typography component="h1" variant="body2" fontWeight={800} noWrap title={name}>{name}</Typography><Stack direction="row" useFlexGap flexWrap="wrap" alignItems="flex-start" gap={.5}>
    {availability}{dirty&&<Tooltip describeChild title="Unpublished Changes"><Typography component="span" tabIndex={0} aria-label="Editing" variant="caption" color="warning.main" sx={{alignSelf:'center'}}>Editing</Typography></Tooltip>}

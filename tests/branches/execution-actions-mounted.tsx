@@ -47,8 +47,8 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
  const gateInput=()=>host.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
  const refresh=()=>client.invalidateQueries({queryKey:actionsKey,exact:true});
  try{
-  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled&&host.textContent?.includes('1 waiting for review')),'Initial actions did not load');
-  assert(host.textContent?.includes('Approval Requested')&&host.textContent.includes('1 waiting for review'),'Fresh Gate shows its actual pending state');
+  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled),'Initial actions did not load');
+  assert(button('Approve')&&!host.textContent?.includes('1 waiting for review'),'Fresh Gate has one approval prompt');
   assert(!/0 (steps? completed|running|retrying)/i.test(host.textContent??''),'Run progress shows only nonzero counts');
   const proposal=gateInput();input(proposal,'Gate draft retained Ω');await until(()=>Boolean(button('Approve Edited Text')),'Gate edit not applied');
   button('Answer').click();await until(()=>Boolean(document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])')),'Decision dialog missing');
@@ -61,13 +61,13 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(proposal===gateInput()&&proposal.value==='Gate draft retained Ω','Gate draft node and value retained');
   assert(answer.isConnected&&answer.value==='Separate Decision draft retained 🙂','Open shared Decision draft retained');
   assert(button('Approve Edited Text').disabled&&button('Retry Step').disabled,'Known stale Branch actions remain disabled');
-  assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Stale Gate stays mounted with a neutral heading');
+  assert(host.textContent?.includes('Refreshing Review…'),'Stale Gate stays mounted with a neutral heading');
   assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
   assert(button('Refresh Run'),'Manual refresh remains available during synchronization');
   mode='ok';detail={...detail,execution:{...detail.execution,revision:2}};render();
   await until(()=>Boolean(!button('Retry Step').disabled&&!host.textContent?.includes('Refreshing Run actions')),'Matching revisions did not converge');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&answer.value==='Separate Decision draft retained 🙂','Convergence cannot replace dirty forms');
-  assert(host.textContent?.includes('Approval Requested')&&host.textContent.includes('1 waiting for review'),'Fresh convergence restores the actual approval heading and count');
+  assert(!button('Approve Edited Text').disabled&&!host.textContent?.includes('Refreshing Review…'),'Fresh convergence restores the approval action');
   for(const failure of ['503','wrong-id','malformed'] as const){
    mode=failure;await refresh();await until(()=>Boolean(host.textContent?.includes('Decisions and failures could not refresh')),'Real '+failure+' failure must remain visible');
    assert(button('Refresh Run'),'Real failure keeps manual recovery');
@@ -85,10 +85,10 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   await client.invalidateQueries({queryKey:['branch-execution-operations','race-run'],exact:true});
   await until(()=>Boolean(host.textContent?.includes('Completed')),'Terminal operations header did not arrive');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&proposal.disabled,'Terminal refresh retains the same disabled dirty Gate');
-  assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Terminal header never coexists with a stale approval request');
+  assert(host.textContent?.includes('Refreshing Review…'),'Terminal header never coexists with a stale approval request');
   assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral refresh cue');
   mode='ok';release!();await until(()=>!host.textContent?.includes('Refreshing Run actions'),'Terminal actions did not converge');
-  assert(!gateInput()&&!host.textContent?.includes('Approval Requested'),'Only the fresh empty action page removes the settled Gate');
+  assert(!gateInput()&&!button('Approve Edited Text'),'Only the fresh empty action page removes the settled Gate');
   assert(posts.length===0,'Read synchronization and recovery cannot replay any POST');
   assert(gets.filter(url=>url.endsWith('/actions')).length>=6,'Exercise actual action reads across success, delay and real failures');
  }finally{

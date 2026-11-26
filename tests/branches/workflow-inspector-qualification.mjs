@@ -36,10 +36,18 @@ try{
    const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
    const activate=control=>mobile?control.tap():control.click();
    const live=inspector.getByRole('region',{name:'Published trigger',exact:true});
+   const directoryStatus=page.getByRole('link',{name:'Open Workflow '+name,exact:true}).locator('..').getByRole('img',{name:/Workflow Runs/});
+   async function checkDirectory(label){
+    const nav=page.getByRole('button',{name:'Open Workspace Navigation',exact:true});
+    if(mobile)await activate(nav);
+    await directoryStatus.getByText(label).waitFor();
+    if(mobile)await page.keyboard.press('Escape');
+   }
    const busy=inspector.getByRole('radiogroup',{name:'When already running',exact:true});
    await page.goto(url);
    await start.waitFor();
    assert.equal(await availability.isChecked(),true);
+   await checkDirectory(/^Next /);
    await start.click();
    await inspector.getByText('Published · Every 10 minutes',{exact:true}).waitFor();
    await live.getByText('Automatic runs on',{exact:true}).waitFor();
@@ -85,6 +93,9 @@ try{
    await step.click();
    await inspector.getByRole('textbox',{name:'Name',exact:true}).fill('Review edited request');
    await back.click();
+   await activate(run);
+   await inspector.getByText('Run uses published version '+initial.versionId+' · unpublished edits excluded',{exact:true}).waitFor();
+   await activate(back);
    const reviewButton=page.getByRole('button',{name:'Review changes',exact:true});
    await page.route('**/api/branches/preview',route=>route.fulfill({status:400,json:{error:'Fixture review validation failed'}}),{times:1});
    await reviewButton.click();
@@ -124,6 +135,8 @@ try{
    await activate(live.getByRole('button',{name:'Pause schedule',exact:true}));
    await live.getByText('Automatic runs paused',{exact:true}).waitFor();
    await back.click();
+   await checkDirectory('Schedule paused');
+   const beforeManual=f.ok(await f.api('GET',path+'/trigger'));
    assert.equal(await run.isEnabled(),true);
    await run.click();
    await inspector.getByRole('textbox',{name:'Run Input'}).fill('Run while paused');
@@ -136,6 +149,7 @@ try{
    const execution=async()=>f.ok(await f.api('GET',`/api/branch-executions/${runId}`)).execution;
    assert.notEqual((await execution()).versionId,initial.versionId);
    assert.equal((await execution()).input,'Run while paused');
+   assert.deepEqual(f.ok(await f.api('GET',path+'/trigger')),beforeManual,'Run once leaves the paused schedule intact');
 
    let completeFailure,fail=true;
    const failedAvailability=new Promise(resolve=>{completeFailure=resolve});
@@ -159,6 +173,7 @@ try{
    await page.getByText('Enable to run once.',{exact:true}).waitFor();
    assert.equal(await availability.isChecked(),false);
    assert.equal(await run.isDisabled(),true);
+   await checkDirectory('Disabled');
    assert.equal((await execution()).state,'waiting');
    assert.equal(f.ok(await f.api('GET',path+'/trigger')).enabled,false);
    await availability.click();

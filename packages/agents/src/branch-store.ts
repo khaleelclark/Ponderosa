@@ -461,9 +461,9 @@ export class BranchStore {
     })();
   }
   getBranch(id: string): BranchDto | undefined {
-    const r = this.row('SELECT b.*,t.enabled trigger_enabled FROM branches b LEFT JOIN trigger_definitions t ON t.id=b.trigger_id WHERE b.id=?', id);
+    const r = this.row('SELECT b.*,t.enabled trigger_enabled,t.source_kind trigger_kind,t.next_fire_at FROM branches b LEFT JOIN trigger_definitions t ON t.id=b.trigger_id WHERE b.id=?', id);
     return r && { id: r.id, chatId: r.chat_id, enabled: Boolean(r.enabled), name: r.name, versionId: r.active_version_id, bindingRevisionId: r.binding_revision_id,
-      ...(r.trigger_id ? { triggerId: r.trigger_id, triggerEnabled: Boolean(r.trigger_enabled) } : {}), createdAt: r.created_at };
+      ...(r.trigger_id ? { triggerId: r.trigger_id, triggerEnabled: Boolean(r.trigger_enabled), triggerKind:r.trigger_kind??undefined, nextFireAt:r.next_fire_at??undefined } : {}), createdAt: r.created_at };
   }
   version(branchId: string, versionId: string): BranchVersionDto | undefined {
     const row = this.row("SELECT * FROM branch_versions WHERE branch_id = ? AND id = ?", branchId, versionId);
@@ -497,12 +497,12 @@ export class BranchStore {
     ), active AS MATERIALIZED (
       SELECT branch_id,COUNT(*) n FROM branch_executions WHERE state IN ('queued','running','waiting') GROUP BY branch_id
     )
-      SELECT page.*,t.enabled trigger_enabled,COALESCE(active.n,0) active_executions
+      SELECT page.*,t.enabled trigger_enabled,t.source_kind trigger_kind,t.next_fire_at,COALESCE(active.n,0) active_executions
       FROM page LEFT JOIN trigger_definitions t ON t.id=page.trigger_id LEFT JOIN active ON active.branch_id=page.id
       ORDER BY page.navigation_rank`,options.recency??'[]',JSON.stringify(sort==='custom'?options.order??[]:[]),sort,sort,sort,sort,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]',beforeId??null,options.completeOrganized&&options.ids?-1:options.limit??100);
     const runCounts=readBranchRunCounts(this.sqlite,rows.map(row=>row.id));
     return rows.map(r=>({runCounts:runCounts.get(r.id)!,id:r.id,chatId:r.chat_id,enabled:Boolean(r.enabled),name:r.name,versionId:r.active_version_id,bindingRevisionId:r.binding_revision_id,
-      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled)}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
+      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled),triggerKind:r.trigger_kind??undefined,nextFireAt:r.next_fire_at??undefined}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
   }
   preview(input: DeployBranchRequest): BranchDeploymentPreviewDto {
     const definition=validateBranchDefinition(input.definition),bindings=validateBranchBindings(input.bindings,definition);if(input.chatId)this.chat(input.chatId);

@@ -114,7 +114,7 @@ export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */
   lastUsedAt?: string;
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
- triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
+ triggerId?: string; triggerEnabled?: boolean; triggerKind?: TriggerSourceKind; nextFireAt?: string; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
 }
 export interface BranchCheckpointInvocationDto {
   id:string; mode:BranchCheckpointMode; state:'active'|'interrupting'|'interrupted'|'terminal';
