@@ -219,7 +219,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const actionItems=currentActions??currentExecutionActions({id:execution.id,revision:actions.data?.pages[0]?.revision??execution.revision},actions.data?.pages);
  const actionsCurrent=!execution.runtimeData&&!execution.stopping&&authorityFresh&&Boolean(currentActions)&&!actions.error;
  const resolvedGateIds=new Set(authorityFresh?detail.gates.filter(gate=>gate.state==='resolved').map(gate=>gate.id):[]);
- const waitingGates=actionItems?.filter(item=>item.kind==='gate'&&!resolvedGateIds.has(item.gate.id))??[];
+ const waitingGates=actionItems?.filter(item=>item.kind==='gate').filter(item=>!resolvedGateIds.has(item.gate.id))??[];
  const approvalSteps=new Set(waitingGates.map(({step})=>step.id));
  const approvalHeadline=ongoing&&!execution.stopping&&waitingGates.length>0&&
   (op?.state==='waiting_human'?op.counts.waitingHuman<=waitingGates.length:!op&&execution.state==='waiting'&&Boolean(detail.waits?.length)&&detail.waits!.every(wait=>wait.kind==='approval'&&wait.stepExecutionId&&approvalSteps.has(wait.stepExecutionId)));
