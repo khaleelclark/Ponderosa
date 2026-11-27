@@ -15,5 +15,12 @@ test('overlay exit restores a usable trigger, otherwise visible navigation only 
   restoreOverlayFocus(undefined,'test-navigation');frames.shift()();
   assert.deepEqual(calls,['trigger','navigation','navigation','navigation','navigation']);
   globalThis.document.querySelectorAll=()=>[hidden,invisible];restoreOverlayFocus(undefined,'test-navigation');frames.shift()();assert.equal(calls.length,5);
+  const replacement=element('replacement');
+  globalThis.document.querySelectorAll=selector=>selector==='test-replacement'?[hidden,replacement]:[fallback];
+  restoreOverlayFocus(undefined,['test-replacement','test-navigation']);frames.shift()();
+  assert.equal(calls.at(-1),'replacement');
+  globalThis.document.querySelectorAll=selector=>selector==='test-replacement'?[hidden,invisible]:[fallback];
+  restoreOverlayFocus(undefined,['test-replacement','test-navigation']);frames.shift()();
+  assert.equal(calls.at(-1),'navigation');
  }finally{globalThis.window=priorWindow;globalThis.document=priorDocument;}
 });

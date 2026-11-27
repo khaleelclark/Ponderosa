@@ -32,7 +32,8 @@ export function SidebarResourceRow({ id, href, label, title, detail, subtitle, i
       </ListItemButton>
     </Tooltip>
     {status ? <Box sx={{ display: "flex", alignItems: "center", gap: .5, flexShrink: 0, mx: .5 }}>{status}</Box> : null}
-    <IconButton className={starred || selected ? undefined : "sidebar-secondary"} size="small" aria-label={`${starred ? "Unstar" : "Star"} ${title}`} onClick={onStar} sx={control}>
+    <IconButton className={starred || selected ? undefined : "sidebar-secondary"} size="small"
+      data-resource-star-trigger={onOpenMenu ? id : undefined} aria-label={`${starred ? "Unstar" : "Star"} ${title}`} onClick={onStar} sx={control}>
       {starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
     </IconButton>
     {onOpenMenu && <IconButton size="small" data-resource-menu-trigger={id} aria-label={`Actions for ${title}`} aria-haspopup="menu"

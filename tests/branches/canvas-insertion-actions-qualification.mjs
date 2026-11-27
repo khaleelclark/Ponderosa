@@ -204,6 +204,7 @@ try{
     bindings:{agents:{},directories:{workspace:f.root}},
    }));
    const unpublished=await create(`Unpublished ${size}`);
+   if(mobile)await page.setViewportSize({width:390,height:844});
    await page.reload();
    await settled();
    const nav=page.getByRole('complementary',{name:'Workflows Navigation'});
@@ -236,6 +237,37 @@ try{
    await activate(choice(menu,'Unstar'));
    await button('Star '+other.name,nav).waitFor();
    await focus(overflow);
+
+   const starred=button('Starred',nav);
+   const inlineStar=button('Star '+other.name,nav);
+   const inlineUnstar=button('Unstar '+other.name,nav);
+   await activate(button('Star '+unpublished.name,nav));
+   await starred.waitFor();
+   for(const width of mobile?[390,320]:[1440]){
+    if(width===320)await page.setViewportSize({width,height:640});
+    await activate(inlineStar);
+    await inlineUnstar.press('ContextMenu');
+    await activate(choice(menu,'Unstar'));
+    await focus(inlineStar);
+    assert.equal(owner(),branch.id);
+
+    await activate(starred);
+    assert.equal(await starred.getAttribute('aria-expanded'),'false');
+    await activate(overflow);
+    await activate(choice(menu,'Star'));
+    await link.waitFor({state:'detached'});
+    await focus(starred);
+    assert.equal(await starred.getAttribute('aria-expanded'),'false');
+    assert.equal(owner(),branch.id);
+    assert.match(await sidebarLink(branch.name).getAttribute('class'),/Mui-selected/);
+
+    await activate(starred);
+    await inlineUnstar.waitFor();
+    await activate(overflow);
+    await activate(choice(menu,'Unstar'));
+    await focus(overflow);
+    console.log(`PASS ${width}px equivalent inline star and collapsed Starred disclosure focus`);
+   }
    await activate(sidebarOverflow(unpublished.name));
    await choice(quick(unpublished.name),'Rename…').waitFor();
    assert.equal(await choice(quick(unpublished.name),'View runs').count(),0);
@@ -270,6 +302,26 @@ try{
    assert.equal(owner(),branch.id);
    assert.equal(await inspector.getByRole('textbox',{name:'Workflow Name',exact:true}).inputValue(),branch.name);
    await back.click();
+   if(!mobile){
+    const prefsPath='/api/branches/engine/workspace/preferences';
+    const prefs=f.ok(await f.api('GET',prefsPath));
+    const folderId=randomUUID();
+    f.ok(await f.api('PATCH',prefsPath,{
+     branchFolders:[{id:folderId,name:'Collapsed workflows',expanded:false,branchIds:[other.id]}],
+     branchFoldersRevision:prefs.revision,
+     starredResourceIds:[...prefs.starredResourceIds,`branch:${other.id}`],
+    }));
+    await page.reload();
+    await settled();
+    const folder=nav.locator(`[data-branch-folder="${folderId}"] [role=button][aria-expanded=false]`);
+    await folder.waitFor();
+    await inlineUnstar.press('ContextMenu');
+    await activate(choice(menu,'Unstar'));
+    await link.waitFor({state:'detached'});
+    await focus(folder);
+    assert.equal(owner(),branch.id);
+    console.log('PASS Unstar restores focus to the collapsed workflow folder');
+   }
    console.log(`PASS ${size} shared step menus, exact workflow targeting, focus restore, and guarded navigation`);
    console.log(`PASS ${size} one/two/many, compact center, capped wrap/scroll, empty space, menu focus, and ${definition.edges.length+1} saved destinations`);
   }catch(error){

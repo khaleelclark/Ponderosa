@@ -263,10 +263,17 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
         ...(rowActions?.(menu.item).map(entry => <MenuItem key={entry.id} onClick={() => action(() => {
           entry.run();
           if (entry.restoreFocus) {
-            const attr = menu.anchor.hasAttribute("data-resource-menu-trigger") ? "data-resource-menu-trigger" : "data-resource-id";
             // Starring can move the workflow between sidebar sections and replace its opener.
-            const selector = `[${attr}="${CSS.escape(menu.item!.id)}"]`;
-            restoreAfterMenu.current = () => restoreOverlayFocus(menu.anchor, selector);
+            const {anchor} = menu;
+            const id = menu.item!.id;
+            const openerAttribute = ["data-resource-menu-trigger", "data-resource-star-trigger"].find(attr => anchor.hasAttribute(attr)) ?? "data-resource-id";
+            const sidebar = '[aria-label="Workflows Navigation"]';
+            const folder = folderFor(id);
+            restoreAfterMenu.current = () => restoreOverlayFocus(anchor, [
+              `${sidebar} [${openerAttribute}="${CSS.escape(id)}"]`,
+              ...(folder ? [`${sidebar} [data-branch-folder="${CSS.escape(folder.id)}"][data-folder-section=all] [role=button][aria-expanded=false]`] : []),
+              `${sidebar} [aria-label="Starred"][aria-expanded="false"]`,
+            ]);
           }
         })}>{entry.label}</MenuItem>) ?? []),
         <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.id), { id: createClientId(), name: "New folder", expanded: true, memberIds: [menu.item!.id] }]))}>Create Folder</MenuItem>,
