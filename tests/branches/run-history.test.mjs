@@ -9,7 +9,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchRunHistory}=await import('../../apps/web/src/components/branches/BranchRunHistory.tsx');
 const {OccurrenceAudit}=await import('../../apps/web/src/components/TriggerOccurrenceAudit.tsx');
 const run=(id,state='completed',source='manual')=>({id,branchId:'workflow',createdAt:'2026-10-27T11:30:00Z',state,admissionSource:source});
-const props={runs:[],selectedId:'',onFilter(){},onSelect(){return true},loading:false,onRetry(){},hasMore:false,loadingMore:false,onMore(){},triggerEvents:'Trigger Events',children:'Selected Run evidence'};
+const props={runs:[],selectedId:'',onFilter(){},onSelect(){return true},loading:false,onRetry(){},hasMore:false,loadingMore:false,onMore(){},triggerEvents:()=> 'Trigger Events',children:'Selected Run evidence'};
 const render=extra=>renderToStaticMarkup(React.createElement(BranchRunHistory,{...props,...extra}));
 
 test('Run History distinguishes initial, filtered, loading and unavailable states without claiming unknown is empty',()=>{
@@ -138,20 +138,28 @@ test('mobile history back retains selection, filter and scroll; only explicit se
 });
 
 test('Trigger Events keep activation distinct from completion and raw identifiers inside disclosure without changing normal audit presentation',()=>{
- const occurrence={id:'event-id',artifactId:'artifact-id',state:'activated',provenance:{},inputHash:'hash',occurredAt:'2026-10-27T11:00:00Z'};
- const branch=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));assert.match(branch,/aria-label="Activated"/);assert.doesNotMatch(branch,/aria-label="Completed"/);assert.ok(branch.indexOf('artifact-id')>branch.indexOf('<details'));
- const pending=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,state:'pending'},runTerminology:true}));assert.match(pending,/Pending Activation/);
+ const occurrence={id:'event-id',artifactId:'artifact-id',state:'activated',provenance:{source:'webhook'},branchExecutionId:'exact-run',inputHash:'hash',occurredAt:'2026-10-27T11:00:00Z'};
+ const branch=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));assert.match(branch,/aria-label="Run created"/);assert.ok(branch.indexOf('Webhook')<branch.indexOf('<time')&&branch.indexOf('<time')<branch.indexOf('aria-label="Run created"'));assert.doesNotMatch(branch,/aria-label="Completed"/);assert.ok(branch.indexOf('artifact-id')>branch.indexOf('<details'));
+ const pending=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,state:'pending'},runTerminology:true}));assert.match(pending,/Waiting to start/);
+ const unlinked=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,branchExecutionId:undefined},runTerminology:true}));assert.match(unlinked,/Event accepted/);assert.doesNotMatch(unlinked,/Run created/);
+ const file=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,triggerSnapshot:{sourceKind:'filesystem'}},runTerminology:true}));assert.match(file,/File change/);
  const normal=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence}));assert.match(normal,/aria-label="activated"/);assert.ok(normal.indexOf('artifact-id')<normal.indexOf('<details'));
 });
 
 test('scheduled Trigger Events explain held, update, combined and Run creation outcomes without claiming workflow completion',()=>{
  const base={id:'event-id',artifactId:'artifact-id',state:'pending',provenance:{source:'schedule'},inputHash:'hash',occurredAt:'2030-01-02T00:00:00Z'},schedule={policy:'run_latest',firstScheduledAt:'2030-01-01T23:00:00Z',lastScheduledAt:'2030-01-02T00:00:00Z',eventCount:61};
- const labels={held:'Waiting For Current Run',steering:'Updating Current Run',updated:'Current Run Updated',run:'Run Created',unconfirmed:'Update Unconfirmed',combined:'Combined Into Latest Check'};
+ const labels={held:'Waiting for current run',steering:'Updating current run',updated:'Updated current run',run:'Run created',unconfirmed:'Update unconfirmed',combined:'Combined with a later check'};
  for(const [delivery,label] of Object.entries(labels)){
   const occurrence={...base,state:delivery==='combined'?'cancelled':['updated','run'].includes(delivery)?'activated':'pending',schedule:{...schedule,delivery,...(delivery==='combined'?{combinedIntoOccurrenceId:'newer-event-id'}:{})}},html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));
-  assert.ok(html.includes(`aria-label="${label}"`),`${delivery} delivery retains its distinct audit outcome`);assert.equal(html.includes('aria-label="Completed"'),false,'An event outcome is not workflow completion');assert.ok(html.includes('Scheduled'),'Schedule source is visible');assert.ok(html.includes('First scheduled:')&&html.includes('Latest scheduled:')&&html.includes('61 scheduled events'),'Schedule range and count are visible');
+  assert.ok(html.includes(`aria-label="${label}"`),`${delivery} delivery retains its distinct audit outcome`);assert.equal(html.includes('aria-label="Completed"'),false,'An event outcome is not workflow completion');assert.ok(html.indexOf('>Schedule<')<html.indexOf('<time')&&html.indexOf('<time')<html.indexOf(`aria-label="${label}"`),'Source and time lead the outcome');assert.ok(html.indexOf('First scheduled:')>html.indexOf('<details')&&html.includes('Latest scheduled:')&&html.includes('61 scheduled events'),'Schedule range and count stay in the disclosure');
   if(delivery==='combined'){assert.equal(html.includes('aria-label="Canceled"'),false,'A combined held check is not presented as canceled work');assert.ok(html.indexOf('newer-event-id')>html.indexOf('<details'),'Raw combined event identity stays in diagnostic evidence');}
  }
  const partial=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,schedule:{...schedule,delivery:'held',eventCountExact:false}},runTerminology:true}));assert.ok(partial.includes('At least ')&&partial.includes('61 scheduled events'),'Truncated cron history never claims an exact count');
- for(const [state,label] of [['cancelled','Canceled'],['dead_lettered','Activation Failed']]){const html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,state,schedule:{...schedule,delivery:'held'}},runTerminology:true}));assert.ok(html.includes(`aria-label="${label}"`),'Terminal occurrence failure/cancellation is not hidden by earlier delivery metadata');}
+ for(const [state,label] of [['cancelled','Canceled'],['dead_lettered','Run could not start']]){const html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,state,lastError:'Restore the selected folder.',schedule:{...schedule,delivery:'held'}},runTerminology:true}));assert.ok(html.includes(`aria-label="${label}"`),'Terminal occurrence failure/cancellation is not hidden by earlier delivery metadata');assert.ok(html.indexOf('Restore the selected folder.')<html.indexOf('<details'));}
+ const canceled={...base,state:'cancelled',schedule:{...schedule,delivery:'unconfirmed'}};
+ const branch=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:canceled,runTerminology:true}));
+ assert.match(branch,/aria-label="Canceled · update unconfirmed"/);
+ const normal=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,schedule:{...schedule,delivery:'updated'}}}));
+ assert.match(normal,/aria-label="Current Run Updated"/);
+ assert.ok(normal.indexOf('First scheduled:')<normal.indexOf('<details'));
 });

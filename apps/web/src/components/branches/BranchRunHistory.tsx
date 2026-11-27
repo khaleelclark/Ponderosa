@@ -29,7 +29,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
  read?:WorkspaceReadIssue;
  runs:readonly BranchExecutionDto[];selectedId:string;selectedRun?:BranchExecutionDto;filters?:readonly BranchRunStatus[];rememberedId?:string;
  onFilter(value:BranchRunStatus[]):void;onSelect(id:string,replace?:boolean):boolean;loading:boolean;error?:Error|null;onRetry():void;active?:boolean;
- hasMore:boolean;loadingMore:boolean;onMore():void;triggerEvents:ReactNode;children:ReactNode;
+ hasMore:boolean;loadingMore:boolean;onMore():void;triggerEvents(onViewRun:(id:string)=>boolean):ReactNode;children:ReactNode;
 }):JSX.Element {
  const [draftFilters,setDraftFilters]=useState<BranchRunStatus[]>();
  const filterKey=filters.join(',');
@@ -69,7 +69,8 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
  const retained=selectedRun?.id===selectedId&&!runs.some(run=>run.id===selectedId)?selectedRun:undefined;
  const outside=Boolean(retained&&filters.length&&!filters.includes(branchExecutionStatusValue(retained)));
  const hasDetails=Boolean(selectedId||runs.length||loading);
- const renderRun=(run:BranchExecutionDto)=>{const preview=runPreview(run);return <ListItemButton key={run.id} ref={run.id===selectedId?chosenRow:undefined} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{if(onSelect(run.id))setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
+ const selectRun=(id:string)=>{if(!onSelect(id))return false;setShowHistory(false);return true};
+ const renderRun=(run:BranchExecutionDto)=>{const preview=runPreview(run);return <ListItemButton key={run.id} ref={run.id===selectedId?chosenRow:undefined} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>selectRun(run.id)} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
   <Stack spacing={0.25} sx={{minWidth:0,width:'100%'}}>
    <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.admittedAt??run.createdAt).toLocaleString()}</Typography>
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{alignItems:'center'}}>
@@ -88,7 +89,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
       onClick={()=>setDraftFilters([...filters])} sx={{justifyContent:'flex-start',minHeight:44}}>
       Filter runs · {filterSummary}
      </Button>
-     <Box>{triggerEvents}</Box>
+     <Box>{triggerEvents(selectRun)}</Box>
      <Dialog open={draftFilters!==undefined} onClose={()=>setDraftFilters(undefined)} fullWidth maxWidth="xs" aria-labelledby="branch-run-filters-title">
       <DialogTitle id="branch-run-filters-title">Filter runs</DialogTitle>
       <DialogContent dividers>
