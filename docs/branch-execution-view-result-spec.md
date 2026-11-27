@@ -60,3 +60,22 @@ Keep the label **Trigger Events**. This is where users check what happened when 
 
 - Open Trigger settings at the narrowest and widest supported dock widths and at phone width. Verify the back arrow and title share one header, each option has its own row, and labels and controls never overlap or scroll horizontally.
 - Select a trigger by tapping its label row and by using the keyboard. Verify that its settings appear below the choices. Return from both Canvas and Outline and check focus and draft retention. Extend the [existing inspector qualification](../tests/branches/workflow-inspector-qualification.mjs).
+
+## Step picker and removal
+
+- Remove the static Notification alert from **Step Settings**. In the step picker, give **Notification** a short tooltip such as **Sends the step’s input to Ponderosa Notifications and subscribed devices.** Show it on hover and keyboard focus. Use brief descriptions at the point of choosing a step, and keep picker items usable on touch. Describe only what the step does. Keep alerts for errors or conditions that need the user’s attention.
+- Allow **Remove step** when it is the only step. An empty draft is a normal editor state. Clear its entry and any connections to the removed step, close the step inspector, and return to **Add your first step** in the active Canvas or Outline. Preserve the workflow’s trigger and other draft settings. Use the existing undo and redo behavior.
+- Block saving or publishing a workflow until it contains a valid first step. Put **Add your first step** near the blocked action and route it to the existing picker. Apply the same rule to **Review changes**, **Publish to run**, and **Save and Leave**. Keep the server’s publication validation. An empty draft of an already published workflow leaves the currently published version and its runs intact.
+- Reuse the shared removal logic and the existing empty-draft state. Preserve the checks for required steps in Conditions, parallel paths, and For Each groups. Removing a step edits the draft graph and does not remove an Agent, a Chat, or saved run history.
+
+## Right-click quick actions
+
+- In **Canvas** and **Outline**, right-click an editable step to open its quick actions. Offer **Edit step**, the existing add actions for that step or path, and **Remove step** when it is allowed. Reuse the Outline action menu and the same edit, insertion, and removal handlers in both views.
+- In the **Workflows** list, right-click a workflow row for quick actions scoped to that row. Start with **Rename**, **Star** or **Unstar**, and **View runs** for a published workflow. Reuse the existing sidebar row’s context-menu hook, shared menu components, routing, and leave guard. Opening the menu leaves the current selection in place.
+- Keep quick actions available from a visible overflow button and support the context-menu key or Shift+F10. Use the same actions and availability for right-click, keyboard, and touch, and restore focus to the opener on dismissal.
+
+### Acceptance checks
+
+- Choose **Notification** from the picker. Verify the brief help is available there and the step inspector has no static alert. Remove it as the only step in Canvas and Outline, undo and redo the edit, then add a different first step.
+- Try the save and publish entry points with zero steps. Verify each leads back to adding a first step or explains what is required, and that a previously published workflow keeps its published version. Verify existing graph safety checks still apply to a step required by another node.
+- Right-click a step in Canvas and Outline. Verify the actions target that step, including removal of the only step. Right-click an unselected workflow and verify Rename and View runs target the clicked row. Check the keyboard and touch entry points and focus return.
