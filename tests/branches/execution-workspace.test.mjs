@@ -29,7 +29,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='Button'||name==='ButtonBase'||name==='MenuItem')buttons.push(props);
   if(name==='TextField')fields.push(props);
   if(name==='Box'&&props.component==='details')disclosures.push(props);
-   if(name==='Menu'&&!props.open)return null;
+  if((name==='Menu'||name==='Dialog')&&!props.open)return null;
  const tag=props.component??(['Button','ButtonBase'].includes(name)?'button':name==='Typography'?'span':'div');
   return React.createElement(tag,{...(props.id?{id:props.id}:{}),...(props.href?{href:props.href}:{}),...(props.label?{'data-label':props.label}:{}),...(props.role?{role:props.role}:{}),...(props['aria-label']?{'aria-label':props['aria-label']}:{}),...(tag==='details'?{open:props.open}:{}),...(props.disabled?{disabled:true}:{})},props.children,name==='Alert'?props.action:null);
  };
@@ -80,15 +80,26 @@ test('selected run keeps canonical status, results and all focused decisions out
  const old=olderAttempt({unknown:true}),gate={kind:'gate',step:old.step,gate:{id:'gate-a',stepExecutionId:old.step.id,revision:4,state:'waiting',purpose:'approval',prompt:'Approve the original result?',proposal:'Exact proposed result',editable:false}};
  const f=fixture({actions:[gate,old]});
  const html=f.render();
- assert.equal(f.disclosures.length,1);assert.equal(f.disclosures[0].open,false);assert.match(html,/Needs Your Review/);assert.match(html,/Approve the original result/);assert.match(html,/Exact proposed result/);assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
+ const summary=details=>React.Children.toArray(details.children)[0]?.props.children;
+ const technical=f.disclosures.filter(details=>React.Children.toArray(summary(details)).includes('Technical Details'));
+ assert.equal(technical.length,1);
+ assert.equal(technical[0].open,false);
+ assert.match(html,/<div role="region" aria-label="Review prompt">[^]*?Approve the original result\?/);
+ assert.match(html,/<details><summary>If approved<\/summary>[^]*?Exact proposed result[^]*?<\/details>/);
+ assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
  assert.ok(html.indexOf('Exact proposed result')<html.indexOf('Result with the complete original wording'));
- assert.ok(html.indexOf('Exact proposed result')<html.indexOf('<details'));assert.ok(html.indexOf('Original failure summary')<html.indexOf('<details'));assert.ok(html.indexOf('Result with the complete original wording')<html.indexOf('<details'));
+ const technicalHeading=html.indexOf('<summary>Technical Details');
+ assert.ok(technicalHeading>=0);
+ for(const content of ['Approve the original result','Exact proposed result','Original failure summary','Result with the complete original wording']){
+  const position=html.indexOf(content);
+  assert.ok(position>=0&&position<technicalHeading,`${content} belongs outside Technical Details`);
+ }
  assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each Items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
  assert.ok(f.queries.get('branch-execution-actions'));assert.ok(f.queries.get('branch-execution-operations'));
  assert.deepEqual(f.reviewChildren,[],'UI032: advanced review launchers stay unmounted until Technical Details opens');
  assert.ok(f.button('Retry Anyway'));assert.ok(f.button('Mark Observed Result'));
- f.disclosures[0].onToggle({currentTarget:{open:true}});f.render();
+ technical[0].onToggle({currentTarget:{open:true}});f.render();
  assert.deepEqual(f.reviewChildren,[]);
  f.button('Recovery options').onClick();f.render();
  assert.deepEqual(f.reviewChildren.map(child=>child.name),['BranchHistoryReview','BranchGroupReview','BranchDisclosureReview']);

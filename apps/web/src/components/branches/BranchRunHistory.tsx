@@ -29,9 +29,10 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
  read?:WorkspaceReadIssue;
  runs:readonly BranchExecutionDto[];selectedId:string;selectedRun?:BranchExecutionDto;filters?:readonly BranchRunStatus[];rememberedId?:string;
  onFilter(value:BranchRunStatus[]):void;onSelect(id:string,replace?:boolean):boolean;loading:boolean;error?:Error|null;onRetry():void;active?:boolean;
- hasMore:boolean;loadingMore:boolean;onMore():void;triggerEvents(onViewRun:(id:string)=>boolean):ReactNode;children:ReactNode;
+ hasMore:boolean;loadingMore:boolean;onMore():void;triggerEvents(onViewRun:(id:string)=>boolean,onViewRunExited:()=>void):ReactNode;children:ReactNode;
 }):JSX.Element {
  const [draftFilters,setDraftFilters]=useState<BranchRunStatus[]>();
+ useLayoutEffect(()=>{if(!active)setDraftFilters(undefined)},[active]);
  const filterKey=filters.join(',');
  const filterSummary=filters.length===0?'All runs':filters.length===1
   ?BRANCH_STATUS_FILTERS.find(item=>item.value===filters[0])?.label:`${filters.length} statuses`;
@@ -70,6 +71,9 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
  const outside=Boolean(retained&&filters.length&&!filters.includes(branchExecutionStatusValue(retained)));
  const hasDetails=Boolean(selectedId||runs.length||loading);
  const selectRun=(id:string)=>{if(!onSelect(id))return false;setShowHistory(false);return true};
+ const focusViewedRun=()=>{
+  if(active&&showHistory===false&&!desktop)detailScroll.current?.focus({preventScroll:true});
+ };
  const renderRun=(run:BranchExecutionDto)=>{const preview=runPreview(run);return <ListItemButton key={run.id} ref={run.id===selectedId?chosenRow:undefined} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>selectRun(run.id)} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
   <Stack spacing={0.25} sx={{minWidth:0,width:'100%'}}>
    <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.admittedAt??run.createdAt).toLocaleString()}</Typography>
@@ -89,8 +93,8 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
       onClick={()=>setDraftFilters([...filters])} sx={{justifyContent:'flex-start',minHeight:44}}>
       Filter runs · {filterSummary}
      </Button>
-     <Box>{triggerEvents(selectRun)}</Box>
-     <Dialog open={draftFilters!==undefined} onClose={()=>setDraftFilters(undefined)} fullWidth maxWidth="xs" aria-labelledby="branch-run-filters-title">
+     <Box>{triggerEvents(selectRun,focusViewedRun)}</Box>
+     {active&&<Dialog open={draftFilters!==undefined} onClose={()=>setDraftFilters(undefined)} fullWidth maxWidth="xs" aria-labelledby="branch-run-filters-title">
       <DialogTitle id="branch-run-filters-title">Filter runs</DialogTitle>
       <DialogContent dividers>
        <FormGroup>
@@ -107,7 +111,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
         setDraftFilters(undefined);
        }}>Apply</Button>
       </DialogActions>
-     </Dialog>
+     </Dialog>}
      {read?<WorkspaceQueryError active={active} read={read}/>:error&&<Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Run history unavailable. {error.message}</Alert>}
      {retained&&<Box>
       {outside&&<Typography variant="body2" color="text.secondary">This run is outside your filters</Typography>}
@@ -118,7 +122,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
     <List aria-label="Workflow Runs" disablePadding sx={{mt:1}}>{runs.map(renderRun)}</List>
     {hasMore&&<Button disabled={loadingMore} onClick={onMore} sx={{mt:1,flexShrink:0}}>{loadingMore?'Loading…':'Load Older Runs'}</Button>}
    </Box>
-   <Box ref={detailScroll} onScroll={event=>{scroll.current.detail=event.currentTarget.scrollTop}} component="section" aria-label="Selected Run" sx={{display:showHistory?'none':'block',minWidth:0,minHeight:0,overflow:'auto',p:{xs:1.5,sm:2},[desktopLayout]:{display:hasDetails?'block':'none'}}}>
+   <Box ref={detailScroll} onScroll={event=>{scroll.current.detail=event.currentTarget.scrollTop}} component="section" aria-label="Selected Run" tabIndex={-1} sx={{display:showHistory?'none':'block',minWidth:0,minHeight:0,overflow:'auto',p:{xs:1.5,sm:2},[desktopLayout]:{display:hasDetails?'block':'none'}}}>
     <Button startIcon={<ArrowBackIcon/>} onClick={()=>{returnToHistory.current=true;setShowHistory(true)}} sx={{mb:1,minHeight:44,[desktopLayout]:{display:'none'},'section:has([data-branch-step-tray]) > &':{display:'none'}}}>Back to Run History</Button>
     {selectedId?children:loading?<Stack role="status" aria-label="Loading Run Details"><Skeleton height={32}/><Skeleton height={80}/><Skeleton height={80}/></Stack>:runs.length?<Typography color="text.secondary">Choose a Run from history to view its result.</Typography>:null}
    </Box>

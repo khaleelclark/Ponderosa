@@ -898,7 +898,10 @@ test('workflow directory status keeps availability, trigger intake and active wo
  const ponderosaCircle=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));
  assert.ok(ponderosaCircle,'The reference is Ponderosa’s actual sidebar renderer');
  for(const patch of [{},{enabled:false},{versionId:''},{enabled:undefined,activeExecutions:undefined}])assert.equal(svg(render(patch)),ponderosaCircle,'Every Branch availability state uses the exact same circle as Ponderosa');
- const busy=render({activeExecutions:200,runCounts:{running:0,waiting:1,queued:199,retrying:0,stopping:0,needsAttention:0}});assert.ok(busy.includes('Running: 0 · Queued: 199 · Waiting: 1'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
+ const busy=render({activeExecutions:200,runCounts:{running:0,waiting:1,queued:199,retrying:0,stopping:0,needsAttention:0}});assert.ok(busy.includes('Running: 0 · Queued: 199 · Waiting: 1'));assert.ok(busy.includes('99+'));const accessible=busy.match(/aria-label="(Workflow Runs[^"]*)"/)?.[1];
+ assert.ok(accessible);
+ assert.match(accessible,/Running: 0 · Queued: 199 · Waiting: 1/);
+ assert.doesNotMatch(accessible,/stable-id/,'The run status label does not expose raw identifiers');
 });
 
 

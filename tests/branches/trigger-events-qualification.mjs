@@ -91,8 +91,8 @@ try{
 
  web=await serveFixture(f);
  browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
- for(const mobile of [false,true]){
-  const viewport=mobile?{width:390,height:844}:{width:1440,height:900};
+ for(const viewport of [{width:1440,height:900},{width:390,height:844},{width:320,height:640}]){
+  const mobile=viewport.width<768;
   const context=await browser.newContext({viewport,isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
   const page=await context.newPage();page.setDefaultTimeout(12000);
   const errors=[],writes=[];
@@ -139,9 +139,19 @@ try{
    await originalId.waitFor();
    await linked.getByText('Original webhook payload',{exact:false}).waitFor();
    for(let visit=0;visit<2;visit++){
-    await activate(button(linked,'View run'));
+    await button(linked,'View run').focus();
+    await page.keyboard.press('Enter');
     await dialog.waitFor({state:'hidden'});
     await selected.getByText('Do you approve the report?',{exact:true}).waitFor();
+    await page.waitForFunction(mobile=>{
+     const focus=document.activeElement;
+     return mobile?focus?.getAttribute('aria-label')==='Selected Run':
+      focus?.tagName==='BUTTON'&&focus.textContent==='Trigger Events'&&focus.closest('[aria-label="Run History"]');
+    },mobile,{timeout:2500});
+    if(mobile){
+     await page.keyboard.press('Tab');
+     assert.equal(await button(selected,'Back to Run History').evaluate(element=>document.activeElement===element),true);
+    }
     const params=new URL(page.url()).searchParams;
     assert.equal(params.get('execution'),original.branchExecutionId);
     assert.deepEqual(params.getAll('state'),['completed','failed']);

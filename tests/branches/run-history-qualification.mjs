@@ -30,8 +30,9 @@ try{
  })();
  web=await serveFixture(f);
  browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
- for(const mobile of [false,true]){
-  const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:900},isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
+ for(const viewport of [{width:1440,height:900},{width:390,height:844},{width:320,height:640}]){
+  const mobile=viewport.width<768;
+  const context=await browser.newContext({viewport,isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
   const page=await context.newPage();page.setDefaultTimeout(12000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.route('**/*',route=>new URL(route.request().url()).origin===web.origin?route.continue():route.abort());
@@ -44,6 +45,34 @@ try{
   const historyList=history.getByRole('list',{name:'Workflow Runs'});
   const originalResult=selected.getByRole('region',{name:'Results'}).getByText('Original selected report',{exact:true});
   const stateLink=`${web.origin}/branches?branch=${filterBranch.id}&tab=executions&execution=${oldest.id}&state=failed`;
+  await page.goto(web.origin+'/branches?branch='+filterBranch.id+'&state=failed');
+  const workflow=page.getByRole('tab',{name:'Workflow',exact:true});
+  await workflow.waitFor();
+  await activate(page.getByRole('tab',{name:/^Executions/}));
+  await filterButton.or(button('Back to Run History')).first().waitFor();
+  if(mobile&&await selected.isVisible())await activate(button('Back to Run History'));
+  await activate(filterButton);
+  await activate(filterDialog.getByText('Completed',{exact:true}));
+  assert.deepEqual(new URL(page.url()).searchParams.getAll('state'),['failed']);
+  await page.goBack();
+  await page.waitForURL(url=>!url.searchParams.has('tab'));
+  await filterDialog.waitFor({state:'hidden',timeout:2500});
+  assert.equal(await workflow.getAttribute('aria-selected'),'true');
+  const outline=page.getByRole('button',{name:'Outline',exact:true});
+  await outline.click({trial:true});
+  await outline.focus();
+  assert.equal(await outline.evaluate(element=>document.activeElement===element),true,'Back releases focus to the Workflow editor');
+  await page.goForward();
+  await page.waitForURL(url=>url.searchParams.get('tab')==='executions');
+  if(mobile&&await selected.isVisible())await activate(button('Back to Run History'));
+  await filterButton.waitFor();
+  assert.equal(await filterDialog.isVisible(),false,'Forward does not reopen the checklist');
+  await activate(filterButton);
+  assert.equal(await filterDialog.getByRole('checkbox',{name:'Completed',exact:true}).isChecked(),false);
+  assert.equal(await filterDialog.getByRole('checkbox',{name:'Failed',exact:true}).isChecked(),true);
+  await activate(button('Cancel',filterDialog));
+  assert.deepEqual(new URL(page.url()).searchParams.getAll('state'),['failed']);
+
   await page.goto(stateLink);
   await originalResult.waitFor();
   if(mobile)await activate(button('Back to Run History'));
@@ -160,9 +189,9 @@ try{
   assert.equal(new URL(page.url()).searchParams.get('execution'),waitingRun.id);
   await activate(canceledRow);
   await steps.waitFor();
-  console.log(`Delayed detail and refreshed status qualified on ${mobile?'390px touch phone':'1440px desktop'}`);
+  console.log(`Delayed detail and refreshed status qualified on ${viewport.width} × ${viewport.height}`);
   assert.deepEqual(errors,[]);
-  console.log(`Run History filters qualified on ${mobile?'390px touch phone':'1440px desktop'}`);
+  console.log(`Run History filters qualified on ${viewport.width} × ${viewport.height}`);
   await context.close();
  }
 }finally{await browser?.close();await web?.close();await f.dispose();}

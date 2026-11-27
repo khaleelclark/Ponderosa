@@ -1,7 +1,7 @@
 import {useReportWorkspaceRead} from "../WorkspaceRefreshContext";
 import {WorkspaceQueryError} from "../WorkspaceQueryError";
 import {workspaceRead} from "../../workspaceAvailability";
-import {useState} from 'react';
+import {useRef,useState} from 'react';
 import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,Stack,Typography} from '@mui/material';
 import {useInfiniteQuery} from '@tanstack/react-query';
 import type {BranchLifecycleDto,TriggerOccurrenceDto} from '@ponderosa/core';
@@ -25,16 +25,26 @@ export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}
  </Stack>;
 }
 
-export function BranchTriggerAudit({onViewRun,branchId,hasAutomaticTrigger,diagnostics=[]}:{diagnostics?:BranchLifecycleDto["sourceDiagnostics"];branchId:string;hasAutomaticTrigger?:boolean;onViewRun(executionId:string):boolean}):JSX.Element {
+export function BranchTriggerAudit({onViewRun,onViewRunExited,branchId,hasAutomaticTrigger,diagnostics=[]}:{diagnostics?:BranchLifecycleDto["sourceDiagnostics"];branchId:string;hasAutomaticTrigger?:boolean;onViewRun(executionId:string):boolean;onViewRunExited():void}):JSX.Element {
  const [open,setOpen]=useState(false);
  const pages=useInfiniteQuery({queryKey:['branch-trigger-occurrences',branchId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<TriggerOccurrenceDto[]>(`/api/branches/${branchId}/trigger/occurrences?limit=50${pageParam?'&before='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.length===50?last.at(-1)?.id:undefined,enabled:open,refetchInterval:open?5000:false});
  useReportWorkspaceRead(workspaceRead(`branch:${branchId}`,"Trigger Events",pages));
  const occurrences=pages.data?.pages.flat()??[];
- const viewRun=(executionId:string)=>{if(onViewRun(executionId))setOpen(false)};
+ const viewedRun=useRef(false);
+ const viewRun=(executionId:string)=>{
+  if(!onViewRun(executionId))return;
+  viewedRun.current=true;
+  setOpen(false);
+ };
+ const finishClose=()=>{
+  if(!viewedRun.current)return;
+  viewedRun.current=false;
+  onViewRunExited();
+ };
  const emptyMessage=hasAutomaticTrigger===undefined?'No trigger events recorded yet.':hasAutomaticTrigger?'No automatic trigger events recorded yet.':'This workflow runs manually. Your manual runs are in Run History.';
  return <>
   <Button size="small" aria-haspopup="dialog" sx={{flexShrink:0,minHeight:44,whiteSpace:'nowrap'}} onClick={()=>setOpen(true)}>Trigger Events</Button>
-  <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title">
+  <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title" slotProps={{transition:{onExited:finishClose}}}>
    <DialogTitle id="branch-trigger-events-title">Trigger Events</DialogTitle>
    <DialogContent>
     <Typography variant="body2" color="text.secondary" sx={{mb:1}}>See when a schedule was due, a webhook arrived, or a watched file changed, and what happened next.</Typography>
