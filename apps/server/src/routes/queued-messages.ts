@@ -708,7 +708,9 @@ export function registerQueuedMessageRoutes(
             currentConversation.projectId !== projectId))) {
         return reply.code(409).send({ error: "message delivery participants are no longer available" });
       }
-      const recoveryBoundary=coordinationV3.contextRecovery.active(agent.id)??store.uncertainProviderContextRecoveryBoundary(agent.id);
+      const recoveryBoundary=coordinationV3.contextRecovery.active(agent.id) ??
+        coordinationV3.contextRecovery.dismissedDeliveryReconstruction(agent.id,activationId) ??
+        store.uncertainProviderContextRecoveryBoundary(agent.id);
       const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(activationId,agent.id,projectId) as {scope_key:string}|undefined;
       let result: RetryMessageDeliveryResponse;
       try {

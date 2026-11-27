@@ -2,7 +2,7 @@ import { RetainedNativeAuthenticationError } from "../runtime-selection.js";
 import { ContextRecoveryConflictError } from "@ponderosa/agents";
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
 import type { FastifyInstance } from "fastify";
-import { ProviderContextRecoveryUnavailableError, UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY, type ProviderContextRecoverySupport } from "@ponderosa/core";
+import { ProviderContextRecoveryUnavailableError, UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY, type ProviderContextRecoveryRequest, type ProviderContextRecoverySupport } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 
 /** Explicit recovery never manufactures a scheduler Run or replays source work. */
@@ -15,7 +15,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
   recover?(request: import("@ponderosa/core").ProviderContextRecoveryRequest, policy?: "automatic"): Promise<void>;
   settle?(request: import("@ponderosa/core").ProviderContextRecoveryRequest): boolean;
   activity?(agentId:string,recoveryId:string): "running" | "cleanup_pending" | "idle";
-  blocker?(agentId:string): import("@ponderosa/core").ProviderContextRecoveryStatus["blocker"];
+  blocker?(agentId:string, reconstruction?:ProviderContextRecoveryRequest): import("@ponderosa/core").ProviderContextRecoveryStatus["blocker"];
   support(engineId: string): Readonly<ProviderContextRecoverySupport> | undefined;
 }) {
   const {store,coordinationV3} = context;

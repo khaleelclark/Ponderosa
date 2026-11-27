@@ -603,8 +603,9 @@ test('revoking a read memory during a same-model guidance handoff prevents trans
 });
 
 
-for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoked']) test(`Retry recovers an interrupted prompt handoff after restart without replay (mode ${mode})`,{timeout:90000},async t=>{
- const memoryMode=['stopped','dismissed'].includes(mode)?'disabled':mode;
+for (const mode of ['disabled','stopped','dismissed','enabled','retired','retired-dismiss','revoked','retired-dismiss-revoked']) test(`Retry recovers an interrupted prompt handoff after restart without replay (mode ${mode})`,{timeout:90000},async t=>{
+ const retiredDismiss=mode.startsWith('retired-dismiss');
+ const memoryMode=['stopped','dismissed'].includes(mode)?'disabled':mode.endsWith('revoked')?'revoked':retiredDismiss?'retired':mode;
  let store,native;
  let billingMode='subscription';
  await withFixture(t,async f=>{
@@ -650,7 +651,7 @@ for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoke
   assert.equal(blocked.status,409);
   assert.match(blocked.body.error,/Recheck provider sign-in/);
   assert.equal(coordinator.contextRecovery.active(agent.id),undefined);
-  let stoppedId;
+  let stoppedId, dismissedRetired;
   if(mode==='stopped'||mode==='dismissed'){
    coordinator.contextRecovery.requestDeliveryRetry(boundary,receipt.activationId);
    stoppedId=coordinator.contextRecovery.active(agent.id).id;
@@ -707,7 +708,20 @@ for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoke
    assert.equal((await f.api('POST',target,{idempotencyKey:'retry-before-restart'})).status,409);
    assert.equal(store.resumeSessionState(agent.id),undefined);
    assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+   if(retiredDismiss){
+    const dismissed=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${beforeStop.id}/dismiss`,{acknowledgeStillBlocked:true}));
+    assert.equal(dismissed.request.state,'dismissed');
+    assert.equal(dismissed.request.progress.phase,'held');
+    dismissedRetired=dismissed.request;
+   }
    await f.reopen();
+   if(retiredDismiss){
+    assert.equal(new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id),undefined);
+    assert.equal((await f.api('POST',target,{idempotencyKey:'retry-before-restart'})).status,409);
+    const projected=(await f.detail(agent.id)).messages.find(message=>message.communicationEventId===sent.communicationEventId)?.deliveryReceipts?.[0];
+    assert.equal(projected.settingsTransitionHold,'retry_available');
+    assert.equal(projected.canRetry,true);
+   }
    if(memoryMode==='revoked'){
     f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
     const denied=await f.api('POST',target,{idempotencyKey:'retry-after-revocation'});
@@ -717,6 +731,46 @@ for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoke
     assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(receipt.activationId).n,0);
     return;
    }
+  }
+  if(retiredDismiss){
+   const retry=CoordinationV3Store.prototype.retryMessageDelivery;
+   CoordinationV3Store.prototype.retryMessageDelivery=function(input){
+    if(input.idempotencyKey==='retired-race'){
+     const recovery=this.contextRecovery;
+     const observed=recovery.deliveryRetryObservation(agent.id,receipt.activationId);
+     recovery.requestDeliveryRetry(boundary,receipt.activationId,observed);
+     const replacement=recovery.active(agent.id);
+     recovery.stopDeliveryRetry(agent.id,replacement.id);
+     recovery.dismiss(agent.id,replacement.id);
+    }
+    if(['retired-process-pending','retired-generation-changed'].includes(input.idempotencyKey)){
+     store.sqlite.exec('SAVEPOINT changed_retirement');
+     try {
+      if(input.idempotencyKey==='retired-process-pending'){
+       store.sqlite.prepare(`INSERT INTO provider_process_authority
+         (id,worker_id,purpose,agent_id,project_id,run_id,pid,pgid,birth_marker,created_at)
+         VALUES('test-drain','test','native',?,?,?,2147483647,2147483647,'fixture',?)`)
+         .run(agent.id,chat.projectId,boundary.sourceRunId,new Date().toISOString());
+      }else{
+       store.sqlite.prepare(`INSERT INTO events(agent_id,seq,type,payload_json,created_at)
+         SELECT ?,coalesce(max(seq),0)+1,'session_reset','{"reason":"tool_contract_changed"}',? FROM events WHERE agent_id=?`)
+         .run(agent.id,new Date().toISOString(),agent.id);
+      }
+      return retry.call(this,input);
+     } finally {store.sqlite.exec('ROLLBACK TO changed_retirement; RELEASE changed_retirement');}
+    }
+    return retry.call(this,input);
+   };
+   try {
+    for(const [idempotencyKey,error] of [['retired-race',/Delivery recovery changed/],
+      ['retired-process-pending',/generation has not drained/],['retired-generation-changed',/retirement changed/]]){
+     const stale=await f.api('POST',target,{idempotencyKey});
+     assert.equal(stale.status,409);
+     assert.match(stale.body.error,error);
+     assert.equal(new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id),undefined);
+    }
+    assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+   } finally {CoordinationV3Store.prototype.retryMessageDelivery=retry;}
   }
   const retry=await f.api('POST',target,{idempotencyKey:'retry-original'});
   assert.equal(retry.status,202,JSON.stringify(retry.body));
@@ -737,6 +791,16 @@ for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoke
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=? AND state='dismissed' AND json_extract(progress_json,'$.phase')='canonical_reconstructed'").get(agent.id).n,1);
   assert.deepEqual(store.sqlite.prepare('SELECT status,fencing_token FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),
    {status:'outcome_unknown',fencing_token:boundary.sourceFence});
+  if(dismissedRetired){
+   const receipts=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY rowid').all(agent.id);
+   assert.equal(receipts.length,3,'the stale request creates no receipt alongside the competing and successful reservations');
+   assert.deepEqual(receipts[0],{id:dismissedRetired.id,state:'dismissed',progress_json:JSON.stringify(dismissedRetired.progress)});
+   const latest=JSON.parse(receipts.at(-1).progress_json);
+   assert.equal(latest.phase,'canonical_reconstructed');
+   assert.equal(latest.reconstructionRolloverId,dismissedRetired.progress.reconstructionRolloverId);
+   assert.equal(latest.reconstructionPredecessorRolloverId,dismissedRetired.progress.reconstructionPredecessorRolloverId);
+   assert.notEqual(latest.deliveryRetryAttemptId,dismissedRetired.progress.deliveryRetryAttemptId);
+  }
   if(stoppedId){
    const rows=store.sqlite.prepare(`SELECT id,state,json_extract(progress_json,'$.phase') phase
      FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at`).all(agent.id);

@@ -230,19 +230,19 @@ const recoveryChanged=(agentId:string)=>{
 const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store,coordinationV3,notifyScheduler,
   changed:recoveryChanged,
   support:engineId=>engines.get(engineId)?.adapter.contextRecoverySupport,
-  blocker:agentId=>{
-    const agent=store.getAgent(agentId),activeRecovery=coordinationV3.contextRecovery.active(agentId);
-    const predecessorId=activeRecovery?.progress?.deliveryRetryActivationId
-      ?activeRecovery.progress.reconstructionPredecessorRolloverId:undefined;
-    const reconstructionSource=predecessorId ? coordinationV3.contextRollover(predecessorId)?.sourceRunId:activeRecovery?.sourceRunId;
-    const packet=activeRecovery?.progress?.reconstructionRolloverId && reconstructionSource
+  blocker:(agentId,reconstruction)=>{
+    const agent=store.getAgent(agentId),recovery=coordinationV3.contextRecovery.active(agentId)??reconstruction;
+    const predecessorId=recovery?.progress?.deliveryRetryActivationId
+      ?recovery.progress.reconstructionPredecessorRolloverId:undefined;
+    const reconstructionSource=predecessorId ? coordinationV3.contextRollover(predecessorId)?.sourceRunId:recovery?.sourceRunId;
+    const packet=recovery?.progress?.reconstructionRolloverId && reconstructionSource
       ?store.getProviderInput(reconstructionSource,true):store.acceptedProviderSessionInput(agentId,true);
     const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
     if(!agent||!contract||packet?.exactSystemPrompt===undefined||contract.engineId!==agent.activeEngine||
-        (predecessorId && contract.contractHash!==activeRecovery?.toolContractHash) ||
+        (predecessorId && contract.contractHash!==recovery?.toolContractHash) ||
         contract.workingCopyId!==agent.workingCopy.id||contract.cwd!==agent.workingCopy.rootPath||agent.workingCopy.state!=="ready")
       return {kind:"context_unavailable",message:"The exact saved session or working folder is unavailable. Review Agent activity and settings before recovery."};
-    const source=coordinationV3.contextRecovery.active(agentId)?.sourceRunId??store.uncertainProviderContextRecoveryBoundary(agentId)?.sourceRunId;
+    const source=recovery?.sourceRunId??store.uncertainProviderContextRecoveryBoundary(agentId)?.sourceRunId;
     if(!retainedPermissionsMatch(agentId,agent.activeEngine,contract,source))
       return {kind:"access_changed",message:"Agent access changed since the interrupted session. Review its access settings before continuing."};
     try{assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));}
@@ -480,36 +480,21 @@ registerContextRecoveryRoutes(app,recoveryContext);
 async function deliveryRetryMemoryGuard(
   agent: NonNullable<ReturnType<AgentStore["getAgent"]>>,
   boundary: Parameters<typeof coordinationV3.contextRecovery.requestDeliveryRetry>[0],
+  activationId: string,
   handoff: NonNullable<ReturnType<typeof coordinationV3.contextRecovery.interruptedSettingsHandoff>>,
 ) {
   const memory = localMemoryFor(app);
   const { authorizationOriginRunId: origin, authorizationSignatureHash: signature, sourceRunId } = handoff;
   const blocked = () => new ContextRecoveryConflictError('Earlier memory access could not be verified. Check the Agent’s memory access before trying delivery again.');
+  const retirementResetSequence = () => {
+    const recovery = coordinationV3.contextRecovery.deliveryRetryObservation(agent.id,activationId);
+    if (!recovery?.progress?.reconstructionRolloverId) return undefined;
+    if (recovery.sourceRunId !== boundary.sourceRunId || recovery.sourceFence !== boundary.sourceFence ||
+        recovery.providerSessionId !== boundary.providerSessionId || recovery.progress.deliveryRetryActivationId !== activationId) throw blocked();
+    return coordinationV3.contextRecovery.deliveryRetryRetirementReset(recovery);
+  };
   if (memory && origin && signature) {
     const args = [agent.id, agent.conversationId, origin, sourceRunId, boundary.sourceRunId, signature] as const;
-    const retirementResetSequence = () => {
-      const recovery = coordinationV3.contextRecovery.active(agent.id);
-      const rolloverId = recovery?.progress?.reconstructionRolloverId;
-      if (!recovery || !rolloverId || store.resumeSessionState(agent.id)) return undefined;
-      if (recovery.sourceRunId !== boundary.sourceRunId || recovery.sourceFence !== boundary.sourceFence ||
-          recovery.providerSessionId !== boundary.providerSessionId || !recovery.progress?.deliveryRetryActivationId) throw blocked();
-      coordinationV3.contextRecovery.assertReconstruction(agent.id, recovery.id, rolloverId, true);
-      // Retirement changes the signature itself. Exclude its one reset only when
-      // the durable reconstruction owns that generation and no later reset occurred.
-      const resets = store.sqlite.prepare(`
-        SELECT e.seq, json_extract(e.payload_json,'$.reason') AS reason,
-          (SELECT json_extract(prior.payload_json,'$.sessionId') FROM events prior
-           WHERE prior.agent_id=e.agent_id AND prior.seq<e.seq
-             AND prior.type IN ('session','session_snapshot','context_rollover_session_accepted')
-           ORDER BY prior.seq DESC LIMIT 1) AS session_id
-        FROM events e JOIN context_rollovers r ON r.id=? AND r.agent_id=e.agent_id
-        WHERE e.type='session_reset' AND e.created_at>=r.created_at
-        ORDER BY e.seq DESC LIMIT 2`).all(rolloverId) as {seq:number;reason:string;session_id:string|null}[];
-      const reset = resets[0];
-      if (resets.length !== 1 || reset?.reason !== 'request_context_rollover' ||
-          reset.session_id !== boundary.providerSessionId) throw blocked();
-      return reset.seq;
-    };
     if (!await memory.validateTransitionReads(...args, retirementResetSequence())) throw blocked();
     return () => {
       if (!memory.transitionAuthorizationStillValid(...args, false, retirementResetSequence())) throw blocked();
@@ -517,6 +502,7 @@ async function deliveryRetryMemoryGuard(
   }
   const sessionOrigin = store.providerSessionOriginRunId(agent.id, boundary.providerSessionId);
   const guard = () => {
+    retirementResetSequence();
     if (origin || signature || !sessionOrigin || hasKnownRetainedMemory(store, agent.id, sessionOrigin, sourceRunId, boundary.providerSessionId) ||
         memory?.legacyPossibleGlobalRevocation(agent.id, agent.conversationId, sessionOrigin)) throw blocked();
   };
@@ -547,23 +533,27 @@ async function prepareDeliveryContextRetry(
     }
     if(recoveryContext.unavailable(agent.id,boundary.projectId))
       throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
+    if(observed?.state==='dismissed'&&observed.progress?.reconstructionRolloverId&&
+        !store.resumeSessionState(agent.id)&&persistentRuntimeForTermination(agent.id))
+      throw new ContextRecoveryConflictError('Old provider generation has not drained');
     if(workspace.listDecisions({projectId:boundary.projectId,agentId:agent.id,status:'pending'}).length)
       throw new ContextRecoveryConflictError('Resolve the Agent’s pending decision, then try delivery again.');
   };
   assertAdmission();
   const engine = engines.get(agent.activeEngine);
-  if (engine?.authStatus && recoveryContext.blocker?.(agent.id)?.kind === 'authentication') {
+  const reconstruction=observed?.progress?.reconstructionRolloverId?observed:undefined;
+  if (engine?.authStatus && recoveryContext.blocker?.(agent.id,reconstruction)?.kind === 'authentication') {
     try { await engineAuthStatuses.refresh(agent.activeEngine, engine.authStatus); }
     catch { /* The blocker below distinguishes unknown evidence from successful verification. */ }
   }
   const assertAccess=()=>{
     if(workspace.getPreferences().providerAvailability[agent.activeEngine]===false)
       throw new ContextRecoveryConflictError('Enable the Agent’s provider in Settings, then try delivery again.');
-    const blocker=recoveryContext.blocker?.(agent.id);
+    const blocker=recoveryContext.blocker?.(agent.id,reconstruction);
     if(blocker)throw new ContextRecoveryConflictError(blocker.message);
   };
   assertAccess();
-  const assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, boundary, handoff);
+  const assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, boundary, activationId, handoff);
 
   // Compare-and-reserve alongside the exact delivery receipt, after all awaits.
   return () => {
@@ -603,7 +593,7 @@ const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderConte
     if (current.progress?.deliveryRetryActivationId) {
       const handoff = coordinationV3.contextRecovery.interruptedSettingsHandoff(current, current.progress.deliveryRetryActivationId);
       if (!handoff) throw new ContextRecoveryConflictError('Interrupted settings handoff changed before delivery recovery');
-      assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, current, handoff);
+      assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, current, current.progress.deliveryRetryActivationId, handoff);
       ({agent,current}=assertCurrent());
       assertMemoryCurrent();
     }
