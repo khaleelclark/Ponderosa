@@ -65,7 +65,7 @@ import {
 } from "../provider-session-facade.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
-export type ContextRecoveryOperation={id:string;controller:AbortController;stopped?:boolean;phase:"native"|"draining"|"cleanup_pending"};
+export type ContextRecoveryOperation={id:string;controller:AbortController;stopped?:boolean;stopCleanup?:Promise<void>;phase:"native"|"draining"|"cleanup_pending"};
 interface ProviderCommandRoutesContext {
   contextRecoveryMaintenance: {reconcile():Promise<void>;recovering(agentId:string):boolean};
   activeContextRecoveries: Map<string,ContextRecoveryOperation>;
@@ -272,8 +272,29 @@ const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store
   })(),
   stopRecovery: async (agentId,recoveryId) => {
     const operation=activeContextRecoveries.get(agentId);
+    const recovery=coordinationV3.contextRecovery.active(agentId);
+    if(recovery?.id===recoveryId&&recovery.progress?.deliveryRetryActivationId){
+      if(operation&&operation.id!==recoveryId || !operation&&activeAgentProviderCommands.has(agentId) ||
+         activeRuns.has(agentId)||coordinationV3.activeAgentRun(agentId))
+        throw new ContextRecoveryConflictError('Recovery stop conflicts with an active owner');
+      // Fence the release before any await, including when the scheduler is idle.
+      coordinationV3.contextRecovery.stopDeliveryRetry(agentId,recoveryId);
+      const control=operation??{id:recoveryId,controller:new AbortController(),phase:'cleanup_pending'};
+      control.stopped=true;
+      control.phase='cleanup_pending';
+      activeContextRecoveries.set(agentId,control);
+      control.controller.abort();
+      control.stopCleanup??=(async()=>{
+        await providerProcessAuthority.terminateAgents(new Set([agentId]),'human stop of delivery recovery');
+        if(providerProcessAuthority.count({agentId})!==0)throw new Error('Delivery recovery cleanup remains pending');
+      })();
+      try {await control.stopCleanup;return true;}
+      finally {
+        if(!operation&&activeContextRecoveries.get(agentId)===control)activeContextRecoveries.delete(agentId);
+        recoveryChanged(agentId);
+      }
+    }
     if (!operation) {
-      const recovery=coordinationV3.contextRecovery.active(agentId);
       const phase=recovery?.progress?.phase;
       if (recovery?.id!==recoveryId || !phase || !["reserved","drained","native_started","held"].includes(phase)) return false;
       if (activeRuns.has(agentId) || coordinationV3.activeAgentRun(agentId)) throw new Error("Recovery stop conflicts with a live Run");
@@ -472,7 +493,7 @@ async function deliveryRetryMemoryGuard(
       if (!recovery || !rolloverId || store.resumeSessionState(agent.id)) return undefined;
       if (recovery.sourceRunId !== boundary.sourceRunId || recovery.sourceFence !== boundary.sourceFence ||
           recovery.providerSessionId !== boundary.providerSessionId || !recovery.progress?.deliveryRetryActivationId) throw blocked();
-      coordinationV3.contextRecovery.assertReconstruction(agent.id, recovery.id, rolloverId);
+      coordinationV3.contextRecovery.assertReconstruction(agent.id, recovery.id, rolloverId, true);
       // Retirement changes the signature itself. Exclude its one reset only when
       // the durable reconstruction owns that generation and no later reset occurred.
       const resets = store.sqlite.prepare(`
@@ -507,7 +528,8 @@ async function prepareDeliveryContextRetry(
   boundary: Parameters<typeof coordinationV3.contextRecovery.requestDeliveryRetry>[0],
   activationId: string,
 ) {
-  const current = coordinationV3.contextRecovery.active(boundary.agentId);
+  const observed=coordinationV3.contextRecovery.deliveryRetryObservation(boundary.agentId,activationId);
+  const current=observed?.state==='unsupported_fenced'?observed:undefined;
   if (current && (current.progress?.deliveryRetryActivationId !== activationId ||
       current.projectId !== boundary.projectId || current.sourceRunId !== boundary.sourceRunId ||
       current.sourceFence !== boundary.sourceFence)) return undefined;
@@ -517,43 +539,38 @@ async function prepareDeliveryContextRetry(
   const agent = store.getAgent(boundary.agentId);
   if (!agent || workspace.getPreferences().providerAvailability[agent.activeEngine] === false)
     throw new ContextRecoveryConflictError('Enable the Agent’s provider in Settings, then try delivery again.');
-  if (current && activeContextRecoveries.has(agent.id)) return () => {};
-  if (recoveryContext.unavailable(agent.id, boundary.projectId))
-    throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
-  if (workspace.listDecisions({ projectId: boundary.projectId, agentId: agent.id, status: 'pending' }).length)
-    throw new ContextRecoveryConflictError('Resolve the Agent’s pending decision, then try delivery again.');
-
+  const assertAdmission=()=>{
+    const operation=activeContextRecoveries.get(agent.id);
+    if(operation){
+      if(!operation.stopped&&current?.id===operation.id&&current.progress?.phase==='reserved')return;
+      throw new ContextRecoveryConflictError('Delivery recovery cleanup is still active. Try again when it is idle.');
+    }
+    if(recoveryContext.unavailable(agent.id,boundary.projectId))
+      throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
+    if(workspace.listDecisions({projectId:boundary.projectId,agentId:agent.id,status:'pending'}).length)
+      throw new ContextRecoveryConflictError('Resolve the Agent’s pending decision, then try delivery again.');
+  };
+  assertAdmission();
   const engine = engines.get(agent.activeEngine);
   if (engine?.authStatus && recoveryContext.blocker?.(agent.id)?.kind === 'authentication') {
     try { await engineAuthStatuses.refresh(agent.activeEngine, engine.authStatus); }
     catch { /* The blocker below distinguishes unknown evidence from successful verification. */ }
   }
-  const blocker = recoveryContext.blocker?.(agent.id);
-  if (blocker) throw new ContextRecoveryConflictError(blocker.message);
+  const assertAccess=()=>{
+    if(workspace.getPreferences().providerAvailability[agent.activeEngine]===false)
+      throw new ContextRecoveryConflictError('Enable the Agent’s provider in Settings, then try delivery again.');
+    const blocker=recoveryContext.blocker?.(agent.id);
+    if(blocker)throw new ContextRecoveryConflictError(blocker.message);
+  };
+  assertAccess();
   const assertMemoryCurrent = await deliveryRetryMemoryGuard(agent, boundary, handoff);
-  if (recoveryContext.unavailable(agent.id, boundary.projectId)) {
-    if (current && activeContextRecoveries.has(agent.id)) return () => {};
-    throw new ContextRecoveryConflictError('The Agent is still settling its earlier work. Try delivery again when it is idle.');
-  }
 
-  // The delivery authority commits this reservation with the Retry receipt.
+  // Compare-and-reserve alongside the exact delivery receipt, after all awaits.
   return () => {
+    assertAdmission();
+    assertAccess();
     assertMemoryCurrent();
-    const existing = coordinationV3.contextRecovery.active(agent.id);
-    if (existing?.progress?.deliveryRetryActivationId === activationId &&
-        existing.sourceRunId === boundary.sourceRunId && existing.sourceFence === boundary.sourceFence) {
-      if (activeContextRecoveries.has(agent.id)) return;
-      coordinationV3.contextRecovery.assertReconstruction(agent.id, existing.id, existing.progress.reconstructionRolloverId);
-      coordinationV3.contextRecovery.advanceOperation(agent.id, existing.id, 'reserved', 'reserved', {
-        maintenanceAttempts: 0, nextMaintenanceAt: undefined,
-      });
-      return;
-    }
-    const observed = store.uncertainProviderContextRecoveryBoundary(agent.id);
-    if (observed?.sourceRunId !== boundary.sourceRunId || observed.sourceFence !== boundary.sourceFence ||
-        observed.providerSessionId !== boundary.providerSessionId || observed.toolContractHash !== boundary.toolContractHash)
-      throw new ContextRecoveryConflictError('The saved session changed. Reload the conversation and check delivery status.');
-    coordinationV3.contextRecovery.requestDeliveryRetry(boundary, activationId);
+    return coordinationV3.contextRecovery.requestDeliveryRetry(boundary,activationId,observed);
   };
 }
 
@@ -619,8 +636,10 @@ const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderConte
     })();
     recoveryChanged(agentId);notifyScheduler();
   } finally {
+    await operation.stopCleanup?.catch(()=>{ /* The Stop response reports pending cleanup. */ });
     if(activeContextRecoveries.get(agentId)===operation)activeContextRecoveries.delete(agentId);
     activeAgentProviderCommands.delete(agentId);release();
+    if(operation.stopped)recoveryChanged(agentId);
   }
 };
 
@@ -634,6 +653,7 @@ context.contextRecoveryMaintenance.recovering=agentId=>{
       (!recovery?.progress?.deliveryRetryActivationId && engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction")||
       recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length||
       !(recovery?.progress?.deliveryRetryActivationId || coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId})))return false;
+  if(recovery?.progress?.deliveryRetryActivationId&&recovery.progress.phase!=='reserved')return false;
   return recovery?.progress?.phase==='context_accepted'||Boolean(recovery?.progress?.nativeInvoked && (recovery.progress.maintenanceAttempts??0)<12)||
     !recovery?.progress?.nativeInvoked&&(recovery?.progress?.maintenanceAttempts??0)<3;
 };
@@ -648,15 +668,17 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
   let failedRead=false;
   for(const {agent_id:agentId} of candidates) {
     if(isClosed())return;
+    let recovery:ReturnType<typeof coordinationV3.contextRecovery.active>;
     try {
-    const agent=store.getAgent(agentId),recovery=coordinationV3.contextRecovery.active(agentId);
+    const agent=store.getAgent(agentId);
+    recovery=coordinationV3.contextRecovery.active(agentId);
     if(!agent||!recovery||chatArchiveBlocksAgent(store.sqlite, agentId)||deletingAgentIds.has(agentId)||deletingProjectIds.has(agent.projectId)||
         activeContextRecoveries.has(agentId)||recoveryContext.unavailable(agentId,agent.projectId))continue;
     const progress=recovery.progress;
     if(progress?.nextMaintenanceAt&&Date.parse(progress.nextMaintenanceAt)>Date.now())continue;
     const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery);
     if(progress?.deliveryRetryActivationId){
-      if((progress.maintenanceAttempts??0)>=3||recoveryContext.blocker?.(agentId)||
+      if(progress.phase!=='reserved'||(progress.maintenanceAttempts??0)>=3||recoveryContext.blocker?.(agentId)||
          workspace.listDecisions({projectId:agent.projectId,agentId,status:'pending'}).length)continue;
       await reconstructRecovery(recovery);
       continue;
@@ -692,9 +714,11 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
     }catch(error){
       app.log.error({agentId,exception:restrictedInternalExceptionDiagnostic(error)},"Automatic context maintenance remains held");
       try {
-        const recovery=coordinationV3.contextRecovery.active(agentId),progress=recovery?.progress;
-        if(recovery&&progress){const attempts=Math.min(12,(progress.maintenanceAttempts??0)+1);
-          coordinationV3.contextRecovery.advanceOperation(agentId,recovery.id,progress.phase,progress.phase,
+        const observed=coordinationV3.contextRecovery.active(agentId),progress=observed?.progress;
+        if(recovery&&(observed?.id!==recovery.id||progress?.deliveryRetryAttemptId!==recovery.progress?.deliveryRetryAttemptId)||
+           progress?.deliveryRetryActivationId&&progress.phase==='held')continue;
+        if(observed&&progress){const attempts=Math.min(12,(progress.maintenanceAttempts??0)+1);
+          coordinationV3.contextRecovery.advanceOperation(agentId,observed.id,progress.phase,progress.phase,
             {maintenanceAttempts:attempts,nextMaintenanceAt:new Date(Date.now()+Math.min(500*2**attempts,5000)).toISOString()});
           if(progress.deliveryRetryActivationId && attempts===3)recoveryChanged(agentId);
         } else failedRead=true;

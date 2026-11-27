@@ -603,7 +603,8 @@ test('revoking a read memory during a same-model guidance handoff prevents trans
 });
 
 
-for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry recovers an interrupted prompt handoff after restart without replay (memory ${memoryMode})`,{timeout:90000},async t=>{
+for (const mode of ['disabled','stopped','dismissed','enabled','retired','revoked']) test(`Retry recovers an interrupted prompt handoff after restart without replay (mode ${mode})`,{timeout:90000},async t=>{
+ const memoryMode=['stopped','dismissed'].includes(mode)?'disabled':mode;
  let store,native;
  let billingMode='subscription';
  await withFixture(t,async f=>{
@@ -649,6 +650,46 @@ for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry
   assert.equal(blocked.status,409);
   assert.match(blocked.body.error,/Recheck provider sign-in/);
   assert.equal(coordinator.contextRecovery.active(agent.id),undefined);
+  let stoppedId;
+  if(mode==='stopped'||mode==='dismissed'){
+   coordinator.contextRecovery.requestDeliveryRetry(boundary,receipt.activationId);
+   stoppedId=coordinator.contextRecovery.active(agent.id).id;
+   const recoveryPath='/api/agents/'+agent.id+'/context-recoveries/'+stoppedId;
+   const stopped=f.ok(await f.api('POST',recoveryPath+'/stop'));
+   assert.equal(stopped.request.progress.phase,'held');
+   assert.equal(stopped.sourceWork,'held_unknown');
+   billingMode='subscription';
+   await f.reopen();
+   assert.equal(new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id)?.progress?.phase,'held');
+   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+   if(mode==='dismissed'){
+    const retry=CoordinationV3Store.prototype.retryMessageDelivery;
+    CoordinationV3Store.prototype.retryMessageDelivery=function(input){
+     const recovery=this.contextRecovery;
+     if(input.idempotencyKey==='retry-racing-dismiss'){
+      recovery.dismiss(agent.id,stoppedId);
+     }else if(input.idempotencyKey==='retry-racing-replacement'){
+      const observed=recovery.deliveryRetryObservation(agent.id,receipt.activationId);
+      recovery.requestDeliveryRetry(boundary,receipt.activationId,observed);
+      const replacement=recovery.active(agent.id).id;
+      recovery.stopDeliveryRetry(agent.id,replacement);
+      recovery.dismiss(agent.id,replacement);
+     }
+     return retry.call(this,input);
+    };
+    try{
+     for(const idempotencyKey of ['retry-racing-dismiss','retry-racing-replacement']){
+      const stale=await f.api('POST',target,{idempotencyKey});
+      assert.equal(stale.status,409);
+      assert.match(stale.body.error,/Delivery recovery changed/);
+      assert.equal(new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id),undefined);
+     }
+    }finally{CoordinationV3Store.prototype.retryMessageDelivery=retry;}
+    const dismissed=f.ok(await f.api('POST',recoveryPath+'/dismiss',{acknowledgeStillBlocked:true}));
+    assert.equal(dismissed.request.state,'dismissed');
+    assert.equal(dismissed.sourceWork,'held_unknown');
+   }
+  }
   billingMode='subscription';
   if(memoryMode==='retired'||memoryMode==='revoked'){
    const memory=localMemoryFor(f.app), validate=memory.transitionAuthorizationStillValid.bind(memory);
@@ -659,6 +700,11 @@ for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry
     return progress?.reconstructionRolloverId&&progress.maintenanceAttempts===3&&progress;
    },'retired recovery with exhausted attempts',20000);
    assert.ok(retired.reconstructionRolloverId);
+   const beforeStop=coordinator.contextRecovery.active(agent.id);
+   const held=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${beforeStop.id}/stop`));
+   assert.equal(held.request.progress.phase,'held');
+   assert.equal(held.request.progress.reconstructionRolloverId,retired.reconstructionRolloverId);
+   assert.equal((await f.api('POST',target,{idempotencyKey:'retry-before-restart'})).status,409);
    assert.equal(store.resumeSessionState(agent.id),undefined);
    assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
    await f.reopen();
@@ -674,6 +720,10 @@ for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry
   }
   const retry=await f.api('POST',target,{idempotencyKey:'retry-original'});
   assert.equal(retry.status,202,JSON.stringify(retry.body));
+  const activeReplay=await f.api('POST',target,{idempotencyKey:'retry-original'});
+  assert.equal(activeReplay.status,202);
+  assert.equal(activeReplay.body.replayed,true);
+  assert.equal(activeReplay.body.activationId,receipt.activationId);
   const turns=await until(async()=>{
     const requests=(await native.requests()).filter(x=>x.method==='turn/start');return requests.length>=3?requests:undefined;
   },'saved delivery starts with recovered context',20000);
@@ -685,9 +735,21 @@ for (const memoryMode of ['disabled','enabled','retired','revoked']) test(`Retry
   await native.sendTool('ponderosa_message',{text:'Feedback received.'});await f.settled(agent.id,[boundary.sourceRunId]);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(receipt.activationId).n,1);
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=? AND state='dismissed' AND json_extract(progress_json,'$.phase')='canonical_reconstructed'").get(agent.id).n,1);
+  assert.deepEqual(store.sqlite.prepare('SELECT status,fencing_token FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),
+   {status:'outcome_unknown',fencing_token:boundary.sourceFence});
+  if(stoppedId){
+   const rows=store.sqlite.prepare(`SELECT id,state,json_extract(progress_json,'$.phase') phase
+     FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at`).all(agent.id);
+   assert.equal(rows.length,mode==='dismissed'?3:1);
+   assert.equal(rows[0].id,stoppedId);
+   assert.equal(rows.at(-1).phase,'canonical_reconstructed');
+   if(mode==='dismissed')assert.equal(rows[0].phase,'held');
+   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${stoppedId}/stop`)).status,409);
+  }
   const replay=await f.api('POST',target,{idempotencyKey:'retry-original'});
-  assert.equal(replay.status,202);
+  assert.equal(replay.status,409);
   assert.equal(replay.body.replayed,true);
+  assert.equal(replay.body.state,'not_retryable');
   assert.equal((await f.api('POST',target,{idempotencyKey:'different-retry'})).status,409);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,3);
  },{providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter,

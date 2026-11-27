@@ -20,6 +20,8 @@ export interface ProviderContextRecoveryProgress {
   automaticMaintenance?: true;
   /** Original unsubmitted message that requested recovery of a technical handoff. */
   deliveryRetryActivationId?: string;
+  /** Fences Retry receipts across Stop, resume and dismissal. */
+  deliveryRetryAttemptId?: string;
   contextUsageEventSequence?: number;
   /** Frozen canonical reconstruction custody; this is not native usage evidence. */
   reconstructionRolloverId?: string;

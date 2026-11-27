@@ -16,6 +16,8 @@ import type {
   SettleUnavailableActivationResult,
 } from "./coordination-v3-types.js";
 
+type RetryDeliveryReceipt = Omit<RetryMessageDeliveryResponse,"replayed"> & {recoveryAttemptId?:string};
+
 interface DeliveryActivationRow {
   id: string;
   project_id: string;
@@ -122,7 +124,7 @@ export class CoordinationV3ActivationCommandAuthority {
     idempotencyKey: string;
     expectedRolloverAttemptId?: string;
     now?: string;
-    reserveContextRecovery?: () => void;
+    reserveContextRecovery?: () => string;
   }): RetryMessageDeliveryResponse {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
     const now = input.now ?? new Date().toISOString();
@@ -141,10 +143,10 @@ export class CoordinationV3ActivationCommandAuthority {
 
       const hash = payloadHash({ projectId: input.projectId, activationId: original.id,
         ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) });
-      const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
+      const replay = this.idempotentReplay<RetryDeliveryReceipt>(
         input.projectId, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
       );
-      if (replay) return { ...replay, replayed: true };
+      if (replay) return this.replayedDeliveryRetry(input.projectId,original.id,replay);
 
       const sources = this.sqlite.prepare(`
         SELECT source.source_kind, source.source_id, runtime.project_id AS runtime_project_id,
@@ -210,12 +212,13 @@ export class CoordinationV3ActivationCommandAuthority {
         if ((!settingsHold.retryable && !input.reserveContextRecovery) || held || input.expectedRolloverAttemptId) return {
           accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
         };
-        if (input.reserveContextRecovery) input.reserveContextRecovery();
-        else retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
+        const recoveryAttemptId=input.reserveContextRecovery?.();
+        if (!recoveryAttemptId) retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
         const result: Omit<RetryMessageDeliveryResponse,"replayed">={
           accepted:true,state:'queued',activationId:original.id,targetAgentId:original.agent_id,
         };
-        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,result,now);
+        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,
+          recoveryAttemptId?{...result,recoveryAttemptId}:result,now);
         return {...result,replayed:false};
       }
       if (held) {
@@ -372,7 +375,7 @@ export class CoordinationV3ActivationCommandAuthority {
   }): RetryMessageDeliveryResponse | undefined {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
     return this.sqlite.transaction(() => {
-      const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
+      const replay = this.idempotentReplay<RetryDeliveryReceipt>(
         input.projectId,
         "user:local-operator",
         "retry_message_delivery",
@@ -380,8 +383,27 @@ export class CoordinationV3ActivationCommandAuthority {
         payloadHash({ projectId: input.projectId, activationId: input.activationId,
           ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) }),
       );
-      return replay ? { ...replay, replayed: true } : undefined;
+      return replay ? this.replayedDeliveryRetry(input.projectId,input.activationId,replay) : undefined;
     })();
+  }
+
+  private replayedDeliveryRetry(projectId:string,activationId:string,receipt:RetryDeliveryReceipt):RetryMessageDeliveryResponse {
+    const {recoveryAttemptId,...result}=receipt;
+    // A legacy receipt for a recovery cannot prove which reservation it
+    // belonged to. Leave an explicit Retry with a fresh key available.
+    const active=recoveryAttemptId
+      ?this.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests r JOIN agent_activations a
+          ON a.id=? AND a.project_id=r.project_id AND a.agent_id=r.agent_id AND a.scope_key=r.scope_key
+        WHERE r.project_id=? AND json_extract(r.progress_json,'$.deliveryRetryActivationId')=a.id
+          AND json_extract(r.progress_json,'$.deliveryRetryAttemptId')=?
+          AND (r.state='unsupported_fenced' AND json_extract(r.progress_json,'$.phase')='reserved'
+                AND coalesce(json_extract(r.progress_json,'$.maintenanceAttempts'),0)<3 AND a.state IN ('pending','retry_pending')
+            OR r.state='dismissed' AND json_extract(r.progress_json,'$.phase')='canonical_reconstructed'
+                AND a.state IN ('pending','retry_pending','attached'))`).get(activationId,projectId,recoveryAttemptId)
+      :result.activationId!==activationId||!this.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests
+         WHERE project_id=? AND json_extract(progress_json,'$.deliveryRetryActivationId')=? LIMIT 1`).get(projectId,activationId);
+    return active?{...result,replayed:true}
+      :{accepted:false,replayed:true,state:'not_retryable',rejectionReason:'not_terminal'};
   }
 
   /** Acknowledge a terminal delivery failure without replaying the immutable

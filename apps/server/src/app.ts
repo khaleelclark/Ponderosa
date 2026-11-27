@@ -283,7 +283,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const activeContextRecoveries=new Map<string,import("./routes/provider-commands.js").ContextRecoveryOperation>();
   const contextRecoveryMaintenance={reconcile:async()=>{},recovering:(_agentId:string)=>false};
   const contextRecoveryActivity=(agentId:string):"running"|"cleanup_pending"|"idle"=>{const operation=activeContextRecoveries.get(agentId);if(!operation)return contextRecoveryMaintenance.recovering(agentId)?'running':'idle';
-    if(operation.phase==='cleanup_pending'&&(coordinationV3.contextRecovery.active(agentId)?.progress?.maintenanceAttempts??0)>=3)return 'idle';
+    if(operation.phase==='cleanup_pending'&&!operation.stopped&&(coordinationV3.contextRecovery.active(agentId)?.progress?.maintenanceAttempts??0)>=3)return 'idle';
     return operation.phase==='cleanup_pending'?'cleanup_pending':'running';};
   const contextRecoveryRunning=(agentId:string)=>contextRecoveryActivity(agentId)!=='idle';
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =

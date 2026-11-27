@@ -712,7 +712,7 @@ export function registerQueuedMessageRoutes(
       const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(activationId,agent.id,projectId) as {scope_key:string}|undefined;
       let result: RetryMessageDeliveryResponse;
       try {
-        let reserveContextRecovery: (() => void) | undefined;
+        let reserveContextRecovery: (() => string) | undefined;
         if(recoveryBoundary && scope?.scope_key===recoveryBoundary.scopeKey && ["pending","retry_pending"].includes(activation.state)) {
           if (!expectedRolloverAttemptId) reserveContextRecovery = await dependencies.prepareDeliveryContextRetry(recoveryBoundary, activationId);
           if (!reserveContextRecovery) {

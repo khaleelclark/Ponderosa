@@ -105,6 +105,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
       const stopRequested=await context.stopRecovery?.(request.params.id,request.params.recoveryId) ?? false;
       return {stopRequested,request:coordinationV3.contextRecovery.active(request.params.id),sourceWork:"held_unknown"};
     }catch(error){
+      if(error instanceof ContextRecoveryConflictError)return reply.code(409).send({error:error.message,retryable:false});
       app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:request.params.id},"Recovery stop cleanup remains pending");
       return reply.code(503).send({error:"Recovery stop requested; process cleanup remains pending. Source work stays held.",retryable:false});
     }
@@ -113,7 +114,11 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
     if(!store.getAgent(request.params.id))return reply.code(404).send({error:"Agent not found"});
     if(request.body?.acknowledgeStillBlocked!==true)return reply.code(400).send({error:"Acknowledge that original uncertain work remains unresolved"});
     try {
-      const wasActive=coordinationV3.contextRecovery.active(request.params.id)?.id===request.params.recoveryId;
+      const active=coordinationV3.contextRecovery.active(request.params.id);
+      const wasActive=active?.id===request.params.recoveryId;
+      if(wasActive&&active?.progress?.deliveryRetryActivationId&&
+        (context.activity?.(request.params.id,active.id)??'idle')!=='idle')
+        throw new ContextRecoveryConflictError('Delivery recovery cleanup must finish before dismissal');
       const recovery=coordinationV3.contextRecovery.dismiss(request.params.id,request.params.recoveryId);
       if(wasActive)context.changed?.(request.params.id);
       context.notifyScheduler();

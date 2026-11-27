@@ -125,17 +125,53 @@ export class CoordinationV3ContextRecoveryAuthority {
         }|undefined;
   }
 
-  requestDeliveryRetry(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">, activationId:string) {
+  deliveryRetryObservation(agentId:string,activationId:string):ProviderContextRecoveryRequest|undefined {
+    const active=this.active(agentId);
+    if(active)return active;
+    const row=this.sqlite.prepare(`SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND state='dismissed'
+      AND json_extract(progress_json,'$.deliveryRetryActivationId')=? ORDER BY rowid DESC LIMIT 1`).get(agentId,activationId) as Row|undefined;
+    return row&&project(row);
+  }
+
+  requestDeliveryRetry(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">, activationId:string,
+    observed?:ProviderContextRecoveryRequest):string {
     return this.sqlite.transaction(()=>{
       if(!this.interruptedSettingsHandoff(boundary,activationId))
         throw new ContextRecoveryConflictError('The interrupted handoff or saved message changed');
-      const result=this.request({...boundary,idempotencyKey:`delivery-recovery:${boundary.sourceRunId}:${boundary.sourceFence}`});
-      if(!result.replayed){
-        const progress:ProviderContextRecoveryProgress={phase:'reserved',updatedAt:new Date().toISOString(),
-          sourceWork:'held_unknown',deliveryRetryActivationId:activationId};
-        this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?')
-          .run(JSON.stringify(progress),result.request.id);
-      }
+      const latest=this.deliveryRetryObservation(boundary.agentId,activationId);
+      if(latest?.id!==observed?.id || latest?.state!==observed?.state || latest?.progress?.phase!==observed?.progress?.phase ||
+         latest?.progress?.deliveryRetryAttemptId!==observed?.progress?.deliveryRetryAttemptId)
+        throw new ContextRecoveryConflictError('Delivery recovery changed. Reload the conversation and try again.');
+      const current=latest?.state==='unsupported_fenced'?latest:undefined;
+      if(current&&(current.progress?.deliveryRetryActivationId!==activationId||current.projectId!==boundary.projectId||
+          current.scopeKey!==boundary.scopeKey||current.sourceRunId!==boundary.sourceRunId||current.sourceFence!==boundary.sourceFence||
+          current.providerSessionId!==boundary.providerSessionId||current.toolContractHash!==boundary.toolContractHash))
+        throw new ContextRecoveryConflictError('The saved message no longer owns this recovery');
+      if(current)this.assertReconstruction(current.agentId,current.id,current.progress?.reconstructionRolloverId,true);
+      const currentProgress=current?.progress;
+      const attemptId=currentProgress?.phase==='reserved'&&(currentProgress.maintenanceAttempts??0)<3&&currentProgress.deliveryRetryAttemptId
+        ?currentProgress.deliveryRetryAttemptId:randomUUID();
+      // A dismissed reservation is historical. Allocate a fresh row only if the
+      // normal exact source checks still permit binding this saved delivery.
+      const recovery=current??this.request({...boundary,idempotencyKey:`delivery-recovery:${attemptId}`}).request;
+      const progress:ProviderContextRecoveryProgress={...recovery.progress,phase:'reserved',updatedAt:new Date().toISOString(),
+        sourceWork:'held_unknown',deliveryRetryActivationId:activationId,deliveryRetryAttemptId:attemptId,
+        maintenanceAttempts:0,nextMaintenanceAt:undefined,message:undefined};
+      this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?')
+        .run(JSON.stringify(progress),recovery.id);
+      return attemptId;
+    })();
+  }
+
+  stopDeliveryRetry(agentId:string,id:string):void {
+    this.sqlite.transaction(()=>{
+      const recovery=this.active(agentId),progress=recovery?.progress;
+      if(recovery?.id!==id||!progress?.deliveryRetryActivationId||!['reserved','held'].includes(progress.phase))
+        throw new ContextRecoveryConflictError('Exact active delivery recovery changed');
+      this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?').run(JSON.stringify({
+        ...progress,phase:'held',deliveryRetryAttemptId:randomUUID(),updatedAt:new Date().toISOString(),
+        message:'Delivery recovery stopped. Retry the saved message to resume.',
+      }),id);
     })();
   }
   requestMaintenance(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">) {
@@ -285,11 +321,11 @@ export class CoordinationV3ContextRecoveryAuthority {
   }
   /** Only the existing invoked operation can reserve a replacement generation.
    * Its source work stays fenced, including after this hold becomes terminal. */
-  assertReconstruction(agentId:string,id:string,rolloverId?:string):ProviderContextRecoveryRequest {
+  assertReconstruction(agentId:string,id:string,rolloverId?:string,allowHeldDeliveryRetry=false):ProviderContextRecoveryRequest {
     const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=? AND state='unsupported_fenced'").get(agentId,id) as Row|undefined;
     const recovery=row&&project(row),progress=recovery?.progress;
     const deliveryRetry=progress?.deliveryRetryActivationId;
-    if(!row||!recovery||!progress||!(deliveryRetry ? progress.phase==='reserved' : progress.nativeInvoked&&['held','native_started'].includes(progress.phase))||
+    if(!row||!recovery||!progress||!(deliveryRetry ? progress.phase==='reserved'||allowHeldDeliveryRetry&&progress.phase==='held' : progress.nativeInvoked&&['held','native_started'].includes(progress.phase))||
         progress.usedTokens!==undefined||progress.contextUsageEventSequence!==undefined||
         (progress.reconstructionRolloverId??null)!==(rolloverId??null))
       throw new ContextRecoveryConflictError('Canonical reconstruction requires its exact reserved recovery');
@@ -414,6 +450,7 @@ export class CoordinationV3ContextRecoveryAuthority {
     return this.sqlite.transaction(() => {
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=?").get(agentId,id) as Row | undefined;
       if (!row) throw new ContextRecoveryConflictError("Recovery request not found");
+      if(row.state==='dismissed')return project(row);
       const progress = row.progress_json ? JSON.parse(row.progress_json) as ProviderContextRecoveryProgress : undefined;
       if (progress && !["held", "context_accepted"].includes(progress.phase)) {
         throw new ContextRecoveryConflictError("Recovery operation must settle or be reconciled before dismissal");
