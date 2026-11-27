@@ -1508,9 +1508,12 @@ async function workflowLeaveFixture(){
  const outcomes=[];return {...f,outcomes,leave(kind='save'){f.load('saveDisabled');s[kind+'BeforeLeaving'](success=>outcomes.push(success));return s.review.pending??s.discard.pending;}};
 }
 
-test('Save And Leave waits for the existing review, publication and verified current baseline',async()=>{
+test('Save and switch waits for the existing review, publication and verified current baseline',async()=>{
  const f=await workflowLeaveFixture(),s=f.scope,before=s.draft;
- await f.leave();assert.equal(f.outcomes.length,0);assert.equal(s.preview.input.definition,before.definition);assert.equal(s.workflowLeave.current.attempt,s.preview);
+ s.preview={input:{idempotencyKey:'previous-review'}};
+ const review=f.leave();
+ assert.equal(s.preview,undefined,'A previous review cannot publish while the leave review is being prepared');
+ await review;assert.equal(f.outcomes.length,0);assert.equal(s.preview.input.definition,before.definition);assert.equal(s.workflowLeave.current.attempt,s.preview);
  const effect=f.source.split('\n').find(line=>line.includes('current.versionId===draft.expectedVersionId'));let readbacks=0;
  Object.assign(s,{renameId:undefined,deployedUpdate:undefined,useEffect:fn=>fn()});const cache=s.client.setQueryData;s.client.setQueryData=(key,value)=>{cache(key,value);if(key[0]==='branch'){s.current=value;reconcile();assert.equal(s.deployedUpdate,undefined,'Synchronous cache notification already sees owned readback loading');}};
  const reconcile=()=>f.vm.runInContext(f.ts.transpile(effect,{target:f.ts.ScriptTarget.ES2022}),s);
@@ -1546,13 +1549,13 @@ test('a publication older than the current draft cannot reset or navigate away f
  }
 });
 
-test('Discard And Leave uses canonical recovery once and never deletes created resources',async()=>{
+test('Discard changes and switch uses canonical recovery once and never deletes created resources',async()=>{
  const f=await workflowLeaveFixture(),s=f.scope;s.independentSettings.createdAgent='agent-created-during-editing';
  await f.leave('discard');assert.deepEqual(f.outcomes,[true]);assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.independentSettings.createdAgent,'agent-created-during-editing');assert.equal(s.independentSettings.count,'dirty');assert.equal(f.requests.length,4);assert.ok(f.requests.every(row=>row.method==='GET'));
  const failed=await workflowLeaveFixture(),a=failed.scope,before=a.draft;a.onRead=async()=>{throw Error('Discard read failed')};await failed.leave('discard');assert.deepEqual(failed.outcomes,[false]);assert.equal(a.draft,before);assert.equal(a.error,'Discard read failed');
 });
 
-test('uncertain Save And Leave retries the original publication and stale completions cannot finish a later intent',async()=>{
+test('uncertain Save and switch retries the original publication and stale completions cannot finish a later intent',async()=>{
  const f=await workflowLeaveFixture(),s=f.scope;await f.leave();const attempt=s.preview;s.onPublish=async()=>{throw Error('Response lost')};s.publishChanges();await s.deploy.pending;assert.deepEqual(f.outcomes,[false]);
  f.load('publicationUnconfirmed');s.onPublish=undefined;await f.leave();assert.equal(s.preview,attempt);assert.equal(s.workflowLeave.current.attempt,attempt);s.publishChanges();await s.deploy.pending;assert.deepEqual(f.outcomes,[false,true]);
  const g=await workflowLeaveFixture(),a=g.scope;await g.leave();const stale=a.workflowLeave.current;a.finishWorkflowLeave();await g.leave();const current=a.workflowLeave.current;a.finishWorkflowLeave(true,stale);assert.equal(a.workflowLeave.current,current);assert.deepEqual(g.outcomes,[false]);a.finishWorkflowLeave();assert.deepEqual(g.outcomes,[false,false]);

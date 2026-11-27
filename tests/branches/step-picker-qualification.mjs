@@ -148,8 +148,8 @@ try{
    await activate(tab('Settings'));
    if(mobile)await activate(button('Open Workspace Navigation'));
    await activate(page.getByRole('link',{name:'Open Workflow '+blank.name,exact:true}));
-   await heading('Unsaved Changes').waitFor();
-   await activate(inspector.getByRole('button',{name:/^Save and leave$/i}));
+   const leave=page.getByRole('dialog',{name:'Unsaved changes',exact:true});
+   await activate(button('Save and switch',leave));
    await picker.waitFor();
    assert.equal(branchId(),branch.id);
    await dismissPicker();

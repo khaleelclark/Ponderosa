@@ -300,8 +300,8 @@ try{
    await openNav();
    await activate(sidebarOverflow(branch.name));
    await activate(choice(quick(branch.name),'Rename…'));
-   await inspector.getByRole('heading',{name:'Unsaved Changes',exact:true}).waitFor();
-   await activate(back);
+   const leave=page.getByRole('dialog',{name:'Unsaved changes',exact:true});
+   await activate(button('Stay here',leave));
    assert.equal(owner(),other.id);
    await button('Add your first step').waitFor();
    await activate(button('Undo'));

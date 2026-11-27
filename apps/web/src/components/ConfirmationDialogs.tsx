@@ -24,6 +24,8 @@ interface FormDialogShellProps {
   confirmColor?: "primary" | "error";
   confirmDisabled?: boolean;
   cancelLabel?: string;
+  focusCancel?: boolean;
+  disableBackdropClose?: boolean;
   maxWidth?: DialogProps["maxWidth"];
   secondaryAction?: { label: string; onClick(): void; disabled?: boolean };
   onCancel(): void;
@@ -43,6 +45,8 @@ function FormDialogShell({
   confirmColor = "primary",
   confirmDisabled = false,
   cancelLabel = "Cancel",
+  focusCancel = false,
+  disableBackdropClose = false,
   maxWidth = "xs",
   secondaryAction,
   onCancel,
@@ -61,7 +65,7 @@ function FormDialogShell({
   const secondary = secondaryAction && <Button onClick={secondaryAction.onClick} disabled={pending || secondaryAction.disabled}>{secondaryAction.label}</Button>;
   const confirm = (
     <Button
-          autoFocus={!inWorkflowInspector}
+          autoFocus={!inWorkflowInspector && !focusCancel}
           color={confirmColor}
           variant="contained"
           disabled={pending || confirmDisabled}
@@ -88,12 +92,16 @@ function FormDialogShell({
     ? <WorkflowInspectorPage title={title} pending={pending} onBack={close} actions={<>{secondary}{confirm}</>}>{body}</WorkflowInspectorPage>
     : <></>;
   return (
-    <Dialog open={open} onClose={close} fullWidth maxWidth={maxWidth}
+    <Dialog open={open} onClose={(_event, reason) => {
+      if (reason !== "backdropClick" || !disableBackdropClose) close();
+    }} fullWidth maxWidth={maxWidth}
       aria-busy={pending || undefined} slotProps={{ transition: { onExited } }}>
       <DialogTitle>{title}</DialogTitle>
-      <DialogContent>{body}</DialogContent>
-      <DialogActions>
-        <Button onClick={close} disabled={pending}>{cancelLabel}</Button>
+      <DialogContent sx={secondary ? { overflowWrap: "anywhere" } : undefined}>{body}</DialogContent>
+      <DialogActions disableSpacing={Boolean(secondary)} sx={secondary ? {
+        flexWrap: "wrap", gap: 0.5, "& .MuiButton-root": { minHeight: 44, textAlign: "center" },
+      } : undefined}>
+        <Button autoFocus={focusCancel} onClick={close} disabled={pending}>{cancelLabel}</Button>
         {secondary}
         {confirm}
       </DialogActions>
@@ -112,6 +120,8 @@ export interface ConfirmDialogProps {
   error?: ReactNode;
   confirmDisabled?: boolean;
   cancelLabel?: string;
+  focusCancel?: boolean;
+  disableBackdropClose?: boolean;
   secondaryAction?: FormDialogShellProps["secondaryAction"];
   maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;

@@ -433,15 +433,29 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
   }
   setValidationRequest(value=>value+1);
   if(draft.definition.steps.some(step=>step.kind==='agent'&&'ref'in step.target&&!draft.bindings.agents[step.target.ref])){
-   review.reset();deploy.reset();if(workflowLeave.current?.draft===draft)finishWorkflowLeave();return;
+   review.reset();deploy.reset();
+   if(workflowLeave.current?.draft===draft){finishWorkflowLeave();setTab('workflow');}
+   return;
   }
   once('review',()=>{review.reset();deploy.reset();review.mutate(draft)});
  };
  const publishChanges=()=>{if(!preview||discard.isPending)return;if(!(publicationUnconfirmed&&preview===deploy.variables)&&(preview.draftRevision!==draftRevision.current||pendingAdvanced.current)){setError('The draft changed. Review the current edits before publishing.');return;}once('deploy',()=>deploy.mutate(preview))};
  const saveDisabled=!current||Boolean(current.versionId&&!dirty)||advancedDirty||loading||openingLink||review.isPending||deploy.isPending||discard.isPending;
- const saveBeforeLeaving=(complete:(success:boolean)=>void)=>{if(saveDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}workflowLeave.current={kind:'save',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,...(publicationUnconfirmed?{attempt:deploy.variables}:{})};reviewChanges()};
+ const saveBeforeLeaving=(complete:(success:boolean)=>void)=>{
+  if(saveDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}
+  workflowLeave.current={kind:'save',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,...(publicationUnconfirmed?{attempt:deploy.variables}:{})};
+  if(!publicationUnconfirmed)setPreview(undefined);
+  reviewChanges();
+ };
  const discardBeforeLeaving=(complete:(success:boolean)=>void)=>{if(discardDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}const intent={branchId:draft.branchId!,selection:selection.current,revision:draftRevision.current,edits:workflowEdits.current};workflowLeave.current={kind:'discard',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,discard:intent};discard.reset();once('discard',()=>discard.mutate(intent))};
- useBranchWorkflowLeaveGuard({branchId:draft.branchId,save:saveBeforeLeaving,discard:discardBeforeLeaving,pending:review.isPending||deploy.isPending||discard.isPending,canSave:!saveDisabled,canDiscard:!discardDisabled});
+ useBranchWorkflowLeaveGuard({
+  branchId:draft.branchId,save:saveBeforeLeaving,discard:discardBeforeLeaving,
+  pending:review.isPending||deploy.isPending||discard.isPending,canSave:!saveDisabled,canDiscard:!discardDisabled,
+  actionHint:publicationUnconfirmed?'Confirm the previous publication before discarding edits.':advancedDirty?'Apply JSON edits or correct the invalid fields before saving.':undefined,
+  destinationName:next=>next.global?'Workspace settings':next.branchId
+   ?branches.data?.find(branch=>branch.id===next.branchId)?.name??client.getQueryData<BranchDto>(['branch',next.branchId])?.name
+   :'Workflows',
+ });
  useEffect(()=>{const intent=workflowLeave.current;if(intent&&(route.branchId!==intent.branchId||route.global||intent.revision!==draftRevision.current&&draftRevision.current!==savedDraft.current||pendingAdvanced.current))finishWorkflowLeave()},[route.branchId,route.global,draft,advancedDirty]);
  useEffect(()=>()=>finishWorkflowLeave(),[]);
  const editorGeneration=selection.current;
@@ -545,7 +559,8 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
     {publicationUnconfirmed&&<Alert severity="warning" action={<Button onClick={reviewChanges}>Review Publication</Button>}>Publication unconfirmed · reconcile same publication before discarding edits</Alert>}
      {editorAvailable&&lifecycle.data&&(lifecycle.data.deleting||lifecycle.data.updates.length>0||lifecycle.data.pendingRemoval.length>0)&&<BranchLifecycleStatus lifecycle={lifecycle.data} canceling={cancelInstallation.isPending} onCancelUpdate={id=>cancelInstallation.mutate(id)}/>}
 
-     {editorAvailable&&tab!=='workflow'&&advancedDirty&&<Alert severity="warning" action={<Button onClick={()=>setTab('workflow')}>Open Workflow</Button>}>Review unapplied or invalid fields before publishing.</Alert>}
+    {tab!=='workflow'&&reviewFailure&&<Alert severity="error" action={<Button onClick={()=>setTab('workflow')}>Open Workflow</Button>}>{reviewFailure}</Alert>}
+    {editorAvailable&&tab!=='workflow'&&advancedDirty&&<Alert severity="warning" action={<Button onClick={()=>setTab('workflow')}>Open Workflow</Button>}>Review unapplied or invalid fields before publishing.</Alert>}
 
  </>;
  const noticeHasSavedData=route.global?preferences.data!==undefined:tab==='executions'?(executionId?detailOwned:Boolean(route.branchId&&draft.branchId===route.branchId&&histories.data!==undefined)):tab==='chats'?Boolean(contexts.data?.some(context=>context.id===route.chatId&&context.branchId===route.branchId)):Boolean(route.branchId&&draft.branchId===route.branchId);
@@ -555,7 +570,6 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const externalPane=
   discardIntent&&discardIntent.branchId===route.branchId?'discard':
   preview?'review':
-  leaveConfirmation?'leave':
   runOpen?'run':
   disableId&&disableId===current?.id?'disable':
   renameId&&renameId===draft.branchId?'rename':
@@ -658,7 +672,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
       <Typography color="text.secondary">Restore definition → draft → review → publish</Typography>
       <WorkspaceQueryError read={workspaceRead(`branch:${draft.branchId}`,"Version History",versions)}/>
       {versions.isPending?<Typography role="status">Loading version history…</Typography>:!versions.error&&!versions.data?.pages.flat().length&&<Typography color="text.secondary">No published versions yet.</Typography>}{versions.data?.pages.flat().map(version=><Paper variant="outlined" key={version.id} sx={{p:2}}><Stack direction="row" alignItems="center" gap={1} flexWrap="wrap"><Typography sx={{flex:1}}>{new Date(version.createdAt).toLocaleString()}</Typography>{version.id===current?.versionId&&<Chip size="small" label="Deployed"/>}<Button onClick={()=>void versionDefinition(version,false)}>Download Definition</Button><Button onClick={()=>void versionDefinition(version,true)}>Use As Draft</Button></Stack></Paper>)}{versions.hasNextPage&&<Button onClick={()=>void versions.fetchNextPage()}>Load Older Versions</Button>}</Stack></WorkflowInspectorPage>;
- const inspectorContent=activePane&&externalPane?{discard:discardForm,review:reviewForm,leave:leaveConfirmation,run:runForm,disable:disableForm,rename:renameForm,history:historyForm,delete:null}[externalPane]:null;
+ const inspectorContent=activePane&&externalPane?{discard:discardForm,review:reviewForm,run:runForm,disable:disableForm,rename:renameForm,history:historyForm,delete:null}[externalPane]:null;
  return <WorkspaceRefreshProvider connection={connection}><WorkspaceConnectionProvider value={connection}><Box sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',minHeight:0}}><PrimaryHeaderActionsProvider onOpenProviderSettings={()=>onGlobal('providers')} workspaceStatus={<WorkspaceConnectionNotice connection={connection} hasSavedData={noticeHasSavedData}/>}><MobileNavigationProvider buttonRef={sharedNavigationButton} desktopVisible={sidebarPresentation.collapsed} onOpen={()=>mobileWorkspace?setMobileNavOpen(true):setSidebarPresentation(state=>({...state,collapsed:false}))}><Box sx={{height:'100%',display:'grid',gridTemplateColumns:{xs:'minmax(0,1fr)',md:'auto minmax(0,1fr)'},overflow:'hidden',bgcolor:'background.default'}}>
   <Box sx={{display:{xs:'none',md:'block'},height:'100%',minHeight:0}}>{(!mobileWorkspace||desktopNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>navigate({tab:'workflow'})} onSearch={openGlobalSearch} panel={sidebarPanel(false)} notifications={!mobileWorkspace?<BranchNotifications onNavigate={navigate}/>:undefined} collapsed={sidebarPresentation.collapsed} width={sidebarPresentation.width} onCollapsedChange={collapsed=>{setSidebarPresentation(state=>({...state,collapsed}));if(collapsed)requestAnimationFrame(()=>sharedNavigationButton.current?.focus())}} onWidthChange={width=>setSidebarPresentation(state=>({...state,width}))}/>}</Box>
   <input ref={workflowImportInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(mobileNavOpen)closeMobileNavigation();void importFile(e.target.files?.[0]);e.target.value=''}}/>
@@ -716,5 +730,6 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
   {fullExport&&<BranchPackageExportDialog key={fullExport.branchId} source={fullExport} pending={exportPending} error={exportError} onCancel={()=>setFullExport(undefined)} onConfirm={confirmFullExport}/>}
   {install&&<BranchPackageDialog pkg={install.pkg} branchId={install.branchId} branches={branches.data??[]} engines={engines.data??[]} onClose={()=>setInstall(undefined)} onInstalled={branch=>{if(branch.id!==route.branchId){const accepted=navigate({branchId:branch.id,tab:'workflow'});if(accepted)setInstall(undefined);return accepted}return guard(()=>{setInstall(undefined);void reloadWorkflow(branch.id)},true)}}/>}
 
+  {leaveConfirmation}
  </Box></MobileNavigationProvider></PrimaryHeaderActionsProvider></Box></WorkspaceConnectionProvider></WorkspaceRefreshProvider>;
 }
