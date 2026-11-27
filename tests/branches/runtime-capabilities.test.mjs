@@ -80,7 +80,10 @@ test('regular Settings, Chat and Agent policy routes persist restriction-only in
   assert.equal(detail.effective.restrictionSources[CAPABILITY_IDS.hostFileImport].scopeKind,'product');assert.equal(detail.effective.restrictionSources[CAPABILITY_IDS.browserRead].scopeId,chat.id);
   assert.deepEqual(f.ok(await f.api('GET',`/api/branches/${branch.id}/chats/${branchChat.id}/capabilities`)).effective.restrictedCapabilityIds,[]);
   assert.equal((await f.api('PUT',normal,{revision:0,restrictedCapabilityIds:[]})).status,409);assert.equal(f.ok(await f.api('GET',normal)).policy.revision,1);
-  for(const url of [`/api/conversations/${branchChat.id}/capabilities`,`/api/branches/engine/conversations/${chat.id}/capabilities`,`/api/branches/engine/agents/${agent.id}/capabilities`])assert.equal((await f.api('GET',url)).status,404);
+  for(const url of [`/api/conversations/${branchChat.id}/capabilities`,`/api/branches/engine/conversations/${chat.id}/capabilities`,`/api/branches/engine/agents/${agent.id}/capabilities`]){
+   assert.equal((await f.api('GET',url)).status,404);
+   assert.equal((await f.api('GET',url+'/connected-tools')).status,404);
+  }
   assert.equal((await f.api('PUT',agentUrl,{revision:1,restrictedCapabilityIds:['unknown.permission']})).status,400);
   await f.reopen();detail=f.ok(await f.api('GET',agentUrl));assert.equal(detail.policy.revision,1);assert.ok(detail.effective.restrictedCapabilityIds.includes(CAPABILITY_IDS.hostFileImport));
  });
@@ -94,10 +97,13 @@ test('permission catalogs reuse tool definitions, scope connectors by engine, an
   const memory=result.catalog.find(c=>c.id===CAPABILITY_IDS.memoryRead);assert.equal(memory.available,false);assert.match(memory.unavailableReason,/not configured/);
   const imports=result.catalog.find(c=>c.id===CAPABILITY_IDS.hostFileImport);assert.equal(imports.includedTools[0].name,'ponderosa_import_file');assert.match(imports.includedTools[0].description,/host/);
   const managed=result.catalog.find(c=>c.id===CAPABILITY_IDS.managedAgentCreate);assert.ok(managed.includedTools.some(tool=>tool.name==='ponderosa_manage'&&tool.description.includes('Only its create_agent operation')));
-  assert.ok(result.catalog.some(c=>c.id==='connector:codex:fixture-service'&&c.includedTools[0].description.includes('Look up')));assert.equal(result.catalog.some(c=>c.id.startsWith('connector:claude:')),false);
+  assert.equal(result.catalog.some(c=>c.id.startsWith('connector:')),false);
+  const inventory=f.ok(await f.api('GET',url+'/connected-tools'));
+  assert.ok(inventory.catalog.some(c=>c.id==='connector:codex:fixture-service'&&c.includedTools[0].description.includes('Look up')));
+  assert.equal(inventory.catalog.some(c=>c.id.startsWith('connector:claude:')),false);
   const orphan='connector:claude:disconnected';result=f.ok(await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[orphan]}));const unavailable=result.catalog.find(c=>c.id===orphan);assert.equal(unavailable.available,false);assert.ok(unavailable.unavailableReason);
   result=f.ok(await f.api('PUT',url,{revision:1,restrictedCapabilityIds:[orphan,CAPABILITY_IDS.hostFileImport]}));assert.ok(result.policy.restrictedCapabilityIds.includes(orphan),'Editing a visible permission preserves an unavailable saved restriction');
-  const global=f.ok(await f.api('GET','/api/workspace/capabilities'));assert.ok(global.catalog.some(c=>c.id==='connector:claude:fixture-service'));
+  const global=f.ok(await f.api('GET','/api/workspace/capabilities/connected-tools'));assert.ok(global.catalog.some(c=>c.id==='connector:claude:fixture-service'));
  },{diagnosticProvider:true});
 });
 
@@ -137,7 +143,7 @@ test('Chat catalogs preserve distinct working folders for otherwise identical Ag
   const chat=await f.createChat('Folder-specific services'),first=await f.createIdleAgent(chat,'First folder'),second=await f.createIdleAgent(chat,'Second folder');
   const {mkdir}=await import('node:fs/promises'),path=await import('node:path'),alternate=path.join(f.root,'alternate');await mkdir(alternate);
   const original=store.getAgent(second.id).workingCopy;store.sqlite.prepare('UPDATE agents SET working_copy_json=? WHERE id=?').run(JSON.stringify({...original,rootPath:alternate}),second.id);
-  f.ok(await f.api('GET',`/api/conversations/${chat.id}/capabilities`));
+  f.ok(await f.api('GET',`/api/conversations/${chat.id}/capabilities/connected-tools`));
   assert.ok(f.capabilityDiscoveries.some(selection=>selection.cwd===alternate),'A second Agent folder must not disappear behind the first matching engine/model');
   assert.ok(f.capabilityDiscoveries.some(selection=>selection.cwd!==alternate),'The original Chat/Agent folder remains represented');
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
@@ -150,18 +156,43 @@ test('aggregated connected-tool details have one response-wide bound without dro
   const chat=await f.createChat('Bounded aggregate'),second=await f.createIdleAgent(chat,'Second inventory');
   const {mkdir}=await import('node:fs/promises'),path=await import('node:path'),alternate=path.join(f.root,'alternate');await mkdir(alternate);
   store.sqlite.prepare('UPDATE agents SET working_copy_json=? WHERE id=?').run(JSON.stringify({...store.getAgent(second.id).workingCopy,rootPath:alternate}),second.id);
-  const result=f.ok(await f.api('GET',`/api/conversations/${chat.id}/capabilities`)),connectors=result.catalog.filter(row=>row.id.startsWith('connector:'));
+  const result=f.ok(await f.api('GET',`/api/conversations/${chat.id}/capabilities/connected-tools`)),connectors=result.catalog.filter(row=>row.id.startsWith('connector:'));
   assert.equal(connectors.length,2,'Both working-folder services remain controllable');assert.ok(connectors.every(row=>row.available));
-  assert.ok(connectors.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row.includedTools)),0)<64*1024);assert.match(result.catalogNotice,/tool details are omitted/);
+  assert.ok(connectors.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row.includedTools)),0)<64*1024);assert.ok(connectors.some(row=>/^Showing \d+ of 100 tools\.$/.test(row.toolDetailsReason)));
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),capabilityCatalog:cwd=>({steering:true,persistentSessions:true,commands:[],composerCapabilities:[],mcpServers:[{name:cwd.endsWith('alternate')?'second-service':'first-service',configured:true,initialization:'initialized',usable:true,toolsDiscovered:true,toolCount:100,health:'unknown',tools:Array.from({length:100},(_,i)=>({name:`tool_${i}`,description:'d'.repeat(400)}))}]})});
 });
 
-test('cold permission reads and saves survive the ordinary socket idle limit while provider discovery finishes',{timeout:30000},async t=>{
- for(const method of ['GET','PUT'])await withFixture(t,async f=>{
-  const chat=await f.createChat('Slow catalog'),agent=await f.createIdleAgent(chat,'Slow discovery'),origin=await f.listen(),url=method==='GET'?'/api/workspace/capabilities':`/api/agents/${agent.id}/capabilities`;
-  const response=await fetch(origin+url,{method,...(method==='PUT'?{headers:{'content-type':'application/json'},body:JSON.stringify({revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]})}:{})});
-  assert.equal(response.status,200);const result=await response.json();assert.equal(result.policy.revision,method==='PUT'?1:0);if(method==='PUT')assert.ok(result.policy.restrictedCapabilityIds.includes(CAPABILITY_IDS.hostFileImport));
- },{socketIdleTimeoutMs:50,capabilityCatalog:async()=>{await new Promise(resolve=>setTimeout(resolve,150));return {steering:true,persistentSessions:true,commands:[],mcpServers:[],composerCapabilities:[]}}});
+test('cold permissions read and save independently of stalled discovery, with explicit cache refresh and errors',{timeout:30000},async t=>{
+ let resume,fail=false;
+ const discovery={steering:true,persistentSessions:true,commands:[],mcpServers:[],composerCapabilities:[]};
+ const gate=new Promise(resolve=>{resume=resolve});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Slow catalog'),agent=await f.createIdleAgent(chat,'Slow discovery');
+  const origin=await f.listen(),url=`/api/agents/${agent.id}/capabilities`;
+  const discoveriesBefore=f.capabilityDiscoveries.length;
+  const read=()=>fetch(origin+url,{signal:AbortSignal.timeout(2000)});
+  const write=revision=>fetch(origin+url,{method:'PUT',signal:AbortSignal.timeout(2000),headers:{'content-type':'application/json'},
+   body:JSON.stringify({revision,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]})});
+  let loading;
+  try{
+   assert.equal((await (await read()).json()).policy.revision,0);
+   assert.equal(f.capabilityDiscoveries.length,discoveriesBefore,'Policy alone does not start provider discovery');
+   loading=fetch(origin+url+'/connected-tools',{signal:AbortSignal.timeout(8000)});
+   await until(()=>f.capabilityDiscoveries.length===discoveriesBefore+1,'held discovery');
+   assert.equal((await (await read()).json()).policy.revision,0);
+   assert.equal((await (await write(0)).json()).policy.revision,1);
+   assert.equal((await write(0)).status,409);
+  }finally{
+   resume();
+   if(loading)assert.deepEqual(await (await loading).json(),{catalog:[]});
+  }
+  assert.deepEqual(f.ok(await f.api('GET',url+'/connected-tools')),{catalog:[]});
+  assert.equal(f.capabilityDiscoveries.length,discoveriesBefore+1,'Opening again reuses the warm discovery cache');
+  fail=true;
+  assert.deepEqual(f.ok(await f.api('GET',url+'/connected-tools?refresh=1')),{catalog:[],discoveryFailed:true});
+  assert.equal(f.capabilityDiscoveries.length,discoveriesBefore+2,'Retry reports the actual refresh result');
+  assert.equal((await (await write(1)).json()).policy.revision,2);
+ },{socketIdleTimeoutMs:50,capabilityCatalog:async()=>{await gate;if(fail)throw Error('Controlled discovery failure');return discovery}});
 });
 
 test('operator permission history retains before/after, rejects stale writes, and survives restart for both products',{timeout:30000},async t=>{

@@ -345,11 +345,10 @@ export async function discoverCodexAppServerCapabilities(opts: {
       cliVersion = codexCliVersion(await rpc.initialize());
     } catch (error) {
       if (!timedOut) throw error;
-      return normalizeCodexProviderDiscovery({
-        cwd: opts.cwd,
-        selectedModel: opts.model,
-        configuredMcps: opts.configuredMcps,
-      });
+      return {
+        ...normalizeCodexProviderDiscovery({cwd: opts.cwd, selectedModel: opts.model, configuredMcps: opts.configuredMcps}),
+        mcpInventoryIncomplete: true,
+      };
     }
     if (opts.modelCatalogOnly) {
       const models = await optionalPaginatedRequest(rpc, "model/list", { includeHidden: false });
@@ -365,7 +364,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
     ]);
     const pluginDetails = await readInstalledPluginDetails(rpc, plugins);
     rpc.throwIfFailed();
-    return normalizeCodexProviderDiscovery({
+    const capabilities = normalizeCodexProviderDiscovery({
       cwd: opts.cwd,
       cliVersion,
       selectedModel: opts.model,
@@ -377,6 +376,12 @@ export async function discoverCodexAppServerCapabilities(opts: {
       mcpStatuses,
       configuredMcps: opts.configuredMcps,
     });
+    const statusRows = object(mcpStatuses)?.data;
+    const mcpInventoryIncomplete = !Array.isArray(statusRows) || statusRows.some(value => {
+      const status = object(value);
+      return status?.name !== "ponderosa" && typeof status?.toolsError === "string" && Boolean(status.toolsError);
+    });
+    return mcpInventoryIncomplete ? {...capabilities, mcpInventoryIncomplete: true} : capabilities;
   } finally {
     clearTimeout(timeout);
     opts.signal.removeEventListener("abort", abortFromHost);

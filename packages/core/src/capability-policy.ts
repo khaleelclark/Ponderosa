@@ -66,7 +66,12 @@ export interface CapabilityPolicyResponse {
   policy: CapabilityPolicyRecord;
   effective: EffectiveCapabilityPolicy;
   catalog: CapabilityCatalogEntry[];
-  catalogNotice?: string;
+}
+
+export interface ConnectedToolsResponse {
+  catalog: CapabilityCatalogEntry[];
+  selectionLimited?: boolean;
+  discoveryFailed?: boolean;
 }
 
 export interface RuntimeCapabilityRestrictions {

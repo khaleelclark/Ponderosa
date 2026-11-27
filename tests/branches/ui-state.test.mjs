@@ -322,10 +322,10 @@ test('workflow Settings sections load without parameter configuration and keep l
  client.setQueryData(['branch-dependencies',branch.id],{calls:[],callers:[{id:'billing-workflow',ref:'reports-alias'}]});
  client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
  const render=(extra={})=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(BranchSettings,{branch,definition,...extra}))));
- const html=render(),labels=['Branch Capabilities','Dependencies','Delete Workflow'];
+ const html=render(),labels=['Tool permissions','Dependencies','Delete Workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
- assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced execution settings')&&html.indexOf('Loading configuration')<html.indexOf('Branch Capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
+ assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced execution settings')&&html.indexOf('Loading configuration')<html.indexOf('Tool permissions'),'Local limits load independently inside Execution Controls without gating the other sections');
  assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
@@ -398,14 +398,22 @@ async function capabilityActionFixture(immediateSave=true,endpoint='/api/branche
  const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
  const source=await readFile(new URL('../../apps/web/src/components/CapabilityPolicyEditor.tsx',import.meta.url),'utf8'),writes=[],cache=[],notices=[];
  const {capabilityDraftDirty}=await import('../../apps/web/src/components/capabilityPolicyDraft.ts');
+ const {CAPABILITY_IDS,parseConnectorCapabilityId}=await import('@ponderosa/core');
  const policy={revision:4,scopeId:'owner',restrictedCapabilityIds:['connector:hidden','unknown.future']};
- const scope={endpoint,immediateSave,notify:notice=>notices.push(notice),draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
+ const scope={endpoint,immediateSave,CAPABILITY_IDS,parseConnectorCapabilityId,notify:notice=>notices.push(notice),draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
   setDraft:value=>{scope.draft=typeof value==='function'?value(scope.draft):value},client:{setQueryData:(key,value)=>{cache.push({key,value});scope.query.data=value}},
   readback:async()=>scope.query.data,requestJson:async(url,init)=>{if(!init?.body)return scope.readback();writes.push({url,...JSON.parse(init.body)});return scope.query.data},
   useMutation:options=>{scope.options=options;return {isPending:false,mutate:next=>{scope.next=next;scope.accepted=(scope.accepted??0)+1}}}};
- const owner=source.split('\n').filter(line=>['const reloadPolicy=','const save=','const toggle='].some(prefix=>line.trim().startsWith(prefix))).join('\n');
- assert.equal(owner.split('\n').length,3,'Exercise the existing editor owners');
- vm.runInNewContext(ts.transpileModule(owner.replace('const reloadPolicy=','globalThis.reloadPolicy=').replace('const save=','globalThis.save=').replace('const toggle=','globalThis.toggle='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ const names=['reloadPolicy','save','toggle'];
+ const ast=ts.createSourceFile('CapabilityPolicyEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const editor=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='CapabilityPolicyEditorContent');
+ const declarations=editor.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]);
+ const owner=names.map(name=>{
+  const declaration=declarations.find(node=>node.name.getText(ast)===name);
+  assert.ok(declaration?.initializer,`Exercise the existing ${name} owner`);
+  return `globalThis.${name}=${declaration.initializer.getText(ast)};`;
+ }).join('\n');
+ vm.runInNewContext(ts.transpileModule(owner,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
  return {scope,writes,cache,notices};
 }
 
@@ -413,7 +421,7 @@ test('immediate capabilities preserve hidden restrictions and admit one write be
  const f=await capabilityActionFixture();f.scope.toggle('memory.read',false);f.scope.toggle('memory.write',false);
  assert.equal(f.scope.accepted,1,'A second event must not start another write');await f.scope.options.mutationFn(f.scope.next);
  assert.deepEqual(f.writes,[{url:'/api/branches/owner/capabilities',revision:4,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}]);
- f.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}});f.scope.options.onSettled();
+ f.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}},f.scope.next);f.scope.options.onSettled();
  assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['capability-policy:/api/branches/owner/capabilities','Settings Saved']]);
  f.scope.toggle('memory.read',true);await f.scope.options.mutationFn(f.scope.next);
  assert.equal(f.writes[1].revision,5);assert.deepEqual(f.writes[1].restrictedCapabilityIds,['connector:hidden','unknown.future']);
@@ -430,7 +438,7 @@ test('uncertain capability writes read back current policy before explicitly rea
 
 test('manual capability callers still stage edits and responses stay scoped to their original endpoint',async()=>{
  const manual=await capabilityActionFixture(false);manual.scope.toggle('memory.read',false);manual.scope.toggle('memory.write',false);assert.equal(manual.scope.accepted,undefined);assert.ok(manual.scope.draft.restricted.includes('memory.read')&&manual.scope.draft.restricted.includes('memory.write'));
- const old=await capabilityActionFixture(true,'/api/branches/old/capabilities'),next=await capabilityActionFixture(true,'/api/branches/new/capabilities');old.scope.toggle('memory.read',false);old.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['memory.read']}});
+ const old=await capabilityActionFixture(true,'/api/branches/old/capabilities'),next=await capabilityActionFixture(true,'/api/branches/new/capabilities');old.scope.toggle('memory.read',false);old.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['memory.read']}},old.scope.next);
  assert.deepEqual(JSON.parse(JSON.stringify(old.cache[0].key)),['capability-policy','/api/branches/old/capabilities']);assert.equal(next.cache.length,0);assert.equal(next.scope.draft,undefined);
 });
 
@@ -494,7 +502,7 @@ test('immediate-save capability presentation removes manual actions while preser
  const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx');
  const client=new QueryClient({defaultOptions:{queries:{staleTime:Infinity,gcTime:Infinity,retry:false}}}),endpoint='/api/branches/b/capabilities';
  client.setQueryData(['capability-policy',endpoint],{policy:{scopeId:'b',revision:1,restrictedCapabilityIds:[]},effective:{restrictionSources:{inherited:{scopeKind:'global',scopeId:'global',label:'Global'}}},catalog:[{id:'inherited',label:'Inherited',description:'Broader restriction',categoryLabel:'Tools',available:true},{id:'unavailable',label:'Unavailable',description:'Not installed',categoryLabel:'Tools',available:false}]});
- try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave}))));assert.equal(html.includes('Save Capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
+ try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave}))));assert.equal(html.includes('Save Capabilities'),!immediateSave);assert.ok(html.includes('Restricted by workspace settings')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
 });
 
 test('canceled query refresh cannot retire an uncertain capability write before HTTP readback completes',async()=>{
@@ -803,7 +811,7 @@ test('shared permissions expose Included tools, friendly effective states and im
   {id:'unavailable',label:'Read memory',description:'Read granted memory',categoryLabel:'Memory',available:false,unavailableReason:'Local Memory is not configured',includedTools:[]},
  ];
  const endpoint='/api/conversations/normal/capabilities';client.setQueryData(['capability-policy',endpoint],{policy,effective:{restrictionSources:{ancestor:{scopeKind:'product',scopeId:'interactive',label:'Ponderosa defaults'}}},catalog});
- try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included Tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save Capabilities'),false);assert.ok(html.includes('Allow Import files'));assert.match(html,/<h3[^>]*>Files<\/h3>/,'Capability groups follow the section heading');
+ try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included Tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by workspace settings','Unavailable','Local Memory is not configured'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save Capabilities'),false);assert.ok(html.includes('Allow Import files'));assert.match(html,/<h3[^>]*>Files<\/h3>/,'Capability groups follow the section heading');
   const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(Probe))));assert.ok(ordinary.includes('Tool Permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save Capabilities'),false);
  }finally{client.clear()}
 });

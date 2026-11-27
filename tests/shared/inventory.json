@@ -3430,6 +3430,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned disposable real-server UI check; built web/server/packages and installed Chrome; synthetic content and inert provider; no performance/load qualification",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/tool-permissions-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built web and server, installed Chrome, disposable Branch policies and controlled provider discovery at desktop and phone widths",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
