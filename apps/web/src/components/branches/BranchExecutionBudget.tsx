@@ -11,6 +11,7 @@ import {useMutationNotification,MutationErrorDetails} from '../MutationNotificat
 import {productApiPath} from '../../api/productScope';
 import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
+import {ExecutionControlHelp} from './ExecutionControlHelp';
 
 const countedSources='The budget counts automatic runs and calls from other workflows when they start. Run once is exempt.';
 export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
@@ -41,7 +42,9 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
  return <Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
   <Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
    <Typography variant="subtitle1" fontWeight={650}>Automatic Execution Budget</Typography>
-   {settings&&draft!==undefined&&<FormControlLabel sx={{m:0,flexShrink:0}} label="Limit" control={<Switch inputProps={{'aria-label':'Limit Automatic Executions'}} checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setEditing(enabled);setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>}
+   {settings&&draft!==undefined&&<ExecutionControlHelp label="Limit Automatic Executions" help="Caps how many automatic runs and calls from other workflows can start in each budget period. Run once is exempt.">
+    <FormControlLabel sx={{m:0,flexShrink:0}} label="Limit" control={<Switch inputProps={{'aria-label':'Limit Automatic Executions'}} checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setEditing(enabled);setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>
+   </ExecutionControlHelp>}
   </Stack>
   <WorkspaceQueryError read={workspaceRead(`branch:${branchId}`,"Execution Budget",query)}/>{!query.error&&<Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'baseline',justifyContent:'space-between',flexWrap:'wrap'}}>
    <Typography variant="body2" role={!query.data?"status":undefined}>{presentation.message}</Typography>

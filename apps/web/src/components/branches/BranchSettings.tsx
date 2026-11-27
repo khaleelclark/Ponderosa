@@ -15,6 +15,7 @@ import {useMutationNotification} from "../MutationNotifications";
 import {CapabilityPolicyEditor} from "../CapabilityPolicyEditor";
 import {BranchExecutionBudget} from './BranchExecutionBudget';
 import {BranchDeletionStatus,BranchInstallationUpdateStatus} from './BranchOperations';
+import {ExecutionControlHelp} from './ExecutionControlHelp';
 
 export function useBranchAvailability(branchId?:string) {
  const client=useQueryClient();
@@ -94,9 +95,13 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
    {settingsError&&<Alert severity="error" action={reload}>{settingsError}</Alert>}
    <Typography fontWeight={650}>Local limits</Typography>
    <Typography variant="body2" color="text.secondary">A run fails if it exceeds one of these limits.</Typography>
-   {([['maxCallDepth','Nested Branch Depth'],['maxLoopIterations','Loop Iterations'],['maxTraversals','Graph Traversals']] as const).map(([key,label])=>{
+   {([
+    ['maxCallDepth','Nested Branch Depth','How many workflows can be called in a chain beneath this one. A direct call is one level.'],
+    ['maxLoopIterations','Loop Iterations','How many times a run can follow a loop-back connection in total, including loops in workflows it calls.'],
+    ['maxTraversals','Graph Traversals','How many times a run can visit steps and routing points in total, including revisits and work in workflows it calls.'],
+   ] as const).map(([key,label,help])=>{
     const value=draft.limits[key],invalid=!Number.isSafeInteger(value)||value<1;
-    return <TextField disabled={save.isPending||reloadAction.isPending} key={key} label={label} type="number" error={invalid} helperText={invalid?'Enter a positive whole number.':undefined} value={value} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/>;
+    return <ExecutionControlHelp key={key} label={label} help={help}><TextField disabled={save.isPending||reloadAction.isPending} label={label} type="number" error={invalid} helperText={invalid?'Enter a positive whole number.':undefined} value={value} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/></ExecutionControlHelp>;
    })}
    {dirty&&<Button variant="contained" sx={{alignSelf:"start"}} disabled={save.isPending||reloadAction.isPending||!branch.versionId||invalidLimits} onClick={()=>save.mutate()}>{save.isPending?'Saving…':'Save local limits'}</Button>}
   </Stack>;

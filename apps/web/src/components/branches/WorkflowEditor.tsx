@@ -24,6 +24,7 @@ import {guidedInsertionRestriction,insertGuidedStep,type GuidedInsertionTarget,t
 import {nodeName,removeWorkflowNode} from './model';
 import {workflowPaths} from './workflow-outline';
 import {advancedSettingsNeedAttention,FailureEditor,NodeEditor} from './NodeEditor';
+import {ExecutionControlHelp} from './ExecutionControlHelp';
 import {changeAgentTarget} from './model';
 const standardSteps=[
  ['agent','Agent Task','Give an Agent instructions to work on the step’s input.'],
@@ -315,12 +316,19 @@ export function WorkflowExecutionSettings({definition,onDefinition,bindings,onBi
  },[validationIssue]);
  return <Stack component="section" ref={section} tabIndex={-1} aria-label="Draft execution policy" spacing={2}>
   <Box><Typography fontWeight={650}>Execution policy</Typography><Typography variant="body2" color="text.secondary">Publish the workflow to apply these changes.</Typography></Box>
-  {([['maxConcurrentExecutions','Concurrent Executions',2],['maxEphemeralAgents','Temporary Agents Per Execution',100],['maxPathInstances','Maximum Paths',1000],['maxStepInvocations','Maximum Step Invocations',1000]] as const).map(([field,label,fallback])=>{
+  {([
+   ['maxConcurrentExecutions','Concurrent Executions',2,'How many runs of this workflow can do work at the same time. Additional runs wait for room.'],
+   ['maxEphemeralAgents','Temporary Agents Per Execution',100,'How many temporary Agents one run can create, including Agents created by a temporary team.'],
+   ['maxPathInstances','Maximum Paths',1000,'How many paths one run can create in total, including its starting path, parallel paths, and For Each item paths.'],
+   ['maxStepInvocations','Maximum Step Invocations',1000,'How many step visits one run can make across its paths. Visiting the same step again in a loop uses another visit.'],
+  ] as const).map(([field,label,fallback,help])=>{
     const value=definition.policy[field]??fallback,maximum=field==='maxConcurrentExecutions'?1000:100000;
     const invalid=!Number.isSafeInteger(value)||value<1||value>maximum;
-    return <TextField data-branch-field={field} key={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={invalid?`Enter a whole number from 1 to ${maximum.toLocaleString()}.`:undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>;
+    return <ExecutionControlHelp key={field} label={label} help={help}><TextField data-branch-field={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={invalid?`Enter a whole number from 1 to ${maximum.toLocaleString()}.`:undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/></ExecutionControlHelp>;
    })}
-  <FormControlLabel data-branch-field="pauseOnSpeakerRemoval" label="Pause Automatic Runs When Speaker Role Is Removed" control={<Switch checked={definition.policy.pauseOnSpeakerRemoval===true} onChange={(_,pauseOnSpeakerRemoval)=>onDefinition({...definition,policy:{...definition.policy,pauseOnSpeakerRemoval}})}/>}/>
-  <FailureEditor value={definition.policy.failure} onChange={failure=>onDefinition({...definition,policy:{...definition.policy,failure:failure??{action:'stop'}}})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/>
+  <ExecutionControlHelp label="Pause Automatic Runs When Speaker Role Is Removed" help="If this workflow’s designated Speaker Agent loses that role, pause new automatic runs.">
+   <FormControlLabel sx={{m:0}} data-branch-field="pauseOnSpeakerRemoval" label="Pause Automatic Runs When Speaker Role Is Removed" control={<Switch checked={definition.policy.pauseOnSpeakerRemoval===true} onChange={(_,pauseOnSpeakerRemoval)=>onDefinition({...definition,policy:{...definition.policy,pauseOnSpeakerRemoval}})}/>}/>
+  </ExecutionControlHelp>
+  <FailureEditor selectorHelp="Choose what to do when a step fails and hasn’t set its own behavior." value={definition.policy.failure} onChange={failure=>onDefinition({...definition,policy:{...definition.policy,failure:failure??{action:'stop'}}})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/>
  </Stack>;
 }

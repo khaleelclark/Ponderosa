@@ -44,6 +44,7 @@ function budgetOwner(){
   if(name==='../../api/real')return {requestJson:async(path,init)=>{writes.push({path,...init,body:JSON.parse(init.body)});if(scope.failure)throw scope.failure;return scope.response??{...scope.query.data,revision:scope.query.data.revision+1,policy:writes.at(-1).body.policy??scope.query.data.policy}}};
   if(name==='../MutationNotifications')return {useMutationNotification:()=>notice=>notices.push(notice),MutationErrorDetails:'MutationErrorDetails'};
   if(name==='./BranchNavigation')return {useBranchDraftGuard:(id,dirty)=>guards.set(id,dirty)};
+  if(name==='./ExecutionControlHelp')return {ExecutionControlHelp:'ExecutionControlHelp'};
   if(name==='./budgetPresentation')return presentation.exports;
   throw Error(name);
  }});
