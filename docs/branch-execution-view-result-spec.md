@@ -150,3 +150,17 @@ Keep **How this budget works** for the detailed budget explanation. Keep the dif
 
 - Read every tooltip with a mouse and keyboard, then tap its help target at phone width. Verify help can be dismissed, the settings stay editable, and opening help does not change any setting.
 - Check that the copy distinguishes runs, paths, step visits, and routing visits. Verify the budget copy describes workflow calls and the manual-run exemption.
+
+## Tool permissions
+
+Use **Tool permissions** as the section heading in Workflow Settings. Show permission rows directly under it. Remove the generic **Broader restrictions still apply** and **Provider-native changes: next Run · Tool calls: Activity** lines, and the page-wide notice about omitted tool details.
+
+- Show an inherited restriction beside the affected permission, for example **Restricted by workspace settings**. If a change applies from the next run, show that timing in the feedback for that change. Keep actionable save failures and conflicts visible.
+- Keep incomplete tool lists inside the relevant **Included Tools** disclosure. When counts are known, say **Showing 12 of 18 tools**. Keep a discovery failure beside the connected tools it affects, with **Retry**.
+- Render the heading immediately. Use **Loading tool permissions…** for the initial policy read. Load the saved policy, inherited restrictions, and built-in tool controls independently of provider discovery. A saved policy change should return confirmation without waiting for the provider’s tool list.
+- Load provider inventory when the user opens **Connected tools**. Reuse the existing discovery cache and keep the last loaded list visible during refresh. Keep saved restrictions visible when discovery is unavailable and treat the saved policy as the authority. Reuse the existing revision, owner, and access checks.
+
+### Acceptance checks
+
+- Stall provider discovery. Verify the heading appears, built-in permissions load and can be saved, and only the connected tools subsection shows discovery progress or failure.
+- Verify a normal policy view has a heading and permission rows without generic banners. Check that an inherited restriction explains why its control is unavailable and that a shortened tool list explains itself inside its disclosure.
