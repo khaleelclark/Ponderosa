@@ -54,15 +54,15 @@ export function routeBefore(definition:BranchDefinition,nodeId:string):{definiti
 }
 
 export type WorkflowNodeRemoval =
- | {ok:true;definition:BranchDefinition;nextSelected:string}
+ | {ok:true;definition:BranchDefinition;nextSelected?:string}
  | {ok:false;reason:string};
 
-/** Remove a Step while preserving the graph invariants required by deployment. */
+/** Remove a Step while preserving the draft graph and its required paths. */
 export function removeWorkflowNode(definition:BranchDefinition,nodeId:string):WorkflowNodeRemoval{
  const nodes=[...definition.steps,...definition.controls],node=nodes.find(item=>item.id===nodeId);
  if(!node)return {ok:false,reason:'This Step no longer exists.'};
  if(node.kind==='fork'||node.kind==='join'||node.kind==='map'||definition.controls.some(c=>c.kind==='map'&&c.workerId===nodeId))return {ok:false,reason:'Edit the complete parallel or For Each group in the advanced definition before removing one of its required parts.'};
- if(nodes.length<=1)return {ok:false,reason:'Every workflow needs at least one Step. Add another Step before removing this one.'};
+ if(nodes.length===1)return {ok:true,definition:{...definition,entry:'',steps:[],controls:[],edges:[]}};
  const successorEdge=definition.edges.find(edge=>edge.from===nodeId&&(edge.on==='success'||edge.on==='approved'));
  const successor=successorEdge?.to!==nodeId&&nodes.some(item=>item.id===successorEdge?.to)?successorEdge?.to:undefined;
  const fallbackOwners=definition.controls.filter(control=>(control.kind==='condition'||control.kind==='route')&&control.otherwise===nodeId);

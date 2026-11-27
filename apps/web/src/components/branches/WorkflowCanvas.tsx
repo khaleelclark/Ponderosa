@@ -89,7 +89,7 @@ function GuidedCanvas({region,navigationRef,onPhase,startControl,entryButtonRef,
    const element=scroll.current;if(!element||element.clientWidth!==available.width||element.clientHeight!==available.height)return;
    const previous=applied.current,sameOwner=previous?.branchId===branchId,saved=canvasViews.get(branchId),node=layout.nodes.find(node=>node.id===selected),oldNode=sameOwner?previous.layout.nodes.find(node=>node.id===selected):undefined;
    let viewport=sameOwner?resizeWorkflowViewport(flow.getViewport(),previous.available,available):saved?.viewport?resizeWorkflowViewport(saved.viewport,saved.available??available,available):undefined;
-   if(!viewport){const entry=frame.entry??frame.start;viewport={x:available.width/2-entry.x-entry.width/2,y:32-frame.start.y,zoom:1}}
+   if(!viewport||sameOwner&&previous.layout.nodes.length>0&&frame.firstStep){const entry=frame.entry??frame.start;viewport={x:available.width/2-entry.x-entry.width/2,y:32-frame.start.y,zoom:1}}
    if(sameOwner&&previous.layout.key!==layout.key&&node&&oldNode)viewport={...viewport,x:viewport.x+(oldNode.x-node.x)*viewport.zoom,y:viewport.y+(oldNode.y-node.y)*viewport.zoom};
    const fitting=fitPending.current;if(fitting&&(fitting.width!==region.current?.clientWidth||fitting.height!==region.current?.clientHeight||fitting.key!==layout.key))fitPending.current=false;
    if(fitPending.current)viewport=getViewportForBounds(frame.bounds,available.width,available.height,.1,1.2,.1);
@@ -98,7 +98,21 @@ function GuidedCanvas({region,navigationRef,onPhase,startControl,entryButtonRef,
    if(sameOwner&&node&&previous.layout.key!==layout.key&&!oldNode)reveal(node.id,true);else if(requested&&selected)reveal(selected);
   });return()=>cancelAnimationFrame(task);
  },[flow,layout,measuring,active,branchId,available.width,available.height,startSize.height,revealRequest,selected,selectedExists]);
- useEffect(()=>{if(!selectedExists){lastFocusRequest.current=focusRequest;return;}if(!focusRequest||lastFocusRequest.current===focusRequest||!selected||!active)return;const task=requestAnimationFrame(()=>{const element=Array.from(region.current?.querySelectorAll<HTMLElement>('[data-id]')??[]).find(node=>node.dataset.id===selected&&node.classList.contains('react-flow__node'));if(element){lastFocusRequest.current=focusRequest;restoringFocus.current=true;try{element.focus({preventScroll:true})}finally{restoringFocus.current=false}}});return()=>cancelAnimationFrame(task)},[focusRequest,selected,selectedExists,active,layout]);
+ useEffect(()=>{
+  if(!active||!focusRequest||lastFocusRequest.current===focusRequest)return;
+  if(!selectedExists){
+   if(frame?.firstStep&&!measuring){
+    lastFocusRequest.current=focusRequest;
+    entryButtonRef.current?.focus({preventScroll:true});
+   }else if(definition.entry)lastFocusRequest.current=focusRequest;
+   return;
+  }
+  const task=requestAnimationFrame(()=>{
+   const element=Array.from(region.current?.querySelectorAll<HTMLElement>('[data-id]')??[]).find(node=>node.dataset.id===selected&&node.classList.contains('react-flow__node'));
+   if(element){lastFocusRequest.current=focusRequest;restoringFocus.current=true;try{element.focus({preventScroll:true})}finally{restoringFocus.current=false}}
+  });
+  return()=>cancelAnimationFrame(task);
+ },[focusRequest,selected,selectedExists,active,layout,measuring,frame?.firstStep,definition.entry,entryButtonRef]);
  useLayoutEffect(()=>{if(!selectedExists||!active)lastRevealRequest.current=revealRequest;if(!active)lastFocusRequest.current=focusRequest},[selectedExists,revealRequest,focusRequest,active]);
  const fit=()=>{if(!flow||!frame||!layout)return;fitPending.current={width:region.current?.clientWidth??0,height:region.current?.clientHeight??0,key:layout.key};setFree(getViewportForBounds(frame.bounds,available.width,available.height,.1,1.2,.1))};
  const nodes=useMemo<CanvasNode[]>(()=>layout?.nodes.map(node=>{const canonical=[...definition.steps,...definition.controls].find(item=>item.id===node.id);return {id:node.id,type:node.kind,position:{x:node.x,y:node.y},initialWidth:node.width,initialHeight:node.height,style:{width:node.width},data:{layout:node,node:canonical,issue:issues.some(issue=>issue.nodeId===node.id),entry:definition.entry===node.id},selected:selected===node.id,draggable:false,connectable:false,deletable:false,focusable:Boolean(canonical),ariaLabel:canonical?`Select ${nodeName(canonical)}${issues.some(issue=>issue.nodeId===node.id)?', Configuration Issue':''}`:'End This Path'}})??[],[layout,definition,selected,issues]);

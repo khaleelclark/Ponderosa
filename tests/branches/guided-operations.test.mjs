@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import '../shared/web-typescript-loader.mjs';
 import {validateBranchDefinition} from '../../packages/agents/dist/branch-definition.js';
-const {addNode,makeScript,newDefinition}=await import('../../apps/web/src/components/branches/model.ts');
+const {addNode,makeScript,newDefinition,removeWorkflowNode}=await import('../../apps/web/src/components/branches/model.ts');
 const {guidedInsertionRestriction,insertGuidedStep}=await import('../../apps/web/src/components/branches/guided-operations.ts');
 
 const kinds=['agent','script','human_gate','action','branch_call','parallel','for_each','condition','route'];
@@ -183,4 +183,29 @@ test('Shared client-ID fallback supports rapid parallel and ordinary insertions 
   if(descriptor)Object.defineProperty(globalThis,'crypto',descriptor);
   else delete globalThis.crypto;
  }
+});
+
+test('Removing the only step clears the draft graph without changing the rest of the workflow',()=>{
+ const only=script('only');
+ const definition={...graph([only],[edge('loop','only','only','success',{loop:true})]),
+  trigger:{kind:'schedule',configRef:'daily'},parameters:{title:{type:'text',default:'Weekly update'}}};
+ const before=structuredClone(definition),result=removeWorkflowNode(definition,only.id);
+ assert.equal(result.ok,true);
+ assert.equal(result.nextSelected,undefined);
+ assert.deepEqual(result.definition,{...before,entry:'',steps:[],controls:[],edges:[]});
+ assert.deepEqual(definition,before);
+ assert.throws(()=>validateBranchDefinition(result.definition),/requires 1–100 steps/);
+ apply(result.definition,'action',{kind:'entry'});
+});
+
+test('Removal still guards required Condition, Parallel and For Each steps',()=>{
+ const condition=apply(newDefinition(),'condition',{kind:'entry'}).definition;
+ for(const step of condition.steps)assert.equal(removeWorkflowNode(condition,step.id).ok,false,step.label);
+ const map=apply(newDefinition(),'for_each',{kind:'entry'}).definition;
+ for(const node of [...map.steps,...map.controls])assert.equal(removeWorkflowNode(map,node.id).ok,false,node.label);
+ const parallel=apply(newDefinition(),'parallel',{kind:'entry'}).definition;
+ for(const node of parallel.controls)assert.equal(removeWorkflowNode(parallel,node.id).ok,false,node.label);
+ const left=parallel.edges.find(candidate=>candidate.from===parallel.entry);
+ const terminates={...parallel,edges:parallel.edges.filter(candidate=>candidate.from!==left.to)};
+ assert.equal(removeWorkflowNode(terminates,left.to).ok,false,'The fork still requires both paths');
 });

@@ -120,7 +120,7 @@ try{
    await inspector.getByText('On failure · Stop This Path (workflow default)',{exact:true}).waitFor();
    await click(inspector.getByRole('button',{name:'Change failure handling',exact:true}));
    await inspector.getByRole('combobox',{name:/Failure Handling/}).waitFor();
-   await back.click();
+   await click(back);
    const canvas=page.getByRole('region',{name:'Workflow Canvas'});
    await click(button('Undo',canvas));
    await click(button('Undo',canvas));
@@ -129,12 +129,12 @@ try{
    const trigger=button('Start manually',canvas);
    await inspector.getByRole('textbox',{name:'Review Prompt',exact:true}).fill('Choose what the manual workflow returns.');
    await inspector.getByRole('textbox',{name:'Choices (One Per Line, Optional)',exact:true}).fill('Keep draft\nPublish sample');
-   await back.click();
+   await click(back);
    await click(trigger);
    assert.equal(await inspector.getByRole('radio',{name:'Manually with Run once',exact:true}).isChecked(),true);
    assert.equal(await inspector.getByRole('radiogroup',{name:'When already running'}).count(),0);
    assert.equal(await inspector.getByRole('switch',{name:'Allow automatic runs in this draft'}).count(),0);
-   await back.click();
+   await click(back);
    await click(button('Publish to run'));
    await inspector.getByText('This workflow starts only when you choose Run once.',{exact:true}).waitFor();
    await click(button('Publish workflow',inspector));

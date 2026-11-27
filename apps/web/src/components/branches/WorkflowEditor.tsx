@@ -13,7 +13,7 @@ const WorkflowAgentSetup=lazy(()=>import('./WorkflowAgentSetup').then(module=>({
 
 import { requestJson } from "../../api/real";
 import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
-import {Alert,Box,Button,FormControl,FormControlLabel,FormLabel,IconButton,Menu,MenuItem,Radio,RadioGroup,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
+import {Alert,Box,Button,FormControl,FormControlLabel,FormLabel,IconButton,ListSubheader,Menu,MenuItem,Radio,RadioGroup,Stack,Switch,TextField,ToggleButton,ToggleButtonGroup,Tooltip,Typography} from '@mui/material';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
@@ -24,6 +24,20 @@ import {guidedInsertionRestriction,insertGuidedStep,type GuidedInsertionTarget,t
 import {removeWorkflowNode} from './model';
 import {advancedSettingsNeedAttention,FailureEditor,NodeEditor} from './NodeEditor';
 import {changeAgentTarget} from './model';
+const standardSteps=[
+ ['agent','Agent Task','Give an Agent instructions to work on the step’s input.'],
+ ['human_gate','Approval','Pause for someone to review and decide how to proceed.'],
+ ['action','Notification','Sends the step’s input to Ponderosa Notifications and subscribed devices.'],
+ ['branch_call','Run Another Workflow','Pass the input to a published workflow and use its result.'],
+ ['script','Script','Run code to process the input.'],
+] as const;
+const branchingSteps=[
+ ['condition','Condition','Choose a path based on a rule.'],
+ ['route','Named Routes','Choose a named path that matches the input.'],
+ ['parallel','Parallel Paths','Run paths in parallel and join their results.'],
+ ['for_each','For Each','Run the same work for every item in a list.'],
+] as const;
+
 function workflowInsertionAnchor(control:HTMLElement,returnTo?:HTMLElement){
  const rectangle=control.getBoundingClientRect(),document=control.ownerDocument,identity=control.dataset.workflowInsertion;
  // React Flow may replace a toolbar during measurement. MUI keeps this clicked
@@ -62,7 +76,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  };
  const applyRequest=useRef(0),currentDefinition=useRef(definition);currentDefinition.current=definition;
  const [triggerInvalid,setTriggerInvalid]=useState(false),[retainTrigger,setRetainTrigger]=useState(false);
- const startsLabel=useId();
+ const startsLabel=useId(),pickerLabel=useId();
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
  const viewStorageKey=`ponderosa:workflow-view:${branchId}`;
  const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??(branchId&&readBrowserStorage('sessionStorage',viewStorageKey)==='outline'?'outline':'canvas'));
@@ -135,7 +149,17 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  },[active,firstStepRequest,view,definition.steps.length,definition.controls.length]);
  const closeAdd=()=>{dismissedInsertion.current=addAnchor;setAddAnchor(null)};
  const add=(kind:GuidedStepKind)=>{if(!addAnchor)return;const result=insertGuidedStep(definition,kind,insertionTarget);if(!result.ok){setInsertError(result.reason);return;}onDraft({definition:result.definition});openEditor(result.selected);setFocusRequest(value=>value+1);dismissedInsertion.current=null;setAddAnchor(null)};
- const removeSelected=(id:string)=>{const result=removeWorkflowNode(definition,id);if(!result.ok){setInsertError(result.reason);return;}onDefinition(result.definition);setSelected(result.nextSelected);setFocusRequest(value=>value+1)};
+ const removeSelected=(id:string)=>{
+  const result=removeWorkflowNode(definition,id);
+  if(!result.ok){setInsertError(result.reason);return;}
+  onDefinition(result.definition);
+  setSelected(result.nextSelected);
+  if(!result.nextSelected){
+   if(inspectorPane==='step')onInspectorPane();
+   if(expandedPane.current==='step')expandedPane.current=undefined;
+  }
+  setFocusRequest(value=>value+1);
+ };
  const restricted=guidedInsertionRestriction(definition,insertionTarget);
  useEffect(()=>{if(!validationRequest||validationIssues.some(issue=>issue.nodeId))return;const missing=definition.steps.find(step=>advancedSettingsNeedAttention(step,bindings)||step.kind==='script'&&(!step.source.trim()||!bindings.directories[step.cwdRef]?.trim())||step.kind==='agent'&&'ref'in step.target&&!bindings.agents[step.target.ref]||step.kind==='human_gate'&&!step.prompt.trim()||step.kind==='branch_call'&&!bindings.branches?.[step.branchRef]);if(missing){openEditor(missing.id);onInvalidStep?.()}else if(!definition.steps.length){onInvalidStep?.();(view==='outline'?outlineEntry:addButton).current?.focus()}},[validationRequest]);
  useEffect(()=>{onPendingEdits?.(setupPending||triggerInvalid||(advanced!==undefined&&advanced!==JSON.stringify(definition,null,2)))},[advanced,definition,onPendingEdits,triggerInvalid,setupPending]);
@@ -187,8 +211,12 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   {insertError&&<Alert severity="error" onClose={()=>setInsertError('')}>{insertError}</Alert>}
   <Menu anchorEl={addAnchor} anchorOrigin={{vertical:'bottom',horizontal:'center'}} transformOrigin={{vertical:'top',horizontal:'center'}} marginThreshold={16} open={Boolean(addAnchor)} onClose={closeAdd} disableRestoreFocus slotProps={{transition:{onExited:()=>{const anchor=dismissedInsertion.current;dismissedInsertion.current=null;if(mounted.current&&owner.current.active)anchor?.restoreFocus()}}}}>
    {branching&&<MenuItem onClick={()=>setBranching(false)}>← All Steps</MenuItem>}
-   <Box sx={{px:2,py:1,maxWidth:280}}><Typography variant="caption" color="text.secondary">{restricted??insertionLabel??(insertionTarget.kind==='entry'?(definition.entry?'Before The First Step':'First Step'):insertionTarget.kind==='edge'?'On This Connection':'Before End This Path')}</Typography></Box>
-   {(branching?[['condition','Condition'],['route','Named Routes'],['parallel','Parallel Paths'],['for_each','For Each']]:[['agent','Agent Task'],['human_gate','Approval'],['action','Notification'],['branch_call','Run Another Workflow'],['script','Script']]).map(([kind,label])=><MenuItem key={kind} disabled={Boolean(restricted)} onClick={()=>add(kind as GuidedStepKind)}>{label}</MenuItem>)}
+   <ListSubheader disableSticky sx={{px:2,py:1,maxWidth:280,typography:'caption'}}>{restricted??insertionLabel??(insertionTarget.kind==='entry'?(definition.entry?'Before The First Step':'First Step'):insertionTarget.kind==='edge'?'On This Connection':'Before End This Path')}</ListSubheader>
+   {(branching?branchingSteps:standardSteps).map(([kind,label,help])=><MenuItem key={kind} aria-label={label} aria-describedby={pickerLabel+kind} disabled={Boolean(restricted)} onClick={()=>add(kind)}
+    sx={{display:'block',py:1,minHeight:44,maxWidth:360,whiteSpace:'normal'}}>
+    <Typography>{label}</Typography>
+    <Typography id={pickerLabel+kind} variant="body2" color="text.secondary">{help}</Typography>
+   </MenuItem>)}
    {!branching&&<MenuItem onClick={()=>setBranching(true)}>Branching…</MenuItem>}
   </Menu>
   {canvasOpened&&<Stack ref={canvasRegion} hidden={view!=='canvas'} role="region" aria-label="Workflow Canvas"
@@ -237,7 +265,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
    </WorkflowInspectorPage>}
    {selectedNode&&<Box ref={stepPanel} hidden={!editorVisible} {...(!editorVisible?{inert:''}:{})} sx={{height:'100%'}}>
     <WorkflowInspectorPage title="Step Settings" onBack={closeEditor} headerAction={<IconButton aria-label="Expand Workflow" onClick={toggleExpanded} sx={{width:44,height:44}}><OpenInFullIcon/></IconButton>}>
-     <NodeEditor active={editorVisible} key={selectedNode.id} onProviderSetup={onProviderSetup} onDraft={value=>{if(canEditInspector())owner.current.onDraft(value)}} validationRequest={active?validationRequest+issueFocus:0} retainedTemplates={retainedTemplates.current} branchId={branchId} onSetup={value=>{if(canEditInspector()){setupButton.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setSetup(value)}}} validationIssue={chosenIssue?.nodeId===selectedNode.id?chosenIssue:validationIssues.find(issue=>issue.nodeId===selectedNode.id)} definition={definition} nodeId={selectedNode.id} onChange={value=>{if(canEditInspector())owner.current.onDefinition(value)}} onRemove={next=>{if(canEditInspector()){setSelected(next);setFocusRequest(value=>value+1)}}} bindings={bindings} onBindings={value=>{if(canEditInspector())owner.current.onBindings(value)}} contexts={contexts} agents={agents} engines={engines}/>
+     <NodeEditor active={editorVisible} key={selectedNode.id} onProviderSetup={onProviderSetup} onDraft={value=>{if(canEditInspector())owner.current.onDraft(value)}} validationRequest={active?validationRequest+issueFocus:0} retainedTemplates={retainedTemplates.current} branchId={branchId} onSetup={value=>{if(canEditInspector()){setupButton.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setSetup(value)}}} validationIssue={chosenIssue?.nodeId===selectedNode.id?chosenIssue:validationIssues.find(issue=>issue.nodeId===selectedNode.id)} definition={definition} nodeId={selectedNode.id} onChange={value=>{if(canEditInspector())owner.current.onDefinition(value)}} onRemove={id=>{if(canEditInspector())removeSelected(id)}} bindings={bindings} onBindings={value=>{if(canEditInspector())owner.current.onBindings(value)}} contexts={contexts} agents={agents} engines={engines}/>
     </WorkflowInspectorPage>
    </Box>}
    {setup&&<Box hidden={!inspectorActive||inspectorPane!=='step'} sx={{height:'100%'}}><Suspense fallback={<Typography role="status">Loading Agent Setup…</Typography>}><WorkflowAgentSetup key={`${branchId}:${setup.nodeId}:${setup.kind}`} branchId={branchId} chatId={setup.chatId??chatId??''} request={setup} engines={engines} onComplete={finishSetup} onClose={()=>{setSetup(undefined);setSetupPending(false);restoreSetupFocus()}} onPendingChange={setSetupPending}/></Suspense></Box>}
