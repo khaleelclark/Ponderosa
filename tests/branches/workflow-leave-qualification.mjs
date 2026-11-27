@@ -11,8 +11,8 @@ let web,browser;
 try{
  web=await serveFixture(f);
  browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',args:['--no-sandbox']});
- for(const mobile of [false,true]){
-  const viewport=mobile?{width:390,height:844}:{width:1440,height:900};
+ for(const viewport of [{width:1440,height:900},{width:390,height:844},{width:320,height:640}]){
+  const mobile=viewport.width<600;
   const context=await browser.newContext({viewport,isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
   const page=await context.newPage();
   page.setDefaultTimeout(12000);
@@ -23,6 +23,12 @@ try{
   const tab=name=>page.getByRole('tab',{name,exact:true});
   const heading=name=>page.getByRole('heading',{name,exact:true});
   const leave=page.getByRole('dialog',{name:'Unsaved changes',exact:true});
+  const search=page.getByRole('dialog',{name:'Search Ponderosa',exact:true});
+  async function assertSearchBlocked(shortcut){
+   await page.keyboard.press(shortcut);
+   assert.equal(await search.count(),0,'Search must not cover an active leave confirmation');
+   assert.equal(await leave.isVisible(),true,'The leave decision stays accessible');
+  }
   const stay=button('Stay here',leave),save=button('Save and switch',leave),discard=button('Discard changes and switch',leave);
   const inspector=page.getByRole(mobile?'dialog':'region',{name:'Workflow inspector',exact:true});
   const current=()=>new URL(page.url()).searchParams.get('branch');
@@ -113,6 +119,9 @@ try{
    assert.equal(await save.evaluate(node=>node===document.activeElement),true);
    await page.keyboard.press('Tab');
    assert.equal(await stay.evaluate(node=>node===document.activeElement),true);
+   await assertSearchBlocked('Control+k');
+   await assertSearchBlocked('Meta+k');
+   assert.equal(await stay.evaluate(node=>node===document.activeElement),true);
    const tabs=await page.locator('#branch-settings-tab').boundingBox();
    const x=tabs.x+tabs.width/2,y=tabs.y+tabs.height/2;
    for(let i=0;i<2;i++)await (mobile?page.touchscreen.tap(x,y):page.mouse.click(x,y));
@@ -122,6 +131,11 @@ try{
    await leave.waitFor({state:'hidden'});
    await heading(draftName).waitFor();
    await page.waitForFunction(()=>document.querySelector('main').contains(document.activeElement));
+
+   await page.keyboard.press('Control+k');
+   await search.waitFor();
+   await page.keyboard.press('Escape');
+   await search.waitFor({state:'hidden'});
 
    await open(target);
    await activate(stay);
@@ -143,6 +157,7 @@ try{
     await discard.evaluate(node=>{node.click();node.click()});
     await leave.getByText('Restoring the saved workflow…',{exact:true}).waitFor();
     assert.ok(await stay.isDisabled());
+    await assertSearchBlocked('Control+k');
     await page.keyboard.press('Escape');
     await page.evaluate(()=>history.back());
     assert.equal(await leave.isVisible(),true);
@@ -220,6 +235,51 @@ try{
    await selected(source);
    assert.equal(await leave.count(),0,'Reopening after discard has no remaining draft');
    assert.equal((await read(path)).versionId,published.versionId);
+   if(mobile){
+    const drawerDraft='Drawer edits '+viewport.width;
+    await rename(drawerDraft);
+    const drawer=page.getByRole('navigation',{name:'Workspace Navigation',exact:true});
+    const home=button('Ponderosa Home',drawer);
+    const settings=page.getByRole('button',{name:/\. Open Settings$/});
+    const openDrawer=()=>activate(button('Open Workspace Navigation'));
+    async function stayInEditor(destination,action){
+     for(const cancel of [()=>activate(stay),()=>page.keyboard.press('Escape')]){
+      await openDrawer();
+      await activate(action);
+      await leave.getByText(destination,{exact:true}).waitFor();
+      await page.waitForFunction(()=>document.activeElement?.textContent==='Stay here');
+      await cancel();
+      await heading(drawerDraft).waitFor();
+      await page.waitForFunction(()=>document.querySelector('main').contains(document.activeElement));
+      assert.equal(current(),source.id);
+      assert.equal(new URL(page.url()).searchParams.get('settings'),null);
+     }
+    }
+    await stayInEditor('Switch to Workflows?',home);
+    await openDrawer();
+    await activate(home);
+    await activate(save);
+    await inspector.getByRole('heading',{name:'Review changes',exact:true}).waitFor();
+    await button('Publish workflow',inspector).waitFor();
+    assert.equal(current(),source.id);
+    await dismissReview();
+    await heading(drawerDraft).waitFor();
+
+    async function openJson(){
+     await activate(button('Workflow Actions'));
+     await activate(page.getByRole('menuitem',{name:'Edit Workflow JSON…',exact:true}));
+     const field=inspector.getByRole('textbox',{name:'Definition JSON',exact:true});
+     await field.waitFor();
+     return field;
+    }
+    const draftJson='{ "pending": ';
+    await (await openJson()).fill(draftJson);
+    await dismissReview();
+    await stayInEditor('Switch to Workspace settings?',settings);
+    assert.equal(await (await openJson()).inputValue(),draftJson);
+    await dismissReview();
+    console.log('PASS '+viewport.width+'×'+viewport.height+' mobile Home and Workspace settings close the drawer, retain edits and editor focus, and expose publication review');
+   }
    assert.deepEqual(errors,[]);
    console.log('PASS '+viewport.width+'×'+viewport.height+' leave dialog, focus and backdrop, clean/draft-preserving navigation, Back and Forward, cancel, failed/uncertain review/publish/discard, exact confirmed switch and duplicate fencing');
   }catch(error){

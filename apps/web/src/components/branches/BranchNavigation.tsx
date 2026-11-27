@@ -37,7 +37,8 @@ export const useBranchNavigationGuard = () => useContext(GuardContext);
 /** One guard for route changes, nested dialogs, browser history, and reload. */
 export function BranchNavigation({ children }: { children(router: {
   route: BranchRoute;
-  leaveConfirmation?: ReactNode;
+  leaveConfirmation: ReactNode;
+  leaveConfirmationOpen: boolean;
   navigate(route: BranchRoute, replace?: boolean, onAccepted?: () => void): boolean;
 }): ReactNode }): JSX.Element {
   const [route, setRoute] = useState(() => parseBranchRoute(window.location.search));
@@ -189,7 +190,8 @@ export function BranchNavigation({ children }: { children(router: {
   }, [requestLeave, commitRoute, confirmOtherLeave, cancelLeave]);
   const actions = workflow.current?.();
   const discarding = prompt?.started === 'discard';
-  const leaveConfirmation = <ConfirmDialog open={Boolean(prompt)} title="Unsaved changes"
+  const leaveConfirmationOpen = Boolean(prompt);
+  const leaveConfirmation = <ConfirmDialog open={leaveConfirmationOpen} title="Unsaved changes"
     confirmLabel="Save and switch" pendingLabel="Save and switch" cancelLabel="Stay here" focusCancel disableBackdropClose
     pending={discarding} confirmDisabled={!actions?.canSave || actions.pending}
     onCancel={() => {
@@ -212,5 +214,5 @@ export function BranchNavigation({ children }: { children(router: {
     <p>Saving opens a review. Publishing your changes completes the switch.</p>
     {discarding ? <p role="status">Restoring the saved workflow…</p> : actions?.actionHint && <p>{actions.actionHint}</p>}
   </ConfirmDialog>;
-  return <DirtyContext.Provider value={register}><WorkflowLeaveContext.Provider value={registerWorkflow}><GuardContext.Provider value={guard}>{children({ route, navigate, leaveConfirmation })}</GuardContext.Provider></WorkflowLeaveContext.Provider></DirtyContext.Provider>;
+  return <DirtyContext.Provider value={register}><WorkflowLeaveContext.Provider value={registerWorkflow}><GuardContext.Provider value={guard}>{children({ route, navigate, leaveConfirmation, leaveConfirmationOpen })}</GuardContext.Provider></WorkflowLeaveContext.Provider></DirtyContext.Provider>;
 }

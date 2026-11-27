@@ -46,7 +46,7 @@ import {BranchSettings,BranchAvailability,useBranchAvailability} from './branche
 import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
-import {useCallback,useEffect,useRef,useState,type ComponentProps,type ReactNode} from 'react';
+import {useCallback,useEffect,useLayoutEffect,useRef,useState,type ComponentProps,type ReactNode} from 'react';
 import {QueryObserver,replaceEqualDeep,type InfiniteData,useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Paper,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
 import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,BranchValidationIssue,CreateBranchRequest,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
@@ -120,7 +120,7 @@ function RetainedBranchSettings(props:ComponentProps<typeof BranchSettings>):JSX
 /** Branches has its own workflow-centered authoring and operations shell. */
 type Appearance={colorMode:ColorMode;onToggleColorMode():void};
 export function BranchesView(props:Appearance):JSX.Element{return <BranchNavigation>{router=><BranchesWorkspace {...router} {...props}/>}</BranchNavigation>}
-function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleColorMode}:Appearance&{route:BranchRoute;leaveConfirmation?:ReactNode;navigate(route:BranchRoute,replace?:boolean,onAccepted?:()=>void):boolean}):JSX.Element{
+function BranchesWorkspace({route,navigate,leaveConfirmation,leaveConfirmationOpen,colorMode,onToggleColorMode}:Appearance&{route:BranchRoute;leaveConfirmation:ReactNode;leaveConfirmationOpen:boolean;navigate(route:BranchRoute,replace?:boolean,onAccepted?:()=>void):boolean}):JSX.Element{
  const guard=useBranchNavigationGuard(),notify=useMutationNotification();
  const tab=route.tab,executionId=route.executionId??'';
  useAppViewport();
@@ -143,6 +143,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const [desktopNavigationMounted,setDesktopNavigationMounted]=useState(!mobileWorkspace),[mobileNavigationMounted,setMobileNavigationMounted]=useState(false);
  useEffect(()=>{if(!mobileWorkspace)setDesktopNavigationMounted(true)},[mobileWorkspace]);
  useEffect(()=>{if(mobileNavOpen)setMobileNavigationMounted(true)},[mobileNavOpen]);
+ useLayoutEffect(()=>{if(leaveConfirmationOpen)setMobileNavOpen(false)},[leaveConfirmationOpen]);
  const sharedNavigationButton=useRef<HTMLButtonElement>(null),workflowImportInput=useRef<HTMLInputElement>(null),packageUpdateInput=useRef<HTMLInputElement>(null),packageUpdateSelection=useRef(0);
  const [sidebarPresentation,setSidebarPresentation]=useState(()=>{try{return restoreWorkspaceSidebarState(localStorage.getItem(BRANCHES_SIDEBAR_STORAGE_KEY))}catch{return restoreWorkspaceSidebarState(null)}});
  const feedback=useRef<HTMLDivElement>(null);
@@ -517,7 +518,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
    navigate(branchWorkspaceRoute(context,workspace as NonNullable<BranchRoute['workspace']>));
   }catch(cause){setError(cause instanceof Error?cause.message:'The selected Branch Chat could not be opened.')}
  };
- useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[]);
+ useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();if(!leaveConfirmationOpen)openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[leaveConfirmationOpen]);
  const starWorkflow=(branch:BranchDto)=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',branch.id));
  const workflowPanel=(drawer:boolean)=>preferences.data?<BranchFolders branches={branches.data??[]} preferences={preferences.data} filtering={Boolean(search.trim())}
     onRename={branch=>{if(drawer)closeMobileNavigation();requestRename(branch)}}
@@ -725,7 +726,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
    </Stack>}
    </WorkflowInspector>
   </Box>
-  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen} onOpen={()=>{if(mobileWorkspace)setMobileNavOpen(true)}} onClose={closeMobileNavigation} SlideProps={{onExited:()=>{if(!globalSearchOpen&&document.activeElement===document.body)sharedNavigationButton.current?.focus({preventScroll:true})}}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
+  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen&&!leaveConfirmationOpen} onOpen={()=>{if(mobileWorkspace&&!leaveConfirmationOpen)setMobileNavOpen(true)}} onClose={closeMobileNavigation} SlideProps={{onExited:()=>{if(!globalSearchOpen&&document.activeElement===document.body)sharedNavigationButton.current?.focus({preventScroll:true})}}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
   <GlobalChatSearch open={globalSearchOpen} onClose={()=>setGlobalSearchOpen(false)} onExited={restoreSearchTrigger} onSelect={selection=>void openGlobalSearchSelection(selection)}/>
   {fullExport&&<BranchPackageExportDialog key={fullExport.branchId} source={fullExport} pending={exportPending} error={exportError} onCancel={()=>setFullExport(undefined)} onConfirm={confirmFullExport}/>}
   {install&&<BranchPackageDialog pkg={install.pkg} branchId={install.branchId} branches={branches.data??[]} engines={engines.data??[]} onClose={()=>setInstall(undefined)} onInstalled={branch=>{if(branch.id!==route.branchId){const accepted=navigate({branchId:branch.id,tab:'workflow'});if(accepted)setInstall(undefined);return accepted}return guard(()=>{setInstall(undefined);void reloadWorkflow(branch.id)},true)}}/>}
