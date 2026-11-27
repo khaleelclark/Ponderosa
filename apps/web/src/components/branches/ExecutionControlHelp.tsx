@@ -8,6 +8,7 @@ export function ExecutionControlHelp({label,help,children}:{label:string;help:st
   {children}
   <ClickAwayListener onClickAway={()=>setOpen(false)}>
    <Tooltip describeChild title={<span>{help}</span>} placement="top-end" open={open} enterDelay={0} disableTouchListener
+    slotProps={{popper:{sx:{'&[data-popper-reference-hidden]':{visibility:'hidden'}}}}}
     onOpen={()=>setOpen(true)} onClose={()=>setOpen(false)}>
     <IconButton type="button" aria-label={`Help for ${label}`} onClick={()=>setOpen(true)} sx={{width:44,height:44,flexShrink:0}}>
      <InfoOutlinedIcon fontSize="small"/>
