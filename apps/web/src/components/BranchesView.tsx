@@ -68,7 +68,7 @@ type Context=BranchContextDto;
 type Draft={definition:BranchDefinition;bindings:BranchBindings;chatId:string;branchId?:string;expectedVersionId?:string};
 type DeploymentReview={draftRevision:string;input:DeployBranchRequest;result:BranchDeploymentPreviewDto};
 type DiscardIntent={branchId:string;selection:number;revision:string;edits:number};
-type RunIntent={branchId:string;selection:number;route:BranchRoute;input:string;occurrenceKey:string;expectedVersionId?:string};
+type RunIntent={branchId:string;selection:number;route:BranchRoute;input:string;occurrenceKey:string;expectedVersionId:string};
 async function readWorkflowDraft(branch:BranchDto):Promise<Draft>{
  const [version,bindings]=await Promise.all([branch.versionId?requestJson<BranchVersionDto>(`/api/branches/${branch.id}/versions/${branch.versionId}`,{cache:'no-store'}):Promise.resolve({definition:{...newDefinition(),name:branch.name}}),requestJson<BranchBindings>(`/api/branches/${branch.id}/configuration${branch.bindingRevisionId?'?revisionId='+encodeURIComponent(branch.bindingRevisionId):''}`,{cache:'no-store'})]);
  return {branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition:version.definition,bindings};
@@ -146,7 +146,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const sharedNavigationButton=useRef<HTMLButtonElement>(null),workflowImportInput=useRef<HTMLInputElement>(null),packageUpdateInput=useRef<HTMLInputElement>(null),packageUpdateSelection=useRef(0);
  const [sidebarPresentation,setSidebarPresentation]=useState(()=>{try{return restoreWorkspaceSidebarState(localStorage.getItem(BRANCHES_SIDEBAR_STORAGE_KEY))}catch{return restoreWorkspaceSidebarState(null)}});
  const feedback=useRef<HTMLDivElement>(null);
- const [runOpen,setRunOpen]=useState(false),runButton=useRef<HTMLButtonElement>(null);
+ const [runOpen,setRunOpen]=useState(false),[runVersion,setRunVersion]=useState<string>(),runButton=useRef<HTMLButtonElement>(null);
  const [firstStepRequest,requestFirstStep]=useState(0),[providerReturn,setProviderReturn]=useState<string>();
  const [importProblem,setImportProblem]=useState<{name:string;message:string;update:boolean;owner:BranchRoute}>(),importAttempt=useRef(0);
  const [rerunVersion,setRerunVersion]=useState<string>();
@@ -338,7 +338,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const needsFirstStep=!draft.definition.steps.length&&!draft.definition.controls.length;
  const openRun=()=>{
   const owner=routeOwner.current;
-  if(run.isPending||actionLocks.current.has('run')||owner.global||owner.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;
+  if(runOpen||run.isPending||actionLocks.current.has('run')||owner.global||owner.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;
   if(!runUnconfirmed&&current&&current.id===draft.branchId&&!current.versionId){
    navigate({...owner,settingsSection:undefined,tab:'workflow'},false,()=>{
     setInspectorPane(undefined);
@@ -347,18 +347,25 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
    });
    return;
   }
-  if(!runUnconfirmed&&(rerunVersion||run.isSuccess||run.isError)){
-   run.reset();setOccurrenceKey(createClientId());if(rerunVersion)setInput('');setRerunVersion(undefined);
+  if(!runUnconfirmed){
+   if(current?.id!==draft.branchId||!current?.versionId)return;
+   if(rerunVersion||run.isSuccess||run.isError){
+    run.reset();if(rerunVersion)setInput('');setRerunVersion(undefined);
+   }
+   setOccurrenceKey(createClientId());
+   setRunVersion(current.versionId);
   }
   setRunOpen(true);
  };
  const openRerun=(execution:BranchExecutionDto,priorInput:string)=>{
   if(runOpen||run.isPending||runUnconfirmed||routeOwner.current.global||routeOwner.current.executionId!==execution.id||
-     routeOwner.current.branchId!==execution.branchId||currentDraft.current.branchId!==execution.branchId)return;
-  run.reset();setOccurrenceKey(createClientId());setInput(priorInput);setRerunVersion(execution.versionId);setRunOpen(true);
+     routeOwner.current.branchId!==execution.branchId||currentDraft.current.branchId!==execution.branchId||
+     current?.id!==execution.branchId||!current.versionId)return;
+  run.reset();setOccurrenceKey(createClientId());setInput(priorInput);setRunVersion(current.versionId);
+  setRerunVersion(execution.versionId);setRunOpen(true);
  };
  const submitRun=()=>{
-  if(run.isPending||loading||openingLink||routeOwner.current.global||routeOwner.current.branchId!==draft.branchId||
+  if(!runOpen||run.isPending||loading||openingLink||routeOwner.current.global||routeOwner.current.branchId!==draft.branchId||
      currentDraft.current.branchId!==draft.branchId)return;
   if(runAccepted&&run.data){
    const accepted=navigate({branchId:draft.branchId,tab:'executions',executionId:run.data.id,
@@ -366,11 +373,10 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
    if(accepted)setRunOpen(false);
    return;
   }
-  if(!runUnconfirmed&&(runUnavailable||runInputError))return;
   const owner={selection:selection.current,route:routeOwner.current};
-  const start=runUnconfirmed?{...run.variables!,...owner}:{
-   ...owner,branchId:draft.branchId!,input,occurrenceKey,expectedVersionId:rerunVersion?current?.versionId:undefined
-  };
+  if(runUnconfirmed)return once('run',()=>run.mutateAsync({...run.variables!,...owner}));
+  if(runUnavailable||runInputError||!runVersion)return;
+  const start={...owner,branchId:draft.branchId!,input,occurrenceKey,expectedVersionId:runVersion};
   return once('run',()=>run.mutateAsync(start));
  };
  const automatic=useMutation({
@@ -597,9 +603,9 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  </WorkflowInspectorPage>;
  const runForm=<ConfirmDialog inWorkflowInspector open={runOpen} title={rerunVersion?'Run again with edited input':dirty&&current?.versionId?'Run Published Workflow':'Run once'} confirmLabel={runAccepted?'View Run':runUnconfirmed?'Retry Run Submission':rerunVersion?'Start new run':dirty&&current?.versionId?'Run Published Workflow':'Run once'} pendingLabel="Submitting…" pending={run.isPending} error={run.error?.message} confirmDisabled={!runAccepted&&!runUnconfirmed&&Boolean(runUnavailable||runInputError)} onCancel={()=>setRunOpen(false)} onConfirm={submitRun}>
    <Stack spacing={2} sx={{pt:1}}>
-    {dirty&&current?.versionId&&<Alert severity="info">Run uses published version {runUnconfirmed?run.variables?.expectedVersionId:current.versionId} · unpublished edits excluded</Alert>}
-    {rerunVersion&&current?.versionId&&rerunVersion!==(runUnconfirmed?run.variables?.expectedVersionId:current.versionId)&&!runAccepted&&<Alert severity="info">
-     The new run will use published version {runUnconfirmed?run.variables?.expectedVersionId:current.versionId}. The canceled run used {rerunVersion}.
+    {dirty&&runVersion&&<Alert severity="info">Run uses published version {runVersion} · unpublished edits excluded</Alert>}
+    {rerunVersion&&runVersion&&rerunVersion!==runVersion&&!runAccepted&&<Alert severity="info">
+     The new run will use published version {runVersion}. The canceled run used {rerunVersion}.
     </Alert>}
     {runUnconfirmed&&<Alert severity="warning">Submission unconfirmed · retry: same Run Input + key · no separate Run</Alert>}
     {runAccepted&&<Alert severity="success">Run accepted · unsaved settings retained · open accepted Run when ready</Alert>}

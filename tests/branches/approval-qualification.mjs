@@ -9,6 +9,7 @@ const {chromium}=createRequire(new URL('../../apps/server/package.json',import.m
 const f=await fixture();
 const write=async(path,body)=>f.ok(await f.api('POST',path,body));
 const read=async id=>f.ok(await f.api('GET','/api/branch-executions/'+id));
+const fullResult=async id=>f.ok(await f.api('GET','/api/branch-executions/'+id+'/result'));
 let browser,web;
 try{
  web=await serveFixture(f);
@@ -62,15 +63,24 @@ try{
 
    const scorecard='# Blind scorecard\n\n| Candidate | Hard checks |\n|---|---|\n| A | Passed |\n| B | Failed |\n\nChoose A or **No winner**.\n\n'+
     'Supporting detail for the pinned trial.\n\n'.repeat(55)+'End of scorecard evidence.';
-   const name='Disposable blind verdict '+viewport.width;
-   const owner=await write('/api/branches',{name,idempotencyKey:randomUUID()});
-   const benchmark=await write('/api/branches/deploy',{branchId:owner.id,chatId:'',expectedVersionId:'',idempotencyKey:randomUUID(),
-    bindings:{agents:{},directories:{}},definition:{schema:'ponderosa.branch.v1',name,entry:'verdict',trigger:{kind:'manual'},controls:[],edges:[],
-     steps:[{id:'verdict',label:'Record a blind verdict',kind:'human_gate',prompt:'Read the scorecard and choose A or No winner.',choices:['A','No winner'],editable:false}],
-     policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}}});
+   const prompt='Read the scorecard and choose A or No winner. '+
+    'Compare the eligibility criteria before selecting a result. '.repeat(14);
+   const promptEnding=' End of review prompt.';
+   const longPrompt=prompt.slice(0,800-promptEnding.length)+promptEnding;
+   const gateLabel='Record a blind verdict';
+   async function deploy(description,prompt,choices){
+    const name=description+' '+viewport.width;
+    const owner=await write('/api/branches',{name,idempotencyKey:randomUUID()});
+    return write('/api/branches/deploy',{branchId:owner.id,chatId:'',expectedVersionId:'',idempotencyKey:randomUUID(),
+     bindings:{agents:{},directories:{}},definition:{schema:'ponderosa.branch.v1',name,entry:'verdict',trigger:{kind:'manual'},controls:[],edges:[],
+      steps:[{id:'verdict',label:gateLabel,kind:'human_gate',prompt,choices,editable:false}],
+      policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}}});
+   }
+   const benchmark=await deploy('Disposable blind verdict',longPrompt,['A','No winner']);
    const run=await launch(benchmark,scorecard);
-   const gate=selected.getByRole('region',{name:'Record a blind verdict'});
+   const gate=selected.getByRole('region',{name:gateLabel});
    assert.deepEqual(await gate.getByRole('radio').evaluateAll(radios=>radios.map(radio=>radio.value)),['A','No winner']);
+   await arrival();
    await activate(gate.getByText('Supporting evidence',{exact:true}));
    await gate.getByRole('table').getByRole('cell',{name:'Failed',exact:true}).waitFor();
    await gate.getByText('End of scorecard evidence.',{exact:true}).waitFor();
@@ -80,7 +90,63 @@ try{
    assert.equal(completed.gates[0].resolution.choice,'No winner');
    assert.equal(completed.execution.output,'No winner');
    await selected.getByRole('region',{name:'Results',exact:true}).getByText('No winner',{exact:true}).waitFor();
-   console.log('Approval actions, both decisions, and Markdown scorecard passed at '+viewport.width+' × '+viewport.height);
+   const reviewPrompt='Compare the eligibility criteria before selecting a result. '.repeat(14);
+   const longChoices=[
+    'Approve the proposed change and apply the supplied rollout plan with the standard review. Confirm ownership of reporting and verify the handoff requirements.',
+    'Approve the proposed change but request a staged rollout after the additional validation. Add the follow-up check to the acceptance record.',
+    'Request a revised proposal with additional acceptance criteria before the rollout begins. Include the known limitations in the updated report.',
+   ];
+   const longChoiceBranch=await deploy('Three long options',reviewPrompt,longChoices);
+   const region=gate.getByRole('region',{name:'Review prompt and choices'});
+   const lastChoice=longChoices.at(-1);
+   for(const input of ['keyboard','touch']){
+    const next=await launch(longChoiceBranch);
+    assert.equal(await region.getByText(reviewPrompt,{exact:true}).textContent(),reviewPrompt);
+    assert.deepEqual(await region.getByRole('radio').evaluateAll(radios=>radios.map(radio=>radio.value)),longChoices);
+    const geometry=await region.evaluate(node=>({top:node.scrollTop,max:node.scrollHeight-node.clientHeight,width:node.clientWidth,contentWidth:node.scrollWidth}));
+    assert.equal(geometry.top,0);
+    assert.ok(geometry.max>0&&geometry.contentWidth<=geometry.width,JSON.stringify(geometry));
+    assert.ok(await gate.getByText('Review prompt · 3 choices',{exact:true}).isVisible());
+    const radios=region.getByRole('radio');
+    if(input==='keyboard'){
+     await region.press('End');
+     await page.waitForFunction(max=>Math.abs(document.querySelector('[aria-label="Review prompt and choices"]').scrollTop-max)<=1,geometry.max);
+     await radios.first().press('ArrowDown');
+     await page.keyboard.press('ArrowDown');
+    }else{
+     await activate(radios.last());
+    }
+    assert.equal(await radios.last().isChecked(),true);
+    await arrival();
+    await activate(approve);
+    const settled=await wait(next.id,'completed');
+    assert.equal(settled.gates[0].resolution.choice,lastChoice);
+    assert.equal((await fullResult(next.id)).output,lastChoice);
+    await selected.getByRole('region',{name:'Results',exact:true}).getByText(lastChoice,{exact:true}).waitFor();
+    console.log('Three long choices via '+input+' passed at '+viewport.width+' × '+viewport.height);
+   }
+
+   const maxLabel=('Read the complete decision and record the selected alternative. '.repeat(170)).slice(0,9_990)+' Final end';
+   const maxChoices=[...Array.from({length:29},(_,index)=>'Option '+(index+1)),maxLabel];
+   const maximum=await deploy('Maximum option count and label',longPrompt,maxChoices);
+   const maxRun=await launch(maximum);
+   const picker=region.getByRole('combobox',{name:'If approved'});
+   await activate(picker);
+   const menu=page.getByRole('listbox',{name:'If approved'});
+   assert.equal(await menu.getByRole('option').count(),30);
+   const maxOption=menu.getByRole('option').last();
+   assert.equal(await maxOption.textContent(),maxLabel);
+   await page.keyboard.press('End');
+   await page.keyboard.press('Enter');
+   await menu.waitFor({state:'hidden'});
+   assert.equal(await picker.textContent(),maxLabel);
+   await arrival();
+   await activate(approve);
+   const maxResult=await wait(maxRun.id,'completed');
+   assert.equal(maxResult.gates[0].resolution.choice,maxLabel);
+   assert.equal((await fullResult(maxRun.id)).output,maxLabel);
+   console.log('30 choices and a 10,000-character label passed at '+viewport.width+' × '+viewport.height);
+   console.log('Short and long approval prompts, both decisions, and Markdown scorecard passed at '+viewport.width+' × '+viewport.height);
   }finally{await context.close()}
  }
 }finally{

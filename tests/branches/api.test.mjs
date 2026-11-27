@@ -12,6 +12,33 @@ import {inertCodex} from '../shared/inert-codex.mjs';
 const branch=async(f,name)=>f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
 const chat=async(f,owner,key=randomUUID())=>f.ok(await f.api('POST',`/api/branches/${owner.id}/chats`,{label:owner.name,defaultEngine:'codex'},{'idempotency-key':key}));
 
+test('Run once rejects a stale first submission and replays an accepted reviewed version after publication',async t=>{
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'Run version'),schedule={scheduleKind:'interval',everyMs:3600000,startsAt:'2099-01-01T00:00:00.000Z'};
+  const definition={schema:'ponderosa.branch.v1',name:owner.name,trigger:{kind:'schedule',configRef:'timer'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('verified');"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  const bindings={agents:{},directories:{workspace:f.root},triggers:{timer:{sourceConfig:schedule,enabled:true}}};
+  const publish=async(expectedVersionId,name)=>f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId,idempotencyKey:randomUUID(),definition:{...definition,name},bindings}));
+  const url=`/api/branches/${owner.id}/executions`,source=`/api/branches/${owner.id}/trigger`;
+  const reviewed=await publish('',owner.name);
+  const intent={occurrenceKey:randomUUID(),input:'reviewed input',expectedVersionId:reviewed.versionId};
+  const current=await publish(reviewed.versionId,'New publication');
+  const refused=await f.api('POST',url,intent);
+  assert.equal(refused.status,400);
+  assert.match(refused.body.error,/published workflow version changed/);
+  assert.deepEqual(f.ok(await f.api('GET',url)),[]);
+  const fresh={...intent,occurrenceKey:randomUUID(),expectedVersionId:current.versionId};
+  const afterPublish=f.ok(await f.api('GET',source));
+  const accepted=f.ok(await f.api('POST',url,fresh));
+  assert.equal(accepted.versionId,current.versionId);
+  assert.deepEqual(f.ok(await f.api('GET',source)),afterPublish);
+  await publish(current.versionId,'Later publication');
+  const replay=f.ok(await f.api('POST',url,fresh));
+  assert.equal(replay.id,accepted.id);
+  assert.equal(replay.versionId,current.versionId);
+  assert.equal(f.ok(await f.api('GET',url)).length,1);
+ });
+});
+
 test('Branch Chat creation reuses canonical managed folders and idempotency without granting execution ownership or starting a Run',async t=>{
  let store;
  await withFixture(t,async f=>{
