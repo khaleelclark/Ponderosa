@@ -24,7 +24,7 @@ try{
  const settings=async()=>f.ok(await f.api('GET',path+'/settings'));
  const budget=async()=>{const {observedAt,...saved}=f.ok(await f.api('GET',path+'/execution-budget'));return saved};
  const initialSettings=await settings(),initialBudget=await budget();
- const staleHelpWidths=[];
+ const staleHelpSwipes=[];
  for(const viewport of [{width:1440,height:900},{width:390,height:844},{width:320,height:640}]){
   const mobile=viewport.width<600;
   const context=await browser.newContext({viewport,isMobile:mobile,hasTouch:mobile,serviceWorkers:'block'});
@@ -112,7 +112,7 @@ try{
     await paths.fill('0');
     await execution.getByText('Enter a whole number from 1 to 100,000.',{exact:true}).waitFor();
     const trigger=button('Help for Maximum Paths');
-    await trigger.evaluate(element=>{
+    const positionAtHeader=()=>trigger.evaluate(element=>{
      element.scrollIntoView({block:'start'});
      let scroller=element.parentElement;
      while(scroller&&!(scroller.scrollHeight>scroller.clientHeight&&/auto|scroll/.test(getComputedStyle(scroller).overflowY))){
@@ -120,23 +120,40 @@ try{
      }
      if(!scroller)throw Error('Expected the Settings scroll container');
      scroller.scrollTop-=4;
+     return scroller.getBoundingClientRect().top;
     });
-    await trigger.tap();
-    await expectHelp(trigger,controls[3][2]);
     const cdp=await context.newCDPSession(page);
     const touch=(type,y)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:y===undefined?[]:[{x:100,y}]});
     try{
-     await touch('touchStart',455);
-     for(const y of [440,430,420,410,400,390,380,370])await touch('touchMove',y);
-     // Hold before release so momentum does not carry the next control offscreen.
-     await page.waitForTimeout(220);
-     await touch('touchEnd');
+     for(const swipe of ['short','full']){
+      const top=await positionAtHeader();
+      await trigger.tap();
+      await expectHelp(trigger,controls[3][2]);
+      await touch('touchStart',455);
+      const moves=swipe==='short'?[440,430,420,410]:[440,430,420,410,400,390,380,370];
+      for(const y of moves)await touch('touchMove',y);
+      // Hold before release so momentum does not carry the next control offscreen.
+      await page.waitForTimeout(220);
+      await touch('touchEnd');
+      const bounds=await trigger.boundingBox();
+      assert.ok(bounds.y<top,'The real swipe clips the trigger');
+      assert.equal(bounds.y+bounds.height>top,swipe==='short','Short swipe only partially clips the trigger');
+      if(await tooltip.isVisible())staleHelpSwipes.push(`${viewport.width} ${swipe}`);
+      assert.equal(await paths.inputValue(),'0');
+      assert.equal(await paths.getAttribute('aria-invalid'),'true');
+      assert.ok(await execution.getByText('Enter a whole number from 1 to 100,000.',{exact:true}).isVisible());
+      await page.touchscreen.tap(3,455);
+      await tooltip.waitFor({state:'hidden'});
+      const neighbor=button('Help for Maximum Step Invocations');
+      await neighbor.tap();
+      await expectHelp(neighbor,controls[4][2]);
+      await page.touchscreen.tap(3,455);
+      await tooltip.waitFor({state:'hidden'});
+     }
     }finally{await cdp.detach()}
-    const clippedTooltip=page.locator('[role="tooltip"][data-popper-reference-hidden]');
-    await clippedTooltip.waitFor({state:'attached'});
-    if(await clippedTooltip.isVisible())staleHelpWidths.push(viewport.width);
-    assert.equal(await paths.inputValue(),'0');
-    assert.equal(await paths.getAttribute('aria-invalid'),'true');
+    await positionAtHeader();
+    await trigger.tap();
+    await expectHelp(trigger,controls[3][2]);
     await page.touchscreen.tap(3,455);
     await tooltip.waitFor({state:'hidden'});
     await paths.fill(originalPaths);
@@ -164,5 +181,5 @@ try{
    console.log(`All ten help texts, accessible names, budget disclosure, save/publish distinction and unchanged values passed at ${viewport.width} × ${viewport.height} (${mobile?'tap outside to dismiss':'hover, Tab and Escape'}).`);
   }finally{await context.close()}
  }
- assert.deepEqual(staleHelpWidths,[],'Help must be hidden when the trigger scrolls out of Settings');
+ assert.deepEqual(staleHelpSwipes,[],'Tap-open help must close as Settings scrolls');
 }finally{await browser?.close();await web?.close();await f.dispose()}
