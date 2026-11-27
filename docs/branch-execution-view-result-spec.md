@@ -107,3 +107,22 @@ Put **Insert variable** next to supported text fields when the workflow has vari
 - From Canvas or Outline, find variables from Workflow Actions, create the example at phone and narrow desktop widths, and insert it into an Agent Task or Approval. Verify the picker returns focus to the field and the run resolves the value.
 - Save a changed value in Settings and start another run. Verify the new run uses the new value and the earlier run keeps its original value. Check that manually entering run input still works independently.
 - Verify available variable choices match each field’s support. Test a missing required value and a Script consuming a number or boolean. Engine-managed secrets remain out of the insertion list and Script parameters.
+
+## Leaving a workflow with unsaved changes
+
+When someone tries to open another workflow while editing, show a compact, centered **Unsaved changes** dialog. Keep the current workflow visible behind it. Name the current workflow and the requested destination when both names are available. Put all three choices together where the user can see them on desktop and phone.
+
+| Action | Behavior |
+| --- | --- |
+| **Stay here** | Dismiss the dialog, keep all edits, and return focus to the open editor or the control that initiated navigation. Escape has the same effect before a save or discard begins. |
+| **Save and switch** | Use the existing review and publication flow. Make clear that saving here publishes the workflow. Switch to the requested workflow only after the save is confirmed. If validation fails, review is canceled, or the save is unconfirmed, stay on the current workflow with its edits and show the next step. If saving is blocked, explain what needs fixing, such as **Add your first step before publishing**. |
+| **Discard changes and switch** | Restore the last saved workflow state through the existing discard flow, then open the requested workflow. If the discard cannot be confirmed, keep the current editor and show the error. |
+
+- Use the shared [confirmation dialog](../apps/web/src/components/ConfirmationDialogs.tsx) as a modal and reuse the current [workflow leave guard](../apps/web/src/components/branches/BranchNavigation.tsx). The modal replaces the **Unsaved Changes** inspector pane. Give **Stay here** initial focus, trap focus inside the dialog, and keep background navigation inactive while it is open. Show progress while a save or discard is pending and prevent duplicate submissions.
+- Trigger the dialog when navigation would leave a dirty workflow or discard its editor changes. Keep clean workflow switching and draft-preserving tab switches immediate. Preserve browser Back and Forward guard behavior. Capture the requested destination when the dialog opens so rapid clicks or late responses cannot switch to the wrong workflow.
+
+### Acceptance checks
+
+- Edit a step and click another workflow. Verify the dialog is centered, all three actions are visible without scrolling on a phone, and **Stay here** or Escape keeps the editor, draft, and URL.
+- Verify **Save and switch** opens the existing review, switches exactly once after a confirmed save, and stays on the current workflow on validation failure, cancellation, or an uncertain response. Verify **Discard changes and switch** opens the intended workflow after a confirmed discard and leaves the last published version intact.
+- Verify a clean switch has no prompt. Exercise browser Back and Forward and a second navigation attempt while the modal is open. Extend the [existing leave-guard tests](../tests/branches/editing-navigation.test.mjs).
