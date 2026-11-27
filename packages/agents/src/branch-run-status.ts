@@ -1,7 +1,9 @@
 import { runExitUnprovenSql } from "./coordination-v3-transition-unsubmitted.js";
 export { runExitUnprovenSql };
+import { BRANCH_FINISHED_STATES } from "@ponderosa/core";
+export { BRANCH_EFFECTIVE_STATUSES } from "@ponderosa/core";
 import type Database from 'better-sqlite3';
-import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
+import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto,BranchRunStatus} from '@ponderosa/core';
 import {settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from './coordination-v3-settings-transition-hold.js';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
@@ -137,7 +139,6 @@ function classifiedBranchRunsCte(scope:string):string {
   )`;
 }
 
-export const BRANCH_EFFECTIVE_STATUSES=['queued','running','waiting','retrying','stopping','needs_attention'] as const satisfies readonly BranchEffectiveStatus[];
 const emptyCounts=():BranchRunCountsDto=>({running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0});
 
 /** One bounded aggregate read for a directory page or one lifecycle owner.
@@ -161,10 +162,16 @@ export function readBranchEffectiveStatuses(db:Database.Database,executionIds:re
 }
 
 /** History filter membership uses the exact count predicate across every page. */
-export function branchEffectiveStatusPage(db:Database.Database,branchId:string,status:BranchEffectiveStatus,beforeRowid:number,now=new Date().toISOString()):string[] {
+export function branchStatusPage(db:Database.Database,branchId:string,statuses:readonly BranchRunStatus[],beforeRowid:number,now:string):string[] {
+  const finished=BRANCH_FINISHED_STATES.filter(state=>statuses.includes(state));
   return (db.prepare(`${classifiedBranchRunsCte('branch_id=:branchId AND rowid<:before')}
-    SELECT classified.id FROM classified JOIN branch_executions execution ON execution.id=classified.id
-    WHERE classified.state=:status ORDER BY execution.rowid DESC LIMIT 100`).all({branchId,before:beforeRowid,status,now}) as Array<{id:string}>).map(row=>row.id);
+    SELECT execution.id,execution.rowid position FROM classified
+    JOIN branch_executions execution ON execution.id=classified.id
+    WHERE classified.state IN (SELECT value FROM json_each(:statuses))
+    UNION ALL
+    SELECT id,rowid position FROM branch_executions WHERE branch_id=:branchId AND rowid<:before
+      AND state IN (SELECT value FROM json_each(:finished))
+    ORDER BY position DESC LIMIT 100`).all({branchId,before:beforeRowid,statuses:JSON.stringify(statuses),finished:JSON.stringify(finished),now}) as Array<{id:string}>).map(row=>row.id);
 }
 
 /** Selected-Run diagnostics reuse the exact batch-count proof, not a second

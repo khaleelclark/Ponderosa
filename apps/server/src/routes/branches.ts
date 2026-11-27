@@ -800,7 +800,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     catch (error) { return reply.code(409).send({ error: describeBranchDeletionFailure(error) }); }
   });
   app.get<{ Params: { id: string; versionId: string } }>('/api/branches/:id/versions/:versionId', async (request, reply) => branches.version(request.params.id, request.params.versionId) ?? reply.code(404).send({ error: 'Branch version not found' }));
-  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string | string[]; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
     try { return branches.listExecutions(request.params.id, request.query.before, request.query.state,request.query.mergeFor); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid history cursor' }); }
   });

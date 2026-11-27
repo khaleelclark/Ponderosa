@@ -75,6 +75,14 @@ test('Branch nested routes preserve the selected Chat, execution and exact messa
  assert.equal(parseBranchRoute('?workspace=https://outside.test/projects/p').workspace,undefined);
 });
 
+test('Run History URLs restore an OR selection and selected run alongside legacy single-state links',()=>{
+ const route=parseBranchRoute('?branch=b&tab=executions&execution=run&state=failed&state=waiting&state=waiting&state=unknown');
+ assert.deepEqual(route,{branchId:'b',tab:'executions',executionId:'run',executionFilters:['waiting','failed']});
+ assert.equal(branchRoutePath(route),'/branches?branch=b&tab=executions&execution=run&state=waiting&state=failed');
+ assert.deepEqual(parseBranchRoute('?branch=b&execution=run&state=failed').executionFilters,['failed']);
+ assert.equal(branchRoutePath({...route,executionFilters:[]}),'/branches?branch=b&tab=executions&execution=run');
+});
+
 test('explicit Workflow navigation survives reload with a retained execution selection',()=>{
  const route={branchId:'b',tab:'workflow',executionId:'e'};
  const path=branchRoutePath(route);assert.ok(path.includes('tab=workflow'));
@@ -1624,8 +1632,8 @@ test('canceled rerun opens the existing form with copied input and submits the r
 });
 
 test('accepted Runs retain filters and remain reachable when a settings guard refuses navigation',async t=>{
- const f=await workflowRunFixture(t),s=f.scope;s.routeOwner.current={...s.routeOwner.current,executionFilter:'failed'};f.render();s.openRun();f.render();let accepted=false;const destinations=[];s.navigate=next=>{destinations.push(next);return accepted};
- await f.button('Run Published Workflow').onClick();f.render();assert.equal(s.runOpen,true);assert.equal(f.field().disabled,true);assert.match(f.render(),/Run accepted · unsaved settings retained/);assert.equal(f.button('View Run').disabled,false);assert.equal(destinations[0].executionFilter,'failed');
+ const f=await workflowRunFixture(t),s=f.scope;s.routeOwner.current={...s.routeOwner.current,executionFilters:['failed']};f.render();s.openRun();f.render();let accepted=false;const destinations=[];s.navigate=next=>{destinations.push(next);return accepted};
+ await f.button('Run Published Workflow').onClick();f.render();assert.equal(s.runOpen,true);assert.equal(f.field().disabled,true);assert.match(f.render(),/Run accepted · unsaved settings retained/);assert.equal(f.button('View Run').disabled,false);assert.deepEqual(destinations[0].executionFilters,['failed']);
  const calls=f.requests.length;f.button('View Run').onClick();assert.equal(s.runOpen,true);assert.equal(f.requests.length,calls,'Opening an accepted Run cannot create a second execution');accepted=true;f.button('View Run').onClick();assert.equal(s.runOpen,false);assert.equal(destinations.at(-1).executionId,'accepted-run');
 });
 

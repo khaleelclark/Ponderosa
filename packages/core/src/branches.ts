@@ -102,13 +102,17 @@ export interface BranchBindings {
   engines?: Record<string, string>;
   triggers?: Record<string, { sourceConfig: TriggerSourceConfig; enabled: boolean }>;
 }
-export type BranchExecutionState = "queued" | "running" | "waiting" | "completed" | "failed" | "canceled" | "skipped" | "merged";
+export const BRANCH_FINISHED_STATES = ['completed','failed','canceled','skipped','merged'] as const;
+export type BranchExecutionState = 'queued' | 'running' | 'waiting' | typeof BRANCH_FINISHED_STATES[number];
 export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" | "completed" | "failed" | "canceled" | "outcome_unknown";
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
 /** Mutually exclusive current activity of all nonterminal workflow Runs. */
 /** Effective projection of a nonterminal Run; stored execution states are unchanged. */
-export type BranchEffectiveStatus='queued'|'running'|'waiting'|'retrying'|'stopping'|'needs_attention';
+export const BRANCH_EFFECTIVE_STATUSES = ['queued','running','waiting','retrying','stopping','needs_attention'] as const;
+export type BranchEffectiveStatus = typeof BRANCH_EFFECTIVE_STATUSES[number];
+export const BRANCH_RUN_STATUSES = [...BRANCH_EFFECTIVE_STATUSES,...BRANCH_FINISHED_STATES] as const;
+export type BranchRunStatus = typeof BRANCH_RUN_STATUSES[number];
 export interface BranchRunCountsDto {running:number;waiting:number;queued:number;retrying:number;stopping:number;needsAttention:number}
 export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */

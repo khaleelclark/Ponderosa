@@ -13,17 +13,25 @@ const props={runs:[],selectedId:'',onFilter(){},onSelect(){return true},loading:
 const render=extra=>renderToStaticMarkup(React.createElement(BranchRunHistory,{...props,...extra}));
 
 test('Run History distinguishes initial, filtered, loading and unavailable states without claiming unknown is empty',()=>{
- assert.match(render(),/No Runs yet/);assert.match(render({filter:'failed'}),/No Runs match this filter/);
+ assert.match(render(),/No Runs yet/);assert.match(render({filters:['failed']}),/No runs match these filters/);
  assert.match(render({loading:true}),/Loading Run History/);assert.doesNotMatch(render({loading:true}),/No Runs yet/);
  const unavailable=render({error:Error('Backend offline')});assert.match(unavailable,/Run history unavailable/);assert.doesNotMatch(unavailable,/No Runs yet/);
 });
 
 test('deep-linked and filtered-out selected Runs remain represented without replacing history or exposing IDs as names',()=>{
- const html=render({runs:[run('newest','running','automatic')],selectedId:'older',selectedRun:run('older','waiting','call'),filter:'running'});
- assert.match(html,/Selected Run outside this history page or filter/);assert.match(html,/aria-current="true"/);assert.match(html,/Automatic Run/);assert.match(html,/Called by Workflow/);
+ const html=render({runs:[run('newest','running','automatic')],selectedId:'older',selectedRun:run('older','waiting','call'),filters:['running']});
+ assert.match(html,/This run is outside your filters/);assert.match(html,/aria-current="true"/);assert.match(html,/Automatic Run/);assert.match(html,/Called by Workflow/);
  assert.doesNotMatch(html,/>older<|>newest</);assert.match(html,/Selected Run evidence/);
- const other=render({runs:[],selectedId:'older',selectedRun:run('foreign')});assert.doesNotMatch(other,/Selected Run outside/);
- const loaded=render({runs:[run('older')],selectedId:'older',selectedRun:run('older')});assert.doesNotMatch(loaded,/Selected Run outside/);
+ const other=render({runs:[],selectedId:'older',selectedRun:run('foreign')});assert.doesNotMatch(other,/This run is outside/);
+ const matchingOlder=render({runs:[run('newest')],selectedId:'older',selectedRun:run('older'),filters:['completed']});
+ assert.doesNotMatch(matchingOlder,/This run is outside/);assert.match(matchingOlder,/aria-current="true"/);
+ const noLongerMatching=render({runs:[{...run('older','running'),effectiveStatus:'waiting'},run('newest','failed')],selectedId:'older',filters:['running','failed']});
+ const [retained,list]=noLongerMatching.split('aria-label="Workflow Runs"');
+ assert.match(retained,/This run is outside your filters/);assert.match(retained,/aria-current="true"/);
+ assert.doesNotMatch(list,/aria-current="true"/);
+ const finished=render({selectedId:'older',selectedRun:{...run('older','failed'),effectiveStatus:'waiting'},filters:['failed']});
+ assert.doesNotMatch(finished,/This run is outside/);
+ const loaded=render({runs:[run('older')],selectedId:'older',selectedRun:run('older')});assert.doesNotMatch(loaded,/This run is outside/);
 });
 
 // Run the real component with controlled hooks to exercise its presentation-only
@@ -33,7 +41,7 @@ function historyFixture(){
  const hooks={useState(initial){const key=cursor++;if(!(key in states))states[key]=typeof initial==='function'?initial():initial;return[states[key],value=>{states[key]=typeof value==='function'?value(states[key]):value}]},useRef(initial){const key=cursor++;return refs[key]??={current:initial}},useEffect(effect,deps){const key=cursor++,old=states[key];if(!old||deps.some((value,i)=>value!==old[i])){states[key]=deps;effects.push(effect)}},useLayoutEffect(effect,deps){hooks.useEffect(effect,deps)}};
  let desktop=false,measure;const element={};
  const jsx=(type,props)=>{if(props?.['data-run-history-layout']&&props.ref)props.ref.current=element;return {type,props}};
- const scope={exports,getComputedStyle:()=>({getPropertyValue:()=>desktop?'1':'0'}),ResizeObserver:class{constructor(callback){measure=callback}observe(){}disconnect(){}},require:name=>name==='react'?hooks:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='@ponderosa/core'?require('@ponderosa/core'):name==='@mui/material'?Object.fromEntries(['Alert','Box','Button','List','ListItemButton','MenuItem','Skeleton','Stack','TextField','Typography'].map(name=>[name,name])):name.includes('SemanticStatus')?{SemanticStatus:'SemanticStatus',semanticAgentStatus:value=>value}:name==='./branchRunStatus'?{BRANCH_STATUS_FILTERS:['queued','running','waiting','retrying','stopping','needs_attention','completed','failed','canceled','skipped','merged'].map(value=>({value,label:value})),branchExecutionStatus:run=>({status:run.effectiveStatus??run.state,label:run.effectiveStatus??run.state})}: {default:'Icon'}};
+ const scope={exports,getComputedStyle:()=>({getPropertyValue:()=>desktop?'1':'0'}),ResizeObserver:class{constructor(callback){measure=callback}observe(){}disconnect(){}},require:name=>name==='react'?hooks:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='@ponderosa/core'?require('@ponderosa/core'):name==='@mui/material'?Object.fromEntries(['Alert','Box','Button','List','ListItemButton','Checkbox','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','FormGroup','Skeleton','Stack','Typography'].map(name=>[name,name])):name.includes('SemanticStatus')?{SemanticStatus:'SemanticStatus',semanticAgentStatus:value=>value}:name==='./branchRunStatus'?{BRANCH_STATUS_FILTERS:['queued','running','waiting','retrying','stopping','needs_attention','completed','failed','canceled','skipped','merged'].map(value=>({value,label:value})),branchExecutionStatus:run=>({status:run.effectiveStatus??run.state,label:run.effectiveStatus??run.state}),branchExecutionStatusValue:run=>run.effectiveStatus??run.state}: {default:'Icon'}};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/branches/BranchRunHistory.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
  function nodes(tree){return !tree||typeof tree!=='object'?[]:[tree,...[tree.props?.children].flat(Infinity).flatMap(nodes)]}
  return {resize(value){desktop=value;measure?.()},render(extra){cursor=0;const tree=exports.BranchRunHistory({...props,...extra});for(const effect of effects.splice(0))effect();return nodes(tree)}};
@@ -95,20 +103,28 @@ test('history previews reuse bounded authored text and labels without raw envelo
 });
 
 test('filtered empty history offers clear and selected details survive history failure',()=>{
- const f=historyFixture(),filters=[];const nodes=f.render({filter:'failed',onFilter:value=>filters.push(value)});
- nodes.find(node=>node.type==='Button'&&node.props.children==='Clear Filter').props.onClick();assert.deepEqual(filters,['']);
+ const f=historyFixture(),filters=[];const nodes=f.render({filters:['failed'],onFilter:value=>filters.push(value)});
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Clear filters').props.onClick();assert.equal(JSON.stringify(filters),'[[]]');
  const html=render({selectedId:'a',selectedRun:run('a'),error:Error('Refresh unavailable')});assert.match(html,/Selected Run evidence/);assert.match(html,/Run history unavailable/);
  assert.doesNotMatch(render(),/Select a Run to see/);
 });
 
 test('mobile history back retains selection, filter and scroll; only explicit selection opens another Run',()=>{
- const f=historyFixture(),selected=[],filters=[],extra={runs:[run('a'),run('b')],selectedId:'a',filter:'waiting',onSelect:id=>{selected.push(id);return true},onFilter:value=>filters.push(value)};
+ const f=historyFixture(),selected=[],filters=[],extra={runs:[run('a'),run('b')],selectedId:'a',filters:['waiting'],onSelect:id=>{selected.push(id);return true},onFilter:value=>filters.push(value)};
  let nodes=f.render(extra),history=nodes.find(node=>node.props?.['aria-label']==='Run History'),detail=nodes.find(node=>node.props?.['aria-label']==='Selected Run');
  const historyElement={scrollTop:140},detailElement={scrollTop:220};history.props.ref.current=historyElement;detail.props.ref.current=detailElement;
  history.props.onScroll({currentTarget:historyElement});detail.props.onScroll({currentTarget:detailElement});
  nodes.find(node=>node.type==='Button'&&node.props.children==='Back to Run History').props.onClick();nodes=f.render(extra);
  assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');assert.equal(historyElement.scrollTop,140);assert.equal(detailElement.scrollTop,220);assert.deepEqual(selected,[]);
- nodes.find(node=>node.type==='TextField').props.onChange({target:{value:'failed'}});assert.deepEqual(filters,['failed']);assert.deepEqual(selected,[]);
+ const action=(nodes,label)=>nodes.find(node=>node.type==='Button'&&[node.props.children].flat().join('').startsWith(label));
+ action(nodes,'Filter runs').props.onClick();nodes=f.render(extra);
+ action(nodes,'Clear all').props.onClick();nodes=f.render(extra);
+ for(const status of ['failed','waiting']){
+  nodes.find(node=>node.type==='FormControlLabel'&&node.props.label===status).props.control.props.onChange(null,true);
+ }
+ assert.deepEqual(filters,[],'Checklist edits are staged until Apply');
+ action(f.render(extra),'Apply').props.onClick();
+ assert.equal(JSON.stringify(filters),JSON.stringify([['waiting','failed']]));assert.deepEqual(selected,[]);
  nodes=f.render({...extra,onSelect:()=>false});nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render(extra);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex','Rejected navigation leaves the history pane intact');
  nodes.find(node=>node.type==='ListItemButton'&&node.props['aria-current']==='true').props.onClick();nodes=f.render(extra);assert.deepEqual(selected,['a']);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Selected Run').props.sx.display,'block');
  nodes=f.render({...extra,runs:[run('new'),...extra.runs]});assert.deepEqual(selected,['a'],'Background history must not navigate');

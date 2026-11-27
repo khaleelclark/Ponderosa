@@ -32,7 +32,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,replayedTreeCallInput,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptTreeRetryDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
-import {readBranchRunCounts,readBranchLiveOutputs,readBranchEffectiveStatuses,branchEffectiveStatusPage,runExitUnprovenSql,BRANCH_EFFECTIVE_STATUSES} from './branch-run-status.js';
+import {readBranchRunCounts,readBranchLiveOutputs,readBranchEffectiveStatuses,branchStatusPage,runExitUnprovenSql} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
 import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
@@ -52,7 +52,7 @@ import {
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
-  type BranchEffectiveStatus,
+  BRANCH_EFFECTIVE_STATUSES, BRANCH_RUN_STATUSES, type BranchRunStatus,
 } from "@ponderosa/core";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
 import { branchKey, branchText,branchGateResolutionOutput, validateBranchBindings, validateBranchDefinition } from "./branch-definition.js";
@@ -2917,16 +2917,18 @@ export class BranchStore {
     const child=this.row('SELECT id,state,version_id FROM branch_executions WHERE parent_attempt_id=?',attemptId);
     return {...(branch?{calledBranch:{id:branch.id,name:branch.name,enabled:branch.enabled!==false}}:{}),...(child?{childExecution:{id:child.id,state:child.state,versionId:child.version_id}}:{})};
   }
-  listExecutions(branchId: string, beforeId?: string, state?: string, mergeFor?:string): BranchExecutionDto[] {
-    const effective=(BRANCH_EFFECTIVE_STATUSES as readonly string[]).includes(state??'');
-    if(state&&!effective&&!['completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
-    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(state)throw new Error('Merge candidates use their own eligible states');}
+  listExecutions(branchId: string, beforeId?: string, state?: string | readonly string[], mergeFor?:string): BranchExecutionDto[] {
+    const filters = typeof state === 'string' ? (state ? [state] : []) : state ?? [];
+    if (!filters.every(value => (BRANCH_RUN_STATUSES as readonly string[]).includes(value))) throw new Error('Invalid execution status filter');
+    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(filters.length)throw new Error('Merge candidates use their own eligible states');}
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
-    const ids=effective?branchEffectiveStatusPage(this.sqlite,branchId,state as BranchEffectiveStatus,before):this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
-      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:state?" AND state = ?":"")+
-      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r=>r.id as string);
-    const statuses=readBranchEffectiveStatuses(this.sqlite,ids);
+    const now = new Date().toISOString();
+    const effective = filters.some(value => (BRANCH_EFFECTIVE_STATUSES as readonly string[]).includes(value));
+    const ids=effective?branchStatusPage(this.sqlite,branchId,filters as readonly BranchRunStatus[],before,now):this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
+      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:filters.length?" AND state IN (SELECT value FROM json_each(?))":"")+
+      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:filters.length?[JSON.stringify(filters)]:[])).map(r=>r.id as string);
+    const statuses=readBranchEffectiveStatuses(this.sqlite,ids,now);
     return ids.map(id=>{const execution=this.execution(id)!,status=statuses.get(id);return status?{...execution,effectiveStatus:status}:execution;});
   }
   /** Global execution membership is canonical, independent of sidebar pages, search and folders. */

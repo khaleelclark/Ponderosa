@@ -1,4 +1,4 @@
-import type {BranchContextDto} from "@ponderosa/core";
+import {BRANCH_RUN_STATUSES,type BranchContextDto,type BranchRunStatus} from "@ponderosa/core";
 import { parseRoute, navigationPreservesSettings, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
 
@@ -14,7 +14,7 @@ export interface BranchRoute {
   creationKey?: string;
   workspace?: ProjectRoute;
   global?: BranchGlobalView;
-  executionFilter?: string;
+  executionFilters?: readonly BranchRunStatus[];
   settingsSection?: 'variables' | 'execution-controls';
 }
 
@@ -28,6 +28,8 @@ export function retainedBranchDrafts(current: BranchRoute, next: BranchRoute): {
 export function parseBranchRoute(search: string): BranchRoute {
   const query = new URLSearchParams(search);
   const tab = query.get('tab');
+  const requestedStates = new Set(query.getAll('state'));
+  const executionFilters = BRANCH_RUN_STATUSES.filter(state => requestedStates.has(state));
   const executionId = query.get('execution') || undefined;
   const global = query.get('settings');
   const nested = query.get('workspace');
@@ -42,7 +44,7 @@ export function parseBranchRoute(search: string): BranchRoute {
     ...(query.get('chat') ? { chatId: query.get('chat')! } : {}),
     ...(workspace && 'projectId' in workspace && workspace.projectId ? { workspace: workspace as ProjectRoute } : {}),
     ...(['general','providers','notifications','activity','profile','usage','status'].includes(global ?? '') ? { global: global as BranchGlobalView } : {}),
-    ...(query.get('state') ? { executionFilter: query.get('state')! } : {}),
+    ...(executionFilters.length ? { executionFilters } : {}),
   };
 }
 
@@ -55,7 +57,7 @@ export function branchRoutePath(route: BranchRoute): string {
   if (route.chatId) query.set('chat', route.chatId);
   if (route.workspace) query.set('workspace', routeToPath(route.workspace));
   if (route.global) query.set('settings', route.global);
-  if (route.executionFilter) query.set('state', route.executionFilter);
+  for (const state of BRANCH_RUN_STATUSES) if (route.executionFilters?.includes(state)) query.append('state', state);
   if (route.tab === 'settings' && route.settingsSection) query.set('section', route.settingsSection);
   return `/branches${query.size ? `?${query}` : ''}`;
 }

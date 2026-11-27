@@ -21,7 +21,7 @@ import { BranchFolders } from './branches/BranchFolders';
 import { WorkspacePreferencesWriter } from '../workspacePreferencesWriter';
 import { useWorkspacePreferences, useNotificationProjection } from '../hooks/queries';
 import { queryKeys } from '../queryKeys';
-import {normalizeResetPages} from '../collections';
+import {normalizeResetPages,uniqueBy} from '../collections';
 import {markWorkspaceResourceUsed} from '../workspaceRecency';
 import { starredWorkspaceResources, toggleWorkspaceResourceStar, changedWorkspaceDirectoryKinds } from '../resourcePreferences';
 import {createClientId} from '../clientId';
@@ -196,8 +196,22 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const contexts={...contextList,data:[...(contextList.data??[]),...(selectedContext.data&&!contextList.data?.some(c=>c.id===selectedContext.data!.id)?[selectedContext.data]:[])]};
  const engines=useQuery({queryKey:['engines'],queryFn:()=>realApi.listEngines()});
  const agents=useQuery({queryKey:['branch-agents',draft.branchId],queryFn:()=>requestCollectionPage<import('@ponderosa/core').AgentDto>(`/api/branches/${draft.branchId}/agents?limit=100`),enabled:Boolean(draft.branchId),refetchInterval:5000});
- const histories=useInfiniteQuery({queryKey:['branch-executions',draft.branchId,route.executionFilter],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDto[]>(`/api/branches/${draft.branchId}/executions?${new URLSearchParams({...pageParam?{before:pageParam}:{},...route.executionFilter?{state:route.executionFilter}:{}})}`),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId),refetchInterval:3000});
- const executions=histories.data?.pages.flat()??[];
+ const filterKey=route.executionFilters?.join(',')??'';
+ const [historyFilter,setHistoryFilter]=useState({key:filterKey,revision:0});
+ // A previously visited filter starts at page one too, including browser Back and Forward.
+ const filterRevision=historyFilter.revision+Number(historyFilter.key!==filterKey);
+ if(historyFilter.key!==filterKey)setHistoryFilter({key:filterKey,revision:filterRevision});
+ const histories=useInfiniteQuery({
+  queryKey:['branch-executions',draft.branchId,filterKey,filterRevision],
+  initialPageParam:undefined as string|undefined,
+  queryFn:({pageParam})=>{
+   const params=new URLSearchParams(pageParam?{before:pageParam}:undefined);
+   for(const state of route.executionFilters??[])params.append('state',state);
+   return requestJson<BranchExecutionDto[]>(`/api/branches/${draft.branchId}/executions?${params}`);
+  },
+  getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId),refetchInterval:3000,
+ });
+ const executions=uniqueBy(histories.data?.pages.flat()??[],run=>run.id);
  const detailPages=useInfiniteQuery({queryKey:['branch-execution',executionId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDetailDto>(`/api/branch-executions/${executionId}${pageParam?'?cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.nextCursor,enabled:Boolean(executionId),structuralSharing:(saved,next)=>{
   const previous=(saved as InfiniteData<BranchExecutionDetailDto>|undefined)?.pages[0];
   const incoming=(next as InfiniteData<BranchExecutionDetailDto>).pages[0];
@@ -322,7 +336,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
    if(routeOwner.current===start.route&&!routeOwner.current.global&&execution.branchId===start.branchId&&
       isCurrentWorkflowResponse(start,{branchId:currentDraft.current.branchId,selection:selection.current})){
     const accepted=navigate({branchId:start.branchId,tab:'executions',executionId:execution.id,
-     ...(start.route.executionFilter?{executionFilter:start.route.executionFilter}:{})},false,()=>setRunOpen(false));
+     ...(start.route.executionFilters?{executionFilters:start.route.executionFilters}:{})},false,()=>setRunOpen(false));
     if(accepted)setRunOpen(false);
    }
    void client.invalidateQueries({queryKey:['branch-executions',execution.branchId]});
@@ -369,7 +383,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
      currentDraft.current.branchId!==draft.branchId)return;
   if(runAccepted&&run.data){
    const accepted=navigate({branchId:draft.branchId,tab:'executions',executionId:run.data.id,
-    ...(run.variables?.route.executionFilter?{executionFilter:run.variables.route.executionFilter}:{})},false,()=>setRunOpen(false));
+    ...(run.variables?.route.executionFilters?{executionFilters:run.variables.route.executionFilters}:{})},false,()=>setRunOpen(false));
    if(accepted)setRunOpen(false);
    return;
   }
@@ -447,7 +461,10 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
  const detailFresh=detailOwned&&!detail.error&&(!historyExecution||detail.data!.execution.revision>=historyExecution.revision);
  const publishingReadback=loading&&deploy.isPending&&draft.branchId===route.branchId&&!openingLink;
  const openingWorkspace=(loading||openingLink)&&!publishingReadback&&!(tab==='executions'&&detailOwned);
- const shownExecutions=executions.map(e=>e.id===detail.data?.execution.id&&detail.data.execution.revision>=e.revision?detail.data.execution:e);
+ const selectedExecution=detailOwned?detail.data?.execution:undefined;
+ const useSelectedStatus=selectedExecution&&historyExecution&&(selectedExecution.revision>historyExecution.revision||
+  selectedExecution.revision===historyExecution.revision&&detailPages.dataUpdatedAt>=histories.dataUpdatedAt);
+ const shownExecutions=useSelectedStatus?executions.map(run=>run.id===selectedExecution.id?selectedExecution:run):executions;
  const missingAgent=Boolean(validationRequest&&draft.definition.steps.some(step=>step.kind==='agent'&&'ref'in step.target&&!draft.bindings.agents[step.target.ref]));
  const publicationIssues=review.error instanceof ApiRequestError&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current?(review.error.body as {issues?:BranchValidationIssue[]})?.issues:undefined;
  const settingsActive=tab==='settings'&&!loading&&!openingLink&&deployedUpdate?.reason!=='failed';
@@ -651,7 +668,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
       {(reviewFailure||missingAgent||advancedDirty)&&<Typography role="alert" variant="caption" color="error.main" sx={{textAlign:'right'}}>{reviewFailure??(missingAgent?'Assign an Agent to each Agent step before publishing.':'Apply JSON edits or correct the invalid fields before review.')}</Typography>}
      </Stack>} canvasViews={canvasViews.current} undoRedo={undoRedo} onDraft={(edit:WorkflowDraftEdit)=>{if(editorGeneration===selection.current)setDraft(d=>{const definition=edit.definition??d.definition,bindings=edit.bindings??d.bindings;return {...d,definition,bindings:edit.definition?bindDefinitionDirectories(definition,bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory):bindings}})}} branchId={draft.branchId??''} onSettingsIssue={field=>{if(field==='trigger')setInspectorPane('trigger');else setTab('settings')}} validationIssues={publicationIssues} active={tab==='workflow'&&!route.global&&editorAvailable} onInvalidStep={()=>setTab('workflow')} firstStepRequest={firstStepRequest} onProviderSetup={()=>navigate({...route,global:'providers'},false,()=>setProviderReturn(draft.branchId))} inspectorPane={inspectorPane} onInspectorPane={setInspectorPane} inspectorTarget={inspectorTarget} inspectorActive={localInspector} validationRequest={validationRequest} triggerDirty={Boolean(savedDraft.current&&(JSON.stringify(JSON.parse(savedDraft.current).definition.trigger)!==JSON.stringify(draft.definition.trigger)||JSON.stringify(JSON.parse(savedDraft.current).bindings.triggers)!==JSON.stringify(draft.bindings.triggers)))} intake={publishedIntake} onPendingEdits={reportPendingEdits} key={editorKey} definition={draft.definition} bindings={draft.bindings} chatId={draft.chatId} contexts={contexts.data??[]} agents={agents.data?.items??[]} engines={engines.data??[]} existing={Boolean(draft.branchId)} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition,bindings:bindDefinitionDirectories(definition,d.bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory)}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}} onChat={changeChat}/></Box>
      <Box role="tabpanel" id="branch-executions-panel" aria-labelledby="branch-executions-tab" hidden={tab!=='executions'} sx={{display:tab==='executions'?'flex':'none',flex:1,minHeight:0,minWidth:0}}>
-      <RetainedBranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={shownExecutions} rememberedId={rememberedRuns.current.get(draft.branchId)} selectedId={executionId} selectedRun={detailOwned?detail.data?.execution:undefined} filter={route.executionFilter} onFilter={value=>navigate({...route,executionFilter:value||undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} read={workspaceRead(`branch:${draft.branchId}`,"Executions",histories)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={<BranchTriggerAudit branchId={draft.branchId} onNavigate={navigate} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
+      <RetainedBranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={shownExecutions} rememberedId={rememberedRuns.current.get(draft.branchId)} selectedId={executionId} selectedRun={selectedExecution} filters={route.executionFilters} onFilter={value=>navigate({...route,executionFilters:value.length?value:undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} read={workspaceRead(`branch:${draft.branchId}`,"Executions",histories)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={<BranchTriggerAudit branchId={draft.branchId} onNavigate={next=>navigate({...next,executionFilters:route.executionFilters})} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
        <Stack spacing={2}>
         <WorkspaceQueryError initial={!detailOwned} read={workspaceRead(`execution:${executionId}`,"Run",detail,detailOwned)}/>{!detail.error&&executionId&&!detailOwned?<Typography role="status">Loading this Run…</Typography>:null}
         {tab==='executions'&&detailOwned&&detail.data&&<>
