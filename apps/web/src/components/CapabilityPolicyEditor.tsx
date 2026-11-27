@@ -35,8 +35,15 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
       const inventory=await requestJson<ConnectedToolsResponse>(`${endpoint}/connected-tools${refresh?"?refresh=1":""}`,{signal,cache:"no-store"});
       if(!inventory.discoveryFailed)return inventory;
       const prior=client.getQueryData<ConnectedToolsResponse>(connectedKey)?.catalog??[];
-      const lastKnown=new Set(prior.map(item=>item.id));
-      return {...inventory,catalog:[...prior,...inventory.catalog.filter(item=>!lastKnown.has(item.id))]};
+      const rows=new Map(prior.map(item=>[item.id,item]));
+      for(const item of inventory.catalog){
+        const previous=rows.get(item.id);
+        // A failed service can report its current status without a fresh tool list.
+        rows.set(item.id,(!item.available||item.toolDetailsUnavailable)&&!item.includedTools?.length&&previous?.includedTools?.length
+          ? {...item,includedTools:previous.includedTools,toolDetailsReason:previous.toolDetailsReason}
+          : item);
+      }
+      return {...inventory,catalog:[...rows.values()]};
     }
   });
   const refreshInventory=()=>{
@@ -50,6 +57,7 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
     queryFn:({pageParam})=>requestJson<CapabilityPolicyHistory>(`${endpoint}/history${pageParam===undefined?"":`?beforeRevision=${pageParam}`}`),
     getNextPageParam:page=>page.nextBeforeRevision});
   const [draft,setDraft]=useState<CapabilityDraft>(),writing=useRef(false);
+  const connectedSaveError=useRef<HTMLDivElement>(null);
   useEffect(()=>{setDraft(undefined);save.reset()},[endpoint]);
   useEffect(()=>{if(query.data)setDraft(current=>reconcileCapabilityDraft(current,query.data!.policy))},[query.data]);
   const dirty=capabilityDraftDirty(draft);
@@ -72,6 +80,12 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
     onSettled:()=>{writing.current=false},
     retry:false,
   });
+  useEffect(()=>{
+    const feedback=connectedSaveError.current;
+    if(feedback&&(document.activeElement===document.body||feedback.parentElement?.contains(document.activeElement))){
+      feedback.scrollIntoView({block:"nearest"});
+    }
+  },[save.error]);
   useUnsavedForm(`tool-permissions:${endpoint}`,immediateSave&&currentProductScope()!=="branches"&&(dirty||save.isPending));
   useEffect(()=>{onDirtyChange?.(dirty||(immediateSave&&save.isPending))},[dirty,immediateSave,save.isPending,onDirtyChange]);
   useEffect(()=>()=>onDirtyChange?.(false),[onDirtyChange]);
@@ -90,6 +104,10 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
   const connectedRows=new Map(query.data.catalog.filter(item=>parseConnectorCapabilityId(item.id)).map(item=>[item.id,item]));
   for(const item of connected.data?.catalog??[])connectedRows.set(item.id,item);
   const discoveryError=connected.error?.message??(connected.data?.discoveryFailed?"Some connected tools could not be loaded.":undefined);
+  const failedDraft=immediateSave&&save.error?save.variables:undefined;
+  const failedConnector=failedDraft&&[...connectedRows.keys()].find(id=>
+    failedDraft.baseline.includes(id)!==failedDraft.restricted.includes(id));
+  const saveError=save.error&&<Alert ref={failedConnector?connectedSaveError:undefined} severity="error">{save.error.message}{immediateSave&&" Reload the current policy, review its state, then reapply your change if needed."} <Button disabled={save.isPending} onClick={()=>void reloadPolicy()}>Reload Current Policy</Button></Alert>;
   const renderRows=(items:CapabilityCatalogEntry[])=>items.map((item,index)=>{
         const source=query.data!.effective.restrictionSources[item.id];
         const inherited=Boolean(source&&(source.scopeKind!==scopeKind||source.scopeId!==query.data!.policy.scopeId));
@@ -111,13 +129,13 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
             {inherited&&<Typography id={explanationId} variant="caption" color="text.secondary"
               sx={{overflowWrap:"anywhere",textAlign:"right"}}>{inheritedLabel}</Typography>}
           </Stack>
-        </Stack><Box component="details" sx={{mt:1,"& summary":{cursor:"pointer",fontSize:"0.875rem",color:"text.secondary"},"& summary:focus-visible":{outline:"2px solid",outlineColor:"primary.main",outlineOffset:2}}}><summary>Included Tools{item.includedTools?.length?` (${item.includedTools.length})`:""}</summary><Stack spacing={1} sx={{pt:1}}>{item.includedTools?.map(tool=><Box key={tool.name} sx={{minWidth:0,overflowWrap:"anywhere"}}><Typography variant="body2" fontWeight={650}>{tool.name}</Typography><Typography variant="body2" color="text.secondary">{tool.description??"The provider did not report a description for this tool."}</Typography></Box>)}{item.toolDetailsReason&&<Typography variant="body2" color="text.secondary">{item.toolDetailsReason}</Typography>}{!item.includedTools?.length&&!item.toolDetailsReason&&<Typography variant="body2" color="text.secondary">No tool definitions are currently reported.</Typography>}</Stack></Box></Box>;
+        </Stack>{failedConnector===item.id&&saveError}<Box component="details" sx={{mt:1,"& summary":{cursor:"pointer",fontSize:"0.875rem",color:"text.secondary"},"& summary:focus-visible":{outline:"2px solid",outlineColor:"primary.main",outlineOffset:2}}}><summary>Included Tools{item.includedTools?.length?` (${item.includedTools.length})`:""}</summary><Stack spacing={1} sx={{pt:1}}>{item.includedTools?.map(tool=><Box key={tool.name} sx={{minWidth:0,overflowWrap:"anywhere"}}><Typography variant="body2" fontWeight={650}>{tool.name}</Typography><Typography variant="body2" color="text.secondary">{tool.description??"The provider did not report a description for this tool."}</Typography></Box>)}{item.toolDetailsReason&&<Typography variant="body2" color="text.secondary">{item.toolDetailsReason}</Typography>}{!item.includedTools?.length&&!item.toolDetailsReason&&<Typography variant="body2" color="text.secondary">No tool definitions are currently reported.</Typography>}</Stack></Box></Box>;
   });
   return <Stack component="section" aria-label={title} spacing={2} sx={{minWidth:0,containerType:"inline-size",containerName:"capabilities"}}>
     {heading}
     {policyError}
     {conflict&&<Alert severity="warning" action={<Button disabled={save.isPending} color="inherit" onClick={()=>immediateSave?void reloadPolicy():setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Load Latest</Button>}>Capability restrictions changed elsewhere. Load the latest policy, then reapply your edits.</Alert>}
-    {save.error&&<Alert severity="error">{save.error.message}{immediateSave&&" Reload the current policy, review its state, then reapply your change if needed."} <Button disabled={save.isPending} onClick={()=>void reloadPolicy()}>Reload Current Policy</Button></Alert>}
+    {!failedConnector&&saveError}
     {immediateSave&&save.isPending&&<Typography role="status">Saving…</Typography>}
     <Box sx={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:2,alignItems:"start","@container capabilities (min-width:68.75rem)":{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}}}>
     {groups.map(([label,items])=><Paper key={label} variant="outlined" sx={{overflow:"hidden"}}>
@@ -131,11 +149,11 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Tool permissio
       <AccordionDetails>
         <Stack spacing={1}>
           {connected.isFetching&&<Typography role="status">{connected.data?"Refreshing connected tools…":"Loading connected tools…"}</Typography>}
-          {discoveryError&&<Alert severity="error" action={<Button color="inherit" disabled={connected.isFetching} onClick={refreshInventory}>Retry</Button>}>{discoveryError}</Alert>}
+          {discoveryError&&<Alert severity="error">{discoveryError}</Alert>}
+          {connected.isFetched&&<Button sx={{alignSelf:"start","&[aria-disabled=true]":{color:"text.disabled"}}} aria-disabled={connected.isFetching} onClick={refreshInventory}>{discoveryError||!connected.data?"Retry":"Refresh"}</Button>}
           {connected.data?.selectionLimited&&<Typography variant="body2" color="text.secondary">Showing services from the first 100 distinct Agent setups. Open an Agent’s Settings for its exact services.</Typography>}
           {connectedRows.size>0&&<Paper variant="outlined">{renderRows([...connectedRows.values()])}</Paper>}
           {!connectedRows.size&&connected.data&&!discoveryError&&<Typography variant="body2" color="text.secondary">No connected tools reported.</Typography>}
-          {connected.data&&!discoveryError&&<Button sx={{alignSelf:"start"}} disabled={connected.isFetching} onClick={refreshInventory}>Refresh</Button>}
         </Stack>
       </AccordionDetails>
     </Accordion>

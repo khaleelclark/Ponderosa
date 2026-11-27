@@ -65,14 +65,16 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
   }catch{discoveryFailed=true}
 
   // ponytail: 64 KiB of optional connector details per response; inspect an Agent for its exact inventory.
-  const connectors=new Map<string,{entry:CapabilityCatalogEntry;named:Set<string>;total:number;reports:number;unnamed:boolean}>();
+  const connectors=new Map<string,{entry:CapabilityCatalogEntry;named:Set<string>;total:number;reports:number;unnamed:boolean;toolsDiscovered:boolean}>();
   let detailsBytes=64*1024;
   for(const result of discovered)for(const server of result.capabilities.mcpServers){
    if(server.name==='ponderosa')continue;
+   // Configured-only entries in a partial response do not confirm whether the service is connected.
+   if(result.capabilities.mcpInventoryIncomplete&&!server.toolsDiscovered&&server.initialization==='not_initialized'&&!server.detail)continue;
    const descriptor=connectorCapability(result.engineId,server.name);
    let connector=connectors.get(descriptor.id);
    if(!connector){
-    connector={entry:{...descriptor,label:`${server.name} (${engines.get(result.engineId)!.adapter.displayName})`,available:false,includedTools:[]},named:new Set(),total:0,reports:0,unnamed:false};
+    connector={entry:{...descriptor,label:`${server.name} (${engines.get(result.engineId)!.adapter.displayName})`,available:false,includedTools:[]},named:new Set(),total:0,reports:0,unnamed:false,toolsDiscovered:false};
     connectors.set(descriptor.id,connector);
    }
    const {entry,named}=connector;
@@ -80,6 +82,7 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
    entry.unavailableReason=entry.available?undefined:server.detail??'This service is not connected to the provider.';
    const reported=server.tools??[];
    connector.reports++;
+   connector.toolsDiscovered ||= server.toolsDiscovered;
    connector.total=Math.max(connector.total,server.toolCount);
    connector.unnamed ||= server.toolCount>reported.length;
    for(const tool of reported)if(!named.has(tool.name)){
@@ -90,7 +93,8 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
     entry.includedTools!.push(tool);
    }
   }
-  const catalog=[...connectors.values()].map(({entry,named,total,reports,unnamed})=>{
+  const catalog=[...connectors.values()].map(({entry,named,total,reports,unnamed,toolsDiscovered})=>{
+   if(!toolsDiscovered&&discoveryFailed)entry.toolDetailsUnavailable=true;
    const included=entry.includedTools!.length;
    if(unnamed&&reports>1)entry.toolDetailsReason='Some tool details are unavailable.';
    else if(Math.max(total,named.size)>included)entry.toolDetailsReason=`Showing ${included} of ${Math.max(total,named.size)} tools.`;

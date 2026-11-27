@@ -49,6 +49,7 @@ export interface CapabilityCatalogEntry extends CapabilityDescriptor {
   unavailableReason?: string;
   includedTools?: CapabilityTool[];
   toolDetailsReason?: string;
+  toolDetailsUnavailable?: boolean;
 }
 export interface CapabilityPolicyChange {
   revision: number;
