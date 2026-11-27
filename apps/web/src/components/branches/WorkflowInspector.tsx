@@ -40,8 +40,10 @@ export function WorkflowInspector({open,pane,mobile=false,fallbackFocus,children
   }
   wasOpen.current=open;
   const active=document.activeElement;
-  if(open&&(!panel.current?.contains(active)||active===panel.current||!active?.getClientRects().length))
-   (panel.current?.querySelector<HTMLElement>('[data-inspector-back]:not(:disabled)')??panel.current)?.focus({preventScroll:true});
+  if(open&&(!panel.current?.contains(active)||active===panel.current||!active?.getClientRects().length)){
+   const back=Array.from(panel.current?.querySelectorAll<HTMLElement>('[data-inspector-back]:not(:disabled)')??[]).find(button=>button.getClientRects().length>0);
+   (back??panel.current)?.focus({preventScroll:true});
+  }
  },[open,pane,wide]);
  return <Box ref={root} data-workflow-workspace sx={{position:'relative',display:'grid',minWidth:0,minHeight:0,flex:1,gridTemplateColumns:open&&wide?`minmax(0,1fr) ${dividerWidth}px ${width}px`:'minmax(0,1fr)'}}>
   <Box sx={{display:'flex',minWidth:0,minHeight:0,flexDirection:'column'}}>{children}</Box>

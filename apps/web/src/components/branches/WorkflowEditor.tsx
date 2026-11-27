@@ -66,6 +66,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const [selected,setSelected]=useState<string|undefined>(()=>canvasViews.get(branchId)?.selected),[expanded,setExpanded]=useState(false),[editorReveal,setEditorReveal]=useState(0),[focusRequest,setFocusRequest]=useState(0),[addAnchor,setAddAnchor]=useState<ReturnType<typeof workflowInsertionAnchor>|null>(null),[branching,setBranching]=useState(false),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
  const viewStorageKey=`ponderosa:workflow-view:${branchId}`;
  const [view,setView]=useState(()=>canvasViews.get(branchId)?.view??(branchId&&readBrowserStorage('sessionStorage',viewStorageKey)==='outline'?'outline':'canvas'));
+ const triggerView=useRef<typeof view>();
  const canvasRegion=useRef<HTMLDivElement>(null),canvasNavigation=useRef<CanvasNavigation>(null);
  const [canvasPhase,setCanvasPhase]=useState<CanvasPhase>('loading');
  const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
@@ -83,7 +84,11 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const expandedPane=useRef<typeof inspectorPane>(),stepPanel=useRef<HTMLDivElement>(null),stepScroll=useRef(0);
  const variablesButton=useRef<HTMLButtonElement>(null),setupButton=useRef<HTMLElement>(),variablesFromTrigger=useRef(false);
  const restoreSetupFocus=()=>requestAnimationFrame(()=>setupButton.current?.focus({preventScroll:true}));
- useEffect(()=>{if(inspectorPane==='trigger')setRetainTrigger(true);if(inspectorPane!=='variables')variablesFromTrigger.current=false},[inspectorPane]);
+ useEffect(()=>{
+  if(inspectorPane==='trigger')setRetainTrigger(true);
+  if(inspectorPane!=='variables')variablesFromTrigger.current=false;
+  if(inspectorPane!=='trigger'&&inspectorPane!=='variables')triggerView.current=undefined;
+ },[inspectorPane]);
  useEffect(()=>{if(!validationIssues.length){setChosenIssue(undefined);return;}setChosenIssue(validationIssues[0]);if(validationIssues[0]?.nodeId){openEditor(validationIssues[0].nodeId);onInvalidStep?.()}},[validationIssues]);
  const selectedNode=[...definition.steps,...definition.controls].find(node=>node.id===selected);
  const [insertionTarget,setInsertionTarget]=useState<GuidedInsertionTarget>({kind:'entry'}),[insertError,setInsertError]=useState('');
@@ -146,7 +151,21 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString(),whenRunning:'run_latest'}:kind==='webhook'?{}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
   onDraft({definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:next});
  };
- const triggerControl=(ref:React.RefObject<HTMLButtonElement>)=><Tooltip describeChild title="Edit trigger settings"><Button ref={ref} color={triggerInvalid?'error':'inherit'} variant="outlined" startIcon={<PlayArrowOutlinedIcon/>} endIcon={<ExpandMoreIcon/>} onClick={()=>{setExpanded(false);onInspectorPane('trigger')}} sx={{minHeight:44,maxWidth:'100%',bgcolor:'background.paper',borderRadius:'12px',whiteSpace:'normal',textAlign:'left','& .MuiButton-startIcon, & .MuiButton-endIcon':{flexShrink:0}}}>{workflowTriggerSummary(definition.trigger.kind,sourceConfig)}{triggerDirty?' · Draft':''}</Button></Tooltip>;
+ const changeView=(next:typeof view)=>{
+  setView(next);
+  if(branchId)writeBrowserStorage('sessionStorage',viewStorageKey,next);
+  if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
+ };
+ const closeTrigger=()=>{
+  const origin=triggerView.current??view;
+  triggerView.current=undefined;
+  if(origin!==view)changeView(origin);
+  onInspectorPane();
+  requestAnimationFrame(()=>{
+   if(mounted.current&&owner.current.active)(origin==='outline'?outlineTrigger:triggerButton).current?.focus({preventScroll:true});
+  });
+ };
+ const triggerControl=(ref:React.RefObject<HTMLButtonElement>)=><Tooltip describeChild title="Edit trigger settings"><Button ref={ref} color={triggerInvalid?'error':'inherit'} variant="outlined" startIcon={<PlayArrowOutlinedIcon/>} endIcon={<ExpandMoreIcon/>} onClick={()=>{triggerView.current=view;setExpanded(false);onInspectorPane('trigger')}} sx={{minHeight:44,maxWidth:'100%',bgcolor:'background.paper',borderRadius:'12px',whiteSpace:'normal',textAlign:'left','& .MuiButton-startIcon, & .MuiButton-endIcon':{flexShrink:0}}}>{workflowTriggerSummary(definition.trigger.kind,sourceConfig)}{triggerDirty?' · Draft':''}</Button></Tooltip>;
  const focusViewSelector=useRef(false);
  const restoreViewFocus=useCallback((group:HTMLDivElement|null)=>{
   if(!group||!focusViewSelector.current)return;
@@ -156,9 +175,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const viewSelector=<ToggleButtonGroup ref={restoreViewFocus} exclusive value={view} aria-label="Workflow view" size="small" onChange={(_,next:'canvas'|'outline'|null)=>{
   if(!next)return;
   focusViewSelector.current=true;
-  setView(next);
-  if(branchId)writeBrowserStorage('sessionStorage',viewStorageKey,next);
-  if(next==='canvas')setCanvasOpened(true);else setOutlineOpened(true);
+  changeView(next);
  }} sx={{flexShrink:0,'& .MuiToggleButton-root':{minHeight:44,px:{xs:1,sm:2},textTransform:'none'}}}>
   <ToggleButton value="canvas">Canvas</ToggleButton>
   <ToggleButton value="outline">Outline</ToggleButton>
@@ -192,19 +209,20 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   </Box>}
   {inspectorTarget&&createPortal(<>
    {retainTrigger||inspectorPane==='trigger'?<Box hidden={!inspectorActive||inspectorPane!=='trigger'} sx={{height:'100%'}}>
-    <WorkflowInspectorPage title="Trigger settings" onBack={()=>{onInspectorPane();requestAnimationFrame(()=>(view==='outline'?outlineTrigger:triggerButton).current?.focus({preventScroll:true}))}} actions={<Button ref={variablesButton} onClick={()=>{variablesFromTrigger.current=true;onInspectorPane('variables')}}>Workflow variables</Button>}>
+    <WorkflowInspectorPage title="Trigger settings" onBack={closeTrigger} actions={<Button ref={variablesButton} onClick={()=>{variablesFromTrigger.current=true;onInspectorPane('variables')}}>Workflow variables</Button>}>
   <Stack component="section" aria-label="How It Starts" spacing={1.5}>
-   {intake}
-   {triggerDirty&&<Typography fontWeight={600}>Draft · {workflowTriggerSummary(definition.trigger.kind,sourceConfig)}</Typography>}
    <FormControl>
     <FormLabel id={startsLabel}>How it starts</FormLabel>
-    <RadioGroup row aria-labelledby={startsLabel} value={definition.trigger.kind} onChange={(_,value)=>setTrigger(value as BranchDefinition['trigger']['kind'])}>
+    <RadioGroup aria-labelledby={startsLabel} value={definition.trigger.kind} onChange={(_,value)=>setTrigger(value as BranchDefinition['trigger']['kind'])}
+     sx={{'& .MuiFormControlLabel-root':{m:0,width:'100%',minHeight:44},'& .MuiRadio-root':{flexShrink:0}}}>
      <FormControlLabel value="manual" control={<Radio size="small"/>} label="Manually with Run once"/>
      <FormControlLabel value="schedule" control={<Radio size="small"/>} label="On a schedule"/>
      <FormControlLabel value="webhook" control={<Radio size="small"/>} label="When a webhook arrives"/>
      <FormControlLabel value="filesystem" control={<Radio size="small"/>} label="When files change"/>
     </RadioGroup>
    </FormControl>
+   {intake}
+   {triggerDirty&&<Typography fontWeight={600}>Draft · {workflowTriggerSummary(definition.trigger.kind,sourceConfig)}</Typography>}
    {definition.trigger.kind!=='manual'&&sourceConfig&&<BranchTriggerSource key={definition.trigger.kind} kind={definition.trigger.kind} config={sourceConfig} onChange={setSource} onInvalid={setTriggerInvalid}/>}
    {triggerInvalid&&<Alert severity="error">Correct the trigger fields before reviewing publication.</Alert>}
    {source&&definition.trigger.kind!=='manual'&&<Box>

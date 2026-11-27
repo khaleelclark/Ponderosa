@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {join} from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {fixture} from '../shared/fixture.mjs';
 import {serveFixture} from '../shared/serve-ui-fixture.mjs';
@@ -8,7 +9,7 @@ import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
 let store;
 const f=await fixture({storeFactory:directory=>(store=new AgentStore(directory))});
-let web,browser;
+let web,browser,passed=false;
 try{
  web=await serveFixture(f);
  browser=await chromium.launch({executablePath:process.env.CHROME_BIN??'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
@@ -35,6 +36,30 @@ try{
    const run=page.getByRole('button',{name:'Run once',exact:true});
    const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
    const activate=control=>mobile?control.tap():control.click();
+   const heading=inspector.getByRole('heading',{name:'Trigger settings',exact:true});
+   const starts=inspector.getByRole('radiogroup',{name:'How it starts',exact:true});
+   const startOptions=['Manually with Run once','On a schedule','When a webhook arrives','When files change'];
+   async function assertFocus(element){
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    if(document.activeElement!==element)throw Error('Expected focus on '+element.textContent+' but found '+document.activeElement?.outerHTML.slice(0,160));
+   }
+   async function checkTriggerLayout(){
+    const arrow=await back.boundingBox(),title=await heading.boundingBox();
+    assert.deepEqual(await back.evaluate(button=>[button.offsetWidth,button.offsetHeight]),[44,44],'The arrow has a 44px touch target');
+    assert.ok(title.x>=arrow.x+arrow.width&&title.x-arrow.x-arrow.width<=12);
+    assert.ok(Math.abs(title.y+title.height/2-arrow.y-arrow.height/2)<2,'The title is beside the arrow');
+    const group=await starts.boundingBox(),rows=starts.locator('label');
+    assert.deepEqual(await rows.allTextContents(),startOptions);
+    let lastBottom=group.y;
+    for(const row of await rows.all()){
+     const rect=await row.boundingBox();
+     assert.ok(Math.abs(rect.x-group.x)<1&&Math.abs(rect.width-group.width)<1,'Each radio label spans the group');
+     assert.ok(rect.y>=lastBottom-1&&rect.height>=44,'Each option occupies its own touch-sized row');
+     lastBottom=rect.y+rect.height;
+    }
+    const settings=await live.boundingBox();
+    assert.ok(settings.y>=lastBottom,'Published controls and draft trigger settings follow the radio group');
+   }
    const live=inspector.getByRole('region',{name:'Published trigger',exact:true});
    const directoryStatus=page.getByRole('link',{name:'Open Workflow '+name,exact:true}).locator('..').getByRole('img',{name:/Workflow Runs/});
    async function checkDirectory(label){
@@ -48,21 +73,27 @@ try{
    await start.waitFor();
    assert.equal(await availability.isChecked(),true);
    await checkDirectory(/^Next /);
-   await start.click();
+   await activate(start);
    await inspector.getByText('Published · Every 10 minutes',{exact:true}).waitFor();
+   if(mobile)await page.waitForFunction(()=>{const rect=document.querySelector('[aria-label="Workflow inspector"]').getBoundingClientRect();return Math.abs(rect.width-390)<1&&Math.abs(rect.x)<1;});
+   await checkTriggerLayout();
+   await back.evaluate(assertFocus);
    await live.getByText('Automatic runs on',{exact:true}).waitFor();
    assert.equal(await busy.getByRole('radio',{name:'Queue every run',exact:true}).isChecked(),true);
    await inspector.getByText(/Queue a separate run for each scheduled event/).waitFor();
    assert.equal(await inspector.getByRole('combobox').count(),1,'Only the interval unit needs a dropdown');
    assert.equal(await inspector.getByRole('textbox',{name:'Cron Expression'}).count(),0);
    if(mobile){
-    await page.waitForFunction(()=>{const rect=document.querySelector('[aria-label="Workflow inspector"]').getBoundingClientRect();return Math.abs(rect.width-390)<1&&rect.x<=1;});
-    await inspector.getByRole('button',{name:'Workflow variables',exact:true}).click();
-    await inspector.getByRole('button',{name:'Back to trigger settings'}).click();
-    await back.click();await inspector.waitFor({state:'hidden'});
-    await start.evaluate(element=>{if(document.activeElement!==element)throw Error('Focus returned to '+document.activeElement?.tagName+' '+document.activeElement?.getAttribute('aria-label')+' '+document.activeElement?.textContent?.slice(0,80));});
-    await start.click();
+    const variables=inspector.getByRole('button',{name:'Workflow variables',exact:true});
+    await activate(variables);
+    await activate(inspector.getByRole('button',{name:'Back to trigger settings',exact:true}));
+    await variables.evaluate(assertFocus);
+    await activate(back);await inspector.waitFor({state:'hidden'});
+    await start.evaluate(assertFocus);
+    await activate(start);
    }else{
+    await back.hover();
+    await page.getByRole('tooltip',{name:'Back to workflow',exact:true}).waitFor();
     const divider=page.getByRole('separator',{name:'Resize workflow inspector'});
     const value=async()=>Number(await divider.getAttribute('aria-valuenow'));
     const first=await value();
@@ -72,7 +103,19 @@ try{
     await page.mouse.move(handle.x+6,handle.y+30);await page.mouse.down();await page.mouse.move(handle.x-34,handle.y+30,{steps:5});await page.mouse.up();
     assert.equal(await value(),first+56);
     await page.keyboard.press('Home');assert.equal(await value(),320);
+    await checkTriggerLayout();
+    await starts.getByText('When a webhook arrives',{exact:true}).evaluate(label=>{
+     label.style.fontSize='32px';
+     try{
+      const text=label.getBoundingClientRect(),row=label.closest('label').getBoundingClientRect();
+      const radio=label.previousElementSibling.getBoundingClientRect();
+      if(text.height<=parseFloat(getComputedStyle(label).lineHeight))throw Error('Expected the enlarged label to wrap');
+      if(text.right>row.right+1||Math.abs(text.y+text.height/2-radio.y-radio.height/2)>1)
+       throw Error('Wrapped text must stay inside its row and aligned with its radio');
+     }finally{label.style.removeProperty('font-size');}
+    });
     await page.keyboard.press('End');assert.equal(await value(),Number(await divider.getAttribute('aria-valuemax')));
+    await checkTriggerLayout();
     await page.keyboard.press('Home');await page.keyboard.press('ArrowLeft');
     await page.reload();await start.click();assert.equal(await value(),336);
     const canvas=await page.getByRole('region',{name:'Workflow Canvas',exact:true}).boundingBox();
@@ -88,9 +131,27 @@ try{
    await interval.fill('15');
    await inspector.getByText('Draft · Every 15 minutes',{exact:true}).waitFor();
    await inspector.getByText('Published · Every 10 minutes',{exact:true}).waitFor();
-   await back.click();
+   await activate(back);
+   await inspector.waitFor({state:'hidden'});
+   await start.evaluate(assertFocus);
+   const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
+   const outlineStart=outline.getByRole('button',{name:'Every 15 minutes · Draft',exact:true});
+   await activate(page.getByRole('button',{name:'Outline',exact:true}));
+   await activate(outlineStart);
+   assert.equal(await interval.inputValue(),'15');
+   if(!mobile){
+    await activate(page.getByRole('button',{name:'Canvas',exact:true}));
+    await page.getByRole('region',{name:'Workflow Canvas',exact:true}).waitFor();
+   }
+   await back.focus();
+   await page.keyboard.press('Escape');
+   await inspector.waitFor({state:'hidden'});
+   await outlineStart.evaluate(assertFocus);
+   await activate(page.getByRole('button',{name:'Canvas',exact:true}));
    const step=page.locator('[aria-label="Select Review request"]');
    await step.click();
+   const stepHeader=inspector.getByRole('heading',{name:'Step Settings',exact:true}).locator('..');
+   await stepHeader.getByRole('button',{name:'Expand Workflow',exact:true}).waitFor();
    await inspector.getByRole('textbox',{name:'Name',exact:true}).fill('Review edited request');
    await back.click();
    await activate(run);
@@ -281,6 +342,21 @@ try{
    await back.click();
    assert.equal(f.ok(await f.api('GET',path)).id,branch.id);
 
+   const beforeTriggerChoice=f.ok(await f.api('GET',path+'/trigger'));
+   await workflowTab.press('Enter');
+   await activate(page.getByRole('button',{name:'Every 15 minutes',exact:true}));
+   await back.focus();
+   await page.keyboard.press('Tab');
+   await starts.getByRole('radio',{name:'On a schedule',exact:true}).evaluate(assertFocus);
+   await page.keyboard.press('ArrowDown');
+   await starts.getByRole('radio',{name:'When a webhook arrives',exact:true}).evaluate(assertFocus);
+   assert.equal(await starts.getByRole('radio',{name:'When a webhook arrives',exact:true}).isChecked(),true);
+   const fileRow=starts.locator('label').filter({hasText:'When files change'});
+   const row=await fileRow.boundingBox(),position={x:row.width-8,y:row.height/2};
+   if(mobile)await fileRow.tap({position});else await fileRow.click({position});
+   assert.equal(await starts.getByRole('radio',{name:'When files change',exact:true}).isChecked(),true);
+   assert.deepEqual(f.ok(await f.api('GET',path+'/trigger')),beforeTriggerChoice,'Changing the draft trigger leaves published intake intact');
+
    const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
    for(const onceState of ['fired','expired','future']){
     const at=new Date(Date.now()+(onceState==='future'?3600000:-3600000)).toISOString();
@@ -313,10 +389,13 @@ try{
     assert.deepEqual(await readOccurrences(),occurrences);
    }
    assert.deepEqual(pageErrors,[]);
-   console.log(`Schedule draft/live review, overlap, pause/resume, approval, technical evidence, Settings repair and one-time schedule states passed at ${mobile?'390 × 844':'1440 × 900'}`);
+   console.log(`Trigger layout, Canvas/Outline focus, draft retention, schedule draft/live review, overlap, pause/resume, approval, technical evidence, Settings repair and one-time schedule states passed at ${mobile?'390 × 844 touch':'1440 × 900 desktop'}`);
   }catch(error){
-   await page.screenshot({path:`/tmp/pr111-inspector-${mobile?'phone':'desktop'}-failed.png`});
+   const evidence=join(f.root,`inspector-${mobile?'phone':'desktop'}-failed.png`);
+   await page.screenshot({path:evidence}).catch(()=>{});
+   console.error('Inspector fixture evidence:',evidence);
    throw error;
   }finally{await context.close()}
  }
-}finally{await browser?.close();await web?.close();await f.dispose(false)}
+ passed=true;
+}finally{await browser?.close();await web?.close();await f.dispose(passed)}
