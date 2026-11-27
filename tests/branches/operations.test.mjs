@@ -527,20 +527,28 @@ test('Branch provider admission rechecks after async preflight and leases the sa
  f.pass();
 });
 
-test('a held report can record the exact finished Branch result once across restart',async t=>{
+function savedResultFixture(t,{shared=false,split=false,receipt=true}={}){
  const f=fixture(t);
  f.branches.advance();
+ if(shared)f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,
+  actorScope:'user:local-operator',idempotencyKey:'same-run-peer-work',requests:[
+   {recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'},payload:{text:'Return findings for a different task'}}]});
  const {requestId,stepExecutionId}=f.branches.detail(f.execution.id).attempts[0];
  const source=f.coordination.leaseNextRun({workerId:'original'});
- const output='Saved shortlist';
- const executionId='original-provider-execution';
+ assert.equal(source.activations.length,shared?2:1);
+ const executionId=source.runId;
+ const firstText='Saved ',lastText='shortlist';
+ const output=firstText+lastText;
  f.coordination.markRunStarted(source.runId,source.fencingToken);
  f.coordination.preparePromptInjection({...source,prompt:'Original request'});
  f.coordination.recordProviderInput({executionId,schedulerRunId:source.runId,fencingToken:source.fencingToken,
   agentId:f.agent.id,projectId:f.project.id,prompt:'Original request',sourceManifest:{}});
  f.coordination.markPromptSubmitted(source);
  f.coordination.acknowledgePromptInjection(source);
- f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:output});
+ const first=f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:firstText});
+ if(split)f.store.appendEvent(f.agent.id,{type:'reasoning',executionId,delta:'Starting another response'});
+ const last=f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:lastText});
+ if(receipt)f.store.appendEvent(f.agent.id,{type:'agent_output',executionId,text:output,sourceSeqStart:first.seq,sourceSeqEnd:last.seq});
  f.coordination.completeRun(source.runId,source.fencingToken);
  const report=f.coordination.leaseNextRun({workerId:'report-only'});
  const reportId=report.activations[0].id;
@@ -555,6 +563,11 @@ test('a held report can record the exact finished Branch result once across rest
  const app=Fastify();
  registerBranchRoutes(app,{store:opened,coordination,branches,installations:{setPublisher(){}},sources:{},notify(){}});
  const url='/api/branch-executions/'+f.execution.id+'/steps/'+stepExecutionId+'/saved-result';
+ return {f,opened,coordination,branches,app,url,source,output,report,reportId,requestId,async close(){await app.close();opened.close()}};
+}
+
+test('a held report can record the exact finished Branch result once across restart',async t=>{
+ const {f,opened,coordination,branches,app,url,source,output,requestId,close}=savedResultFixture(t);
  try{
   const candidate=(await app.inject(url)).json();
   assert.deepEqual(candidate,{available:true,sourceRunId:source.runId,text:output,
@@ -575,6 +588,62 @@ test('a held report can record the exact finished Branch result once across rest
   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE request_id=?').get(requestId).n,1);
   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,2);
   assert.equal(coordination.peekNextRunnable(),undefined);
- }finally{await app.close();opened.close()}
+ }finally{await close()}
  f.pass();
 });
+
+test('review can record a proven result as blocked once the reporting Run has drained',async t=>{
+ const {f,opened,branches,app,url,report,reportId,requestId,close}=savedResultFixture(t);
+ try{
+  const {available,sourceRunId,outputHash}=(await app.inject(url)).json();
+  assert.equal(available,true);
+  const payload={commandKey:'record-blocked',expectedRevision:branches.execution(f.execution.id).revision,
+   sourceRunId,outputHash,disposition:'blocked'};
+  const commit=(kind,identity,value)=>{
+   const json=JSON.stringify(value);
+   opened.sqlite.prepare('INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)')
+    .run(kind,identity,json,json,'test');
+  };
+  commit('provider-process-registration','report:registration',
+   {authorityId:'report-process',runId:report.runId,runFence:report.fencingToken,agentId:f.agent.id});
+  assert.deepEqual((await app.inject(url)).json(),{available:false});
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,409);
+  commit('provider-process-exit','report-process',{authorityId:'report-process',result:'observed_exited'});
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(opened.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state,'blocked');
+  assert.equal(opened.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(reportId).state,'cancelled');
+ }finally{await close()}
+ f.pass();
+});
+
+for(const [label,options] of [
+ ['a shared source Run', {shared:true}],
+ ['split text in a completed Run', {split:true}],
+ ['a Work log segment without a complete output receipt', {receipt:false}],
+ ['evidence that becomes fragmented after preview', {stalePreview:true}],
+]){
+ test(`saved result discovery and recording reject ${label}`,async t=>{
+  const {f,opened,branches,app,url,source,output,reportId,requestId,close}=savedResultFixture(t,options);
+  try{
+   const candidate=(await app.inject(url)).json();
+   if(options.stalePreview){
+    assert.equal(candidate.available,true);
+    // Simulate contradictory evidence arriving without a Branch revision change.
+    f.store.appendEvent(f.agent.id,{type:'reasoning',executionId:source.runId,delta:'Another message'});
+    f.store.appendEvent(f.agent.id,{type:'text',executionId:source.runId,delta:'An additional fragment'});
+   }
+   assert.deepEqual((await app.inject(url)).json(),{available:false});
+   const payload={commandKey:'reject-unproven-result',expectedRevision:branches.execution(f.execution.id).revision,
+    sourceRunId:source.runId,outputHash:candidate.outputHash??createHash('sha256')
+     .update(options.split?'shortlist':output).digest('hex')};
+   for(const disposition of ['completed','blocked']) {
+    assert.equal((await app.inject({method:'POST',url,payload:{...payload,disposition}})).statusCode,409);
+   }
+   assert.equal(opened.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state,'open');
+   assert.equal(opened.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(reportId).state,'retry_pending');
+   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE request_id=?').get(requestId).n,0);
+   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.execution.id,payload.commandKey).n,0);
+  }finally{await close()}
+  f.pass();
+ });
+}

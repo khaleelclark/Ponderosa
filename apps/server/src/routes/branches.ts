@@ -1,4 +1,4 @@
-import {nextIntervalTime,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength} from "@ponderosa/core";
+import {nextIntervalTime} from "@ponderosa/core";
 import {localMemoryFor} from '../local-memory.js';
 import {packageExportDownloads,workingFolderOmissions} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
@@ -742,9 +742,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     const {id,stepExecutionId}=request.params;
     const saved=branches.savedResultCandidate(id,stepExecutionId);
     if(!saved)return {available:false};
-    const text=store.getRunOutputText(saved.agentId,saved.outputSeq)?.text;
-    if(!text?.trim()||unicodeCodePointLength(normalizeCanonicalText(text))>INLINE_TEXT_MAX_CODE_POINTS)return {available:false};
-    return {available:true,sourceRunId:saved.sourceRunId,text,outputHash:createHash('sha256').update(text).digest('hex')};
+    const {sourceRunId,text,outputHash}=saved;
+    return {available:true,sourceRunId,text,outputHash};
   });
   app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>(savedResultPath,(request,reply)=>{
     try{
@@ -755,7 +754,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
         typeof sourceRunId!=='string'||typeof outputHash!=='string'||!/^[0-9a-f]{64}$/.test(outputHash)||
         (disposition!=='completed'&&disposition!=='blocked'))throw Error('Invalid saved result review');
       const result=branches.recoverSavedResult(request.params.id,request.params.stepExecutionId,
-        {commandKey,expectedRevision,sourceRunId,outputHash,disposition},(agent,seq)=>store.getRunOutputText(agent,seq)?.text);
+        {commandKey,expectedRevision,sourceRunId,outputHash,disposition});
       notify();
       return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Could not record the saved result'});}
