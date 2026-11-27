@@ -26,7 +26,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  let slot=0,transport=async()=>({}),queryPatch={};
  const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn,deps){const index=slot++,previous=slots[index];if(!previous||!deps||deps.some((value,i)=>value!==previous[i])){slots[index]=deps;effects.push(fn)}},useLayoutEffect(){}};
  const primitive=name=>props=>{
-  if(name==='Button'||name==='MenuItem')buttons.push(props);
+  if(name==='Button'||name==='ButtonBase'||name==='MenuItem')buttons.push(props);
   if(name==='TextField')fields.push(props);
   if(name==='Box'&&props.component==='details')disclosures.push(props);
    if(name==='Menu'&&!props.open)return null;
@@ -547,6 +547,31 @@ test('preview keeps stored output classifications and compares complete text bef
  assert.equal(preview.steps[2].resultOutputTechnical,true);
  assert.equal(preview.steps[3].resultOutputTechnical,undefined);
  assert.equal(previewBranchExecutionDetail({...f.detail,execution:{...f.execution,output:'[Read the report](https://example.org)'}}).executionOutputTechnical,undefined);
+});
+
+test('step shortcuts skip the main output and match only complete or canonically equivalent results',()=>{
+ const f=fixture({state:'completed',output:'a'.repeat(200)+' final'});
+ const step=f.detail.steps[0];
+ f.detail.steps=[
+  {...step,result:{output:f.execution.output,failed:false}},
+  {...step,id:'distinct',stepId:'older',result:{output:'a'.repeat(200)+' distinct',failed:false}},
+  {...step,id:'technical',stepId:'technical',resultOutputTechnical:true,result:{output:'{"raw":true}',failed:false}},
+ ];
+ f.props.detail=previewBranchExecutionDetail(f.detail);
+ let html=f.render();
+ assert.doesNotMatch(html,/View result for Review Document|View result for technical|id="branch-result-recent-step"/);
+ assert.match(html,/View result for Earlier Important Step/);
+ assert.match(html,/id="branch-result-distinct"/);
+ f.buttons.find(button=>button['aria-label']==='Details for Review Document').onClick({currentTarget:{}});
+ f.render();
+ assert.ok(f.button('Back to Results'));
+
+ f.execution.output='short exact result';
+ step.result={output:f.execution.output,failed:false};
+ f.props.detail={...f.detail,steps:[step]};
+ html=f.render();
+ assert.doesNotMatch(html,/View result for Review Document|id="branch-result-recent-step"/);
+ assert.ok(f.button('Back to Results'));
 });
 
 test('a recorded cancellation reason is visible beside the canceled run action',()=>{

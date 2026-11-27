@@ -30,6 +30,7 @@ import {branchExecutionStatus} from './branchRunStatus';
 import {branchStepStatus,controlStates,currentExecutionActions,mapItemStatus,shouldPollOperations} from './executionPresentation';
 // A valid same-Run actions page may arrive before matching execution details.
 class RunActionsRevisionPending extends Error {}
+const INITIAL_STEP_RESULTS=5;
 function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:BranchGateDto;label:string;onChanged():void;disabled?:boolean;refreshing?:boolean}):JSX.Element{
  const [text,setText]=useState(gate.proposal),[choice,setChoice]=useState(gate.choices?.[0]??''),[key,setKey]=useState(()=>createClientId());
  const choiceLabel=useId(),choices=gate.choices??[];
@@ -133,7 +134,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const [summaryStepId,setSummaryStepId]=useState(savedView?.summaryStepId??'');
  const panel=useRef<HTMLDivElement>(null),tray=useRef<HTMLElement>(null);
  const stepOpener=useRef<HTMLElement>(),stepScroll=useRef<{element:HTMLElement;top:number}>();
- const stepDestination=useRef<string>();
+ const [stepDestination,setStepDestination]=useState<string>();
  const focusStep=useRef(false);
  useLayoutEffect(()=>{
   if(summaryStepId){
@@ -148,14 +149,14 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   const scroll=stepScroll.current;
   if(scroll)scroll.element.scrollTop=scroll.top;
   stepScroll.current=undefined;
-  if(stepDestination.current){
-   const destination=document.getElementById(stepDestination.current);
+  if(stepDestination){
+   const destination=document.getElementById(stepDestination);
    destination?.focus({preventScroll:true});
    destination?.scrollIntoView({block:'start'});
-   stepDestination.current=undefined;
+   setStepDestination(undefined);
   }else stepOpener.current?.focus({preventScroll:true});
   stepOpener.current=undefined;
- },[summaryStepId]);
+ },[summaryStepId,stepDestination]);
  const [showAllResults,setShowAllResults]=useState(false);
  const [showAllSteps,setShowAllSteps]=useState(false);
  const [intervention,setIntervention]=useState<{action:ReviewIntervention['action'];attemptId?:string;occurrenceId?:string;injectionId?:string;snapshotRetry?:boolean;unknown?:boolean}>(),[updateApplied,setUpdateApplied]=useState<''|'applied'|'not_applied'>(''),[reason,setReason]=useState(''),[reconciled,setReconciled]=useState(false),[result,setResult]=useState(''),[failed,setFailed]=useState(false),[target,setTarget]=useState(''),[commandKey,setCommandKey]=useState(()=>createClientId());
@@ -308,6 +309,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  if(detail.publishedResult)publications.set(detail.publishedResult.sha256,detail.publishedResult);
  const files=new Map<string,{label:string;href:string}>();
  const ordinaryResult=Boolean(execution.output?.trim())&&!detail.publishedResult&&!detail.executionOutputTechnical&&execution.state!=='failed';
+ const mainResultTarget=detail.publishedResult?`branch-result-file-${detail.publishedResult.sha256}`:ordinaryResult?'branch-run-output':undefined;
  const resultTarget=(step:BranchStepExecutionDto)=>{
   if(step.state!=='completed'||step.result?.failed!==false)return undefined;
   if(step.publishedResult)return `branch-result-file-${step.publishedResult.sha256}`;
@@ -322,15 +324,11 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   return resultTarget(step)===`branch-result-${step.id}`;
  });
  const openResult=(target:string)=>{
-  setShowAllResults(true);
-  if(summaryStep){
-   stepDestination.current=target;
-   setSummaryStepId('');
-  }else requestAnimationFrame(()=>{
-   const result=document.getElementById(target);
-   result?.focus({preventScroll:true});result?.scrollIntoView({block:'start'});
-  });
+  if(resultSteps.findIndex(step=>`branch-result-${step.id}`===target)>=INITIAL_STEP_RESULTS)setShowAllResults(true);
+  setStepDestination(target);
+  setSummaryStepId('');
  };
+ const trayResultTarget=summaryStep&&resultTarget(summaryStep);
  const sideBySide='@container branch-runs (min-width: 60rem)';
  const recordedReason=execution.state==='failed'||execution.state==='canceled'
   ? execution.waitReason || (execution.state==='failed'&&!detail.executionOutputTechnical?execution.output:undefined)
@@ -425,7 +423,8 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
     <Typography variant="body2">{resource.error}</Typography>
   </Alert>)}
   {actions.hasNextPage&&<Button sx={{alignSelf:'start'}} disabled={actions.isFetchingNextPage} onClick={()=>void actions.fetchNextPage({cancelRefetch:false})}>{actions.isFetchingNextPage?'Loading…':'Load More Decisions And Failures'}</Button>}
-  {hasResults?<Paper component="section" aria-label="Results" variant="outlined" sx={{p:2,minWidth:0}}>
+  {hasResults?<Paper component="section" aria-label="Results" variant="outlined" sx={{p:2,minWidth:0,
+   '& #branch-run-output:focus, & [id^="branch-result-"]:focus':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:2,scrollMarginTop:6}}}>
    <Stack spacing={1}>
     <Typography variant="h6">Results</Typography>
     {[...publications.values()].map(result=><Stack key={result.sha256} direction="row" gap={1} alignItems="center">
@@ -445,8 +444,8 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   </>}</Box>}
 
 
-    {resultSteps.slice(0,showAllResults?undefined:5).map(step=><StepResult key={step.id} step={step} execution={execution} label={stepLabel(step.stepId)}/>)}
-    {resultSteps.length>5&&<Button sx={{alignSelf:'start'}} onClick={()=>setShowAllResults(value=>!value)}>{showAllResults?'Show Fewer Step Outputs':'Show All Loaded Step Outputs'}</Button>}
+    {resultSteps.slice(0,showAllResults?undefined:INITIAL_STEP_RESULTS).map(step=><StepResult key={step.id} step={step} execution={execution} label={stepLabel(step.stepId)}/>)}
+    {resultSteps.length>INITIAL_STEP_RESULTS&&<Button sx={{alignSelf:'start'}} onClick={()=>setShowAllResults(value=>!value)}>{showAllResults?'Show Fewer Step Outputs':'Show All Loaded Step Outputs'}</Button>}
    </Stack>
   </Paper>:technicalOutput?<Typography variant="body2" color="text.secondary">No readable result was produced. <Button size="small" href="#branch-run-steps" onClick={event=>{event.preventDefault();document.getElementById('branch-run-steps')?.focus()}}>See Steps</Button></Typography>:
     (primaryBlock||headline.label==='Blocked')&&<Typography variant="body2" color="text.secondary">No output yet.</Typography>}
@@ -465,7 +464,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
        </Box>
        <SemanticStatus {...stepStatus(step)}/>
       </ButtonBase>
-      {target&&<Button size="small" aria-label={`View result for ${stepLabel(step.stepId)}`} onClick={()=>openResult(target)}>View result</Button>}
+      {target&&target!==mainResultTarget&&<Button size="small" aria-label={`View result for ${stepLabel(step.stepId)}`} onClick={()=>openResult(target)}>View result</Button>}
      </Box>;
     })}
    </Stack>
@@ -547,10 +546,10 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
     </Button>
    </Stack>
    <Box><SemanticStatus {...stepStatus(summaryStep)}/></Box>
-   {resultTarget(summaryStep)&&<Button size="small" sx={{alignSelf:'start'}} onClick={()=>openResult(resultTarget(summaryStep)!)}>View result</Button>}
+   {trayResultTarget&&<Button size="small" sx={{alignSelf:'start'}} onClick={()=>openResult(trayResultTarget)}>{trayResultTarget===mainResultTarget?'Back to Results':'View result'}</Button>}
    {stepEvidence.isPending&&<Typography variant="body2" role="status">Loading step evidence…</Typography>}
    {stepEvidence.error&&<Alert severity="warning" action={<Button onClick={()=>void stepEvidence.refetch()}>Retry</Button>}>Could not load the full step evidence.</Alert>}
-   {stepEvidence.data&&<BranchStepEvidence key={summaryStep.id} evidence={stepEvidence.data} hasReadableResult={Boolean(resultTarget(summaryStep))}/>}
+   {stepEvidence.data&&<BranchStepEvidence key={summaryStep.id} evidence={stepEvidence.data} hasReadableResult={Boolean(trayResultTarget)}/>}
    {detail.gates.filter(gate=>gate.state==='resolved'&&gate.stepExecutionId===summaryStep.id).map(gate=><Box key={gate.id}>
     <Typography fontWeight={600}>{gate.resolution?.decision==='reject'?'Rejected':gate.resolution?.decision==='retry'?'Retry Approved':gate.resolution?.choice?`Selected: ${gate.resolution.choice}`:'Approved'}</Typography>
     <Typography variant="body2">{gate.prompt}</Typography>
@@ -558,7 +557,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    {selectedResource&&<Box>
     <Typography variant="body2">{selectedResource.agentIds.length} temporary Agents · {selectedResource.state}</Typography>
     {selectedResource.error
-     ? <Alert severity="warning">{selectedResource.error}<Button size="small" onClick={()=>{stepDestination.current=`branch-resource-${selectedResource.stepExecutionId}`;setSummaryStepId('')}}>Go to resource review</Button></Alert>
+     ? <Alert severity="warning">{selectedResource.error}<Button size="small" onClick={()=>{setStepDestination(`branch-resource-${selectedResource.stepExecutionId}`);setSummaryStepId('')}}>Go to resource review</Button></Alert>
      : <BranchResourceReview branchId={execution.branchId} executionId={execution.id} stepId={selectedResource.stepExecutionId} enabled={authorityFresh&&!execution.runtimeData} onChanged={refresh}/>}
    </Box>}
   </Stack>

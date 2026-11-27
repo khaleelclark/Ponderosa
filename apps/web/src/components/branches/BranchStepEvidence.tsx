@@ -56,6 +56,7 @@ export function BranchStepEvidence({evidence,hasReadableResult}:{evidence:Branch
  const separateOutput=output&&output!==terminal?.result?.output;
  return <Stack spacing={1.5} sx={{minWidth:0}}>
   {evidence.input&&<EvidenceDisclosure label="Step Input" text={evidence.input}/>}
+  {output&&hasReadableResult&&<EvidenceDisclosure label="Raw Step Output" text={output}/>}
   {separateOutput&&!hasReadableResult&&<Box><Typography fontWeight={600}>Step Output</Typography><EvidenceText text={output}/></Box>}
   {attempts.map(attempt=>{
    const script=attempt.scriptEvidence;

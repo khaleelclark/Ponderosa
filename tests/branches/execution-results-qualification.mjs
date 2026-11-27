@@ -1,7 +1,7 @@
 import '../shared/workspace-resolution.mjs';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 const {fixture,until}=await import('../shared/fixture.mjs');
 import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 
@@ -29,12 +29,23 @@ const settled=(id,state)=>until(async()=>{const detail=await read(id);return det
 try{
  const completed=await publish('Behavior report and evidence',[...auditSteps,emit('report','Write behavior report',markdown)],[edge('fetch','archive'),edge('archive','report')]);
  const canceled=await publish('Interrupted behavior report',[...auditSteps,gate],[edge('fetch','archive'),edge('archive','review')]);
+ const reportFiles=['Draft report','Approved report'].map(name=>{
+  const id=randomUUID(),file={id,name},content=JSON.stringify(file,null,2)+'\n',sha256=createHash('sha256').update(content).digest('hex');
+  return {sha256,content,step:emit(id,name,JSON.stringify({id,saved:'created',sha256,[name]:file}))};
+ });
+ const files=await publish('Downloadable execution results',reportFiles.map(item=>item.step),[edge(reportFiles[0].step.id,reportFiles[1].step.id)]);
+ const filesRun=await run(files,'Publish both versions of the report.');
+ assert.equal((await settled(filesRun.id,'completed')).publishedResult.sha256,reportFiles[1].sha256);
  const approvedJson=JSON.stringify({decision:'User-approved final result',details:'x'.repeat(200),literal:'Markdown **stays literal**, as does \\n.'},null,2).replace('  "details"', '  "number": 9007199254740993123,\n  "details"');
  const previewPrefix='# Distinct reports\n\n'+'Shared prefix '.repeat(16);
- const reviewed=await publish('Approve an exact structured result',[
+ const draftReports=[
   emit('one','First report',previewPrefix+' FIRST exact tail'),emit('two','Second report',previewPrefix+' SECOND exact tail'),
-  emit('same','Script JSON matching edited result',approvedJson),gate,
- ],[edge('one','two'),edge('two','same'),{...edge('same','review'),input:{kind:'literal',text:'Replace this initial proposal.'}}]);
+  ...Array.from({length:4},(_,index)=>emit('extra-'+index,'Report '+(index+3),'Distinct extra report '+(index+3))),
+ ];
+ const reviewed=await publish('Approve an exact structured result',[
+  ...draftReports,emit('same','Script JSON matching edited result',approvedJson),gate,
+ ],[...draftReports.map((step,index)=>edge(step.id,draftReports[index+1]?.id??'same')),
+  {...edge('same','review'),input:{kind:'literal',text:'Replace this initial proposal.'}}]);
  const technicalOnly=await publish('A run with technical JSON only',[auditSteps[0]],[]);
  const technicalRun=await run(technicalOnly,'Archive structured script output.');
  assert.equal((await settled(technicalRun.id,'completed')).executionOutputTechnical,true);
@@ -73,6 +84,18 @@ try{
   const technical=selected.locator('summary').filter({hasText:/^Technical Details/});
   const open=(branch,id)=>page.goto(`${web.origin}/branches?branch=${branch.id}&tab=executions&execution=${id}`);
   const back=()=>activate(button(mobile?'Back to Steps':'Close',tray));
+  await page.addInitScript(()=>document.addEventListener('focusin',event=>{
+   if(event.target.closest('[aria-label="Results"]'))event.target.dataset.trayAtFocus=String(Boolean(document.querySelector('[data-branch-step-tray]')));
+  }));
+  const focusedResult=async target=>{
+   await target.and(page.locator(':focus')).waitFor();
+   assert.equal(await target.getAttribute('data-tray-at-focus'),'false','The tray closed before focus');
+   assert.ok(await target.evaluate(node=>{
+    const style=getComputedStyle(node),top=node.getBoundingClientRect().top;
+    const viewport=node.closest('[aria-label="Selected Run"]').getBoundingClientRect();
+    return style.outlineStyle==='solid'&&parseFloat(style.outlineWidth)>=2&&top>=viewport.top&&top<viewport.bottom;
+   }),'The exact destination is visible and highlighted');
+  };
   const readToEnd=async last=>{
    await last.waitFor();
    assert.equal(await last.evaluate(node=>{
@@ -102,31 +125,75 @@ try{
    assert.equal((await read(approvalRun.id,'/steps/'+humanStep.id+'/evidence')).result.output,approvedJson);
    const [firstReport,secondReport]=approved.steps;
    assert.equal(firstReport.result.output,secondReport.result.output);
-   await activate(button('View result for Review evidence'));
-   const finalOutput=results.locator('#branch-run-output:focus');
-   await finalOutput.getByText(/9007199254740993123/).waitFor();
+   assert.equal(await button('View result for Review evidence').count(),0);
+   assert.equal(await button('View result for Script JSON matching edited result').count(),0);
+   const finalOutput=results.locator('#branch-run-output');
+   await finalOutput.locator('.chat-code-block').getByText(/9007199254740993123/).waitFor();
    assert.equal(await finalOutput.locator('.chat-code-block').count(),1);
    await activate(button('Copy Code',finalOutput));
    await until(()=>page.evaluate(async expected=>(await navigator.clipboard.readText())===expected,approvedJson),'copy exact approved JSON');
+   const sixthOutput=results.locator('#branch-result-'+approved.steps.find(step=>step.stepId==='extra-3').id);
+   assert.equal(await sixthOutput.count(),0);
+   await activate(button('View result for Report 6'));
+   await focusedResult(sixthOutput);
+   await activate(button('Show Fewer Step Outputs'));
+   assert.equal(await sixthOutput.count(),0);
+   await activate(row('Report 6'));
+   await activate(button('View result',tray));
+   await focusedResult(sixthOutput);
+   await activate(button('Show Fewer Step Outputs'));
+   assert.equal(await sixthOutput.count(),0);
+   await activate(button('View result for Report 5'));
+   const fifthOutput=results.locator('#branch-result-'+approved.steps.find(step=>step.stepId==='extra-2').id);
+   await focusedResult(fifthOutput);
+   assert.equal(await sixthOutput.count(),0,'A visible destination does not expand the list');
+   const repeat=button('View result for Report 5');
+   await repeat.scrollIntoViewIfNeeded();
+   assert.ok(await fifthOutput.evaluate(node=>{
+    const result=node.getBoundingClientRect(),viewport=node.closest('[aria-label="Selected Run"]').getBoundingClientRect();
+    return result.bottom>viewport.top&&result.top<viewport.bottom;
+   }),'The result is already on screen before the second jump');
+   await activate(repeat);
+   await focusedResult(fifthOutput);
+   await activate(button('Show All Loaded Steps'));
    for(const [step,label,tail] of [[firstReport,'First report','FIRST'],[secondReport,'Second report','SECOND']]){
     await activate(button('View result for '+label));
     const linked=results.locator('#branch-result-'+step.id);
-    await linked.and(page.locator(':focus')).waitFor();
+    await focusedResult(linked);
     await activate(button('Read full result',linked));
     await linked.getByText(new RegExp(tail+' exact tail')).waitFor();
     assert.equal(await linked.getByText(new RegExp((tail==='FIRST'?'SECOND':'FIRST')+' exact tail')).count(),0);
    }
    await activate(row('Review evidence'));
-   await button('View result',tray).waitFor();
+   await button('Back to Results',tray).waitFor();
    assert.equal(await tray.locator('.chat-code-block').count(),0);
-   await activate(button('View result',tray));
-   await finalOutput.waitFor();
+   await activate(button('Back to Results',tray));
+   await focusedResult(finalOutput);
 
    await activate(row('Script JSON matching edited result'));
    await tray.getByText(/9007199254740993123/).waitFor();
    assert.equal(await tray.locator('.chat-code-block').count(),1);
    assert.equal(await tray.locator('summary').filter({hasText:/^Stdout$/}).count(),0);
+   assert.equal(await button('View result',tray).count(),0);
+   assert.equal(await button('Back to Results',tray).count(),0);
    await back();
+
+   await open(files,filesRun.id);
+   const reportLink=name=>results.getByRole('link',{name,exact:true});
+   await reportLink('Approved report').waitFor();
+   await row('Approved report').waitFor();
+   assert.equal(await button('View result for Approved report').count(),0);
+   await activate(button('View result for Draft report'));
+   await focusedResult(reportLink('Draft report'));
+   await activate(row('Approved report'));
+   await activate(button('Back to Results',tray));
+   await focusedResult(reportLink('Approved report'));
+   for(const item of reportFiles){
+    const link=reportLink(item.step.label),href=await link.getAttribute('href');
+    assert.equal(await link.getAttribute('download'),'');
+    assert.equal(href,`/api/branches/${files.id}/results/${item.sha256}`);
+    assert.equal(await (await context.request.get(web.origin+href)).text(),item.content);
+   }
 
    await open(technicalOnly,technicalRun.id);
    await selected.getByText('No readable result was produced.',{exact:false}).waitFor();
@@ -149,8 +216,14 @@ try{
    assert.equal(await results.getByRole('heading',{name:'Behavior report',exact:true}).count(),1);
    await readToEnd(results.getByText('Last conclusion stays readable.',{exact:true}));
    assert.equal(await results.getByText('End of pinned evidence').count(),0);
-   await activate(button('View result for Write behavior report'));
-   await selected.locator('#branch-run-output:focus').waitFor();
+   assert.equal(await button('View result for Write behavior report').count(),0);
+   await activate(row('Write behavior report'));
+   await activate(tray.locator('summary').filter({hasText:'Raw Step Output'}));
+   assert.match(await tray.locator('.chat-code-block pre').innerText(),/Last conclusion stays readable/);
+   await activate(button('Copy Code',tray));
+   await until(()=>page.evaluate(async expected=>(await navigator.clipboard.readText())===expected,markdown),'copy exact shared main output');
+   await activate(button('Back to Results',tray));
+   await focusedResult(results.locator('#branch-run-output'));
 
    const fetchRow=row('Fetch pinned GitHub evidence');
    await fetchRow.scrollIntoViewIfNeeded();
@@ -174,7 +247,7 @@ try{
    if(!mobile){
     await activate(row('Write behavior report'));
     await tray.getByText('Write behavior report',{exact:true}).waitFor();
-    await button('View result',tray).waitFor();
+    await button('Back to Results',tray).waitFor();
     assert.equal(await tray.locator('.chat-code-block:visible').count(),0);
     await back();
     await row('Write behavior report').and(page.locator(':focus')).waitFor();
@@ -259,7 +332,7 @@ try{
    assert.equal((await retried).ok(),true);
    await until(async()=>{const detail=await read(failure.id);return detail.execution.state==='failed'&&detail.attempts.length>2;},'a distinct canonical retry attempt',20000);
    assert.deepEqual(errors,[]);
-   console.log(`${mobile?'390 × 844':'1440 × 900'} passed: approved JSON and exact copy, distinct result links, full joined and ordinary Markdown, step evidence, Technical Details, canceled rerun and retry confirmation`);
+   console.log(`${mobile?'390 × 844':'1440 × 900'} passed: shared and distinct result navigation, revealing and highlighting exact outputs, raw evidence and copy, full joined and ordinary Markdown, step evidence, Technical Details, canceled rerun and retry confirmation`);
   }catch(error){await page.screenshot({path:`${f.root}/execution-results-${mobile?'phone':'desktop'}-failure.png`});throw error;}finally{await context.close();}
  }
 }finally{await browser?.close();await web?.close();await f.dispose(false);}
