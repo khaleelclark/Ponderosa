@@ -1,4 +1,4 @@
-# Workflow Executions follow-ups
+# Branches UI follow-ups
 
 Target [PR #111](https://github.com/khaleelclark/Ponderosa/pull/111).
 
@@ -45,3 +45,18 @@ Keep the label **Trigger Events**. This is where users check what happened when 
 - Apply a filter that excludes the open run. The selected run stays open, the mismatch is clear, and clearing the filters restores the list. Verify that an older matching selection is distinguishable from one the filters exclude.
 - Check the filter and Trigger Events controls at the narrow desktop pane width and at phone width. Verify labels fit, checklist options work with keyboard and touch, and **Apply** returns focus to the filter.
 - Check the empty manual workflow from the screenshot, a scheduled event that created a run, and a held or combined schedule event. **View run** opens the linked run without creating a new one.
+
+## Trigger settings layout
+
+- Put the back arrow immediately to the left of **Trigger settings** in one header row. Give it a 44 px touch target, the accessible name **Back to workflow**, and a matching tooltip. Keep the title aligned with the arrow and allow it to wrap when space is tight. Use the shared [WorkflowInspectorPage](../apps/web/src/components/branches/WorkflowInspectorPage.tsx) header and preserve each inspector’s existing back destination and header actions.
+- Under **How it starts**, use one full-width radio row per option in the existing order. Keep the radio and label aligned, make the full row clickable, and let long labels wrap within their row. The four choices stay in a single column at every inspector width.
+  - **Manually with Run once**
+  - **On a schedule**
+  - **When a webhook arrives**
+  - **When files change**
+- Keep the right-side inspector and show the selected trigger’s settings below the radio group. Back returns to the Canvas or Outline where the inspector opened and restores focus to the trigger control. Draft edits stay available when the inspector is reopened.
+
+### Acceptance checks
+
+- Open Trigger settings at the narrowest and widest supported dock widths and at phone width. Verify the back arrow and title share one header, each option has its own row, and labels and controls never overlap or scroll horizontally.
+- Select a trigger by tapping its label row and by using the keyboard. Verify that its settings appear below the choices. Return from both Canvas and Outline and check focus and draft retention. Extend the [existing inspector qualification](../tests/branches/workflow-inspector-qualification.mjs).
