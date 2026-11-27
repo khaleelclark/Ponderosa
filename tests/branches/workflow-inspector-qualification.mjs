@@ -84,10 +84,7 @@ try{
    assert.equal(await inspector.getByRole('combobox').count(),1,'Only the interval unit needs a dropdown');
    assert.equal(await inspector.getByRole('textbox',{name:'Cron Expression'}).count(),0);
    if(mobile){
-    const variables=inspector.getByRole('button',{name:'Workflow variables',exact:true});
-    await activate(variables);
-    await activate(inspector.getByRole('button',{name:'Back to trigger settings',exact:true}));
-    await variables.evaluate(assertFocus);
+    assert.equal(await inspector.getByRole('button',{name:'Workflow variables',exact:true}).count(),0);
     await activate(back);await inspector.waitFor({state:'hidden'});
     await start.evaluate(assertFocus);
     await activate(start);

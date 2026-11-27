@@ -60,7 +60,7 @@ function BranchTriggerSource({kind,config,onChange,onInvalid}:{kind:'schedule'|'
  useEffect(()=>()=>callbacks.current.onInvalid(false),[]);
  return <TriggerSourceFields sourceKind={kind} draft={draft}/>;
 }
-export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,firstStepRequest=0,onProviderSetup,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;firstStepRequest?:number;onProviderSetup?():void;onInvalidStep?():void;onSettingsIssue?(field?:string):void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
+export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,branchId,chatId,validationIssues=[],intake,triggerDirty=false,inspectorTarget,inspectorPane,onInspectorPane,inspectorActive,validationRequest=0,firstStepRequest=0,onProviderSetup,variablesSettingsHref,onVariablesSettings,active=true,onInvalidStep,onSettingsIssue,onDraft,undoRedo,canvasViews,saveControl}:{editing?:boolean;saveControl:ReactNode;variablesSettingsHref:string;onVariablesSettings():void;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;undoRedo:WorkflowUndoRedo;canvasViews:Map<string,CanvasViewState>;branchId:string;validationIssues?:import("@ponderosa/core").BranchValidationIssue[];active?:boolean;firstStepRequest?:number;onProviderSetup?():void;onInvalidStep?():void;onSettingsIssue?(field?:string):void;intake?:ReactNode;triggerDirty?:boolean;inspectorTarget:HTMLElement|null;inspectorPane?:'trigger'|'step'|'json'|'variables';onInspectorPane(pane?:'trigger'|'step'|'json'|'variables'):void;inspectorActive:boolean;validationRequest?:number;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
  const retainedTemplates=useRef<NonNullable<BranchDefinition['templates']>>({});retainedTemplates.current={...retainedTemplates.current,...definition.templates,...Object.fromEntries(definition.steps.flatMap(step=>{const template=step.kind==='agent'&&'templateRef'in step.target?definition.templates?.[step.target.templateRef]:undefined;return template?[[step.id+'_'+template.kind+'_template',template]]:[]}))};
  const [setup,setSetup]=useState<AgentSetupRequest>(),[setupPending,setSetupPending]=useState(false),[setupNotice,setSetupNotice]=useState(''),[issueFocus,setIssueFocus]=useState(0),[chosenIssue,setChosenIssue]=useState<import('@ponderosa/core').BranchValidationIssue>();
  useBranchDraftGuard('workflow-agent-setup',setupPending);
@@ -98,12 +98,11 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const dismissedInsertion=useRef<ReturnType<typeof workflowInsertionAnchor>|null>(null);
  const addButton=useRef<HTMLButtonElement>(null),triggerButton=useRef<HTMLButtonElement>(null),canvas=useRef<HTMLDivElement>(null);
  const expandedPane=useRef<typeof inspectorPane>(),stepPanel=useRef<HTMLDivElement>(null),stepScroll=useRef(0);
- const variablesButton=useRef<HTMLButtonElement>(null),setupButton=useRef<HTMLElement>(),variablesFromTrigger=useRef(false);
+ const setupButton=useRef<HTMLElement>();
  const restoreSetupFocus=()=>requestAnimationFrame(()=>setupButton.current?.focus({preventScroll:true}));
  useEffect(()=>{
   if(inspectorPane==='trigger')setRetainTrigger(true);
-  if(inspectorPane!=='variables')variablesFromTrigger.current=false;
-  if(inspectorPane!=='trigger'&&inspectorPane!=='variables')triggerView.current=undefined;
+  else triggerView.current=undefined;
  },[inspectorPane]);
  useEffect(()=>{if(!validationIssues.length){setChosenIssue(undefined);return;}setChosenIssue(validationIssues[0]);if(validationIssues[0]?.nodeId){openEditor(validationIssues[0].nodeId);onInvalidStep?.()}},[validationIssues]);
  const selectedNode=[...definition.steps,...definition.controls].find(node=>node.id===selected);
@@ -262,7 +261,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   </Box>}
   {inspectorTarget&&createPortal(<>
    {retainTrigger||inspectorPane==='trigger'?<Box hidden={!inspectorActive||inspectorPane!=='trigger'} sx={{height:'100%'}}>
-    <WorkflowInspectorPage title="Trigger settings" onBack={closeTrigger} actions={<Button ref={variablesButton} onClick={()=>{variablesFromTrigger.current=true;onInspectorPane('variables')}}>Workflow variables</Button>}>
+    <WorkflowInspectorPage title="Trigger settings" onBack={closeTrigger}>
   <Stack component="section" aria-label="How It Starts" spacing={1.5}>
    <FormControl>
     <FormLabel id={startsLabel}>How it starts</FormLabel>
@@ -285,8 +284,8 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   </Stack>
     </WorkflowInspectorPage>
    </Box>:null}
-   {inspectorActive&&inspectorPane==='variables'&&<WorkflowInspectorPage title="Workflow variables" backLabel={variablesFromTrigger.current?"Back to trigger settings":"Back to workflow"} onBack={()=>{if(!variablesFromTrigger.current){onInspectorPane();return}variablesFromTrigger.current=false;onInspectorPane('trigger');requestAnimationFrame(()=>variablesButton.current?.focus({preventScroll:true}))}}>
-    <ParameterDefinitions definition={definition} onChange={onDefinition}/>
+   {inspectorActive&&inspectorPane==='variables'&&<WorkflowInspectorPage title="Workflow variables" onBack={()=>onInspectorPane()}>
+    <ParameterDefinitions definition={definition} onChange={onDefinition} settingsHref={variablesSettingsHref} onSettings={onVariablesSettings}/>
    </WorkflowInspectorPage>}
    {selectedNode&&<Box ref={stepPanel} hidden={!editorVisible} {...(!editorVisible?{inert:''}:{})} sx={{height:'100%'}}>
     <WorkflowInspectorPage title="Step Settings" onBack={closeEditor} headerAction={<IconButton aria-label="Expand Workflow" onClick={toggleExpanded} sx={{width:44,height:44}}><OpenInFullIcon/></IconButton>}>

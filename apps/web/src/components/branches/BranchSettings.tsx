@@ -59,9 +59,21 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
  const reloadAction=useMutation({mutationFn:async(observed:BranchConfiguration|undefined)=>({observed,next:await requestJson<NonNullable<typeof settings.data>>(`/api/branches/${branch.id}/settings`,{cache:'no-store'})}),onSuccess:({observed,next})=>{if(currentDraft.current!==observed||baseline.current&&next.revision<baseline.current.revision)return;baseline.current=next;setDraft(next.configuration);setRevision(next.revision);client.setQueryData(['branch-settings',branch.id],next);save.reset()}});
  const dirty=Boolean(draft&&baseline.current&&JSON.stringify(draft)!==JSON.stringify(baseline.current.configuration));
  useBranchDraftGuard(`branch-settings:${branch.id}:${parameters?'parameters':'limits'}`,dirty||save.isPending||reloadAction.isPending);
- useEffect(()=>{if(parameters&&active&&focusVariables&&hasVariables&&draft){variablesSection.current?.focus({preventScroll:true});variablesSection.current?.scrollIntoView({block:'start'})}},[parameters,active,focusVariables,hasVariables,Boolean(draft)]);
+ const variablesIdle=!hasVariables&&!dirty&&!save.isPending&&!reloadAction.isPending&&!save.error&&!reloadAction.error&&!settings.error;
+ const emptyVariables=parameters&&focusVariables&&(!branch.versionId||Boolean(definition&&variablesIdle));
+ const variablesReady=emptyVariables||Boolean(hasVariables&&draft);
+ useEffect(()=>{
+  if(parameters&&active&&focusVariables&&variablesReady){
+   variablesSection.current?.focus({preventScroll:true});
+   variablesSection.current?.scrollIntoView({block:'start'});
+  }
+ },[parameters,active,focusVariables,variablesReady]);
+ if(emptyVariables)return <Paper variant="outlined" component="section" ref={variablesSection} id="branch-workflow-variables" aria-label="Workflow Variables" tabIndex={-1} sx={{p:{xs:2,sm:2.5},scrollMarginTop:16}}>
+  <Typography variant="h6" fontWeight={650}>Workflow Variables</Typography>
+  <Typography variant="body2" color="text.secondary">Publish a workflow with variables to edit saved values here.</Typography>
+ </Paper>;
  if(parameters&&!definition)return <>{feedback}</>;
- if(parameters&&!hasVariables&&!dirty&&!save.isPending&&!reloadAction.isPending&&!save.error&&!reloadAction.error&&!settings.error)return <></>;
+ if(parameters&&variablesIdle)return <></>;
  if(!draft&&settings.error)return <WorkspaceQueryError active={active} initial read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,false)}/>;
  if(!draft)return <Typography role="status">Loading configuration…</Typography>;
   const reload=<Button aria-busy={reloadAction.isPending||undefined} disabled={save.isPending||reloadAction.isPending} onClick={()=>reloadAction.mutate(currentDraft.current)}>{reloadAction.isPending?'Reloading Configuration…':parameters?'Reload Variables And Discard Edits':'Reload Configuration And Discard Edits'}</Button>;
@@ -73,6 +85,7 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
     <WorkspaceQueryError active={active} read={workspaceRead(`branch:${branch.id}`,"Configuration",settings,Boolean(draft))}/>
     {(settingsError||parameterErrors.length>0)&&<Alert severity="warning" action={reload}>{[settingsError,...parameterErrors].filter(Boolean).join(' ')}</Alert>}
     {hasVariables?<Paper variant="outlined" sx={{p:{xs:2,sm:2.5}}}><Stack spacing={2}><Typography variant="h6" fontWeight={650}>Workflow Variables</Typography>
+      <Typography variant="body2" color="text.secondary">Save values for future runs of the published workflow.</Typography>
       {Object.entries(definition?.parameters??{}).map(([key,p])=>p.type==="secret"?<Alert severity="info" key={key}>{p.label??key}: {settings.data?.secretStatus?.[key]==="configured"?"Configured local binding":"Missing local binding"}. Secrets are available only to supported Engine-owned integrations.</Alert>:p.type==="boolean"?<FormControlLabel key={key} label={p.label??key} control={<Switch disabled={save.isPending||reloadAction.isPending} checked={Boolean(draft.parameters[key]??p.default??false)} onChange={(_,v)=>setParameter(key,v)}/>}/>:<TextField disabled={save.isPending||reloadAction.isPending} key={key} label={p.label??key} required={p.required} helperText={p.help} type={p.type==="number"?"number":"text"} value={draft.parameters[key]??p.default??""} onChange={e=>setParameter(key,p.type==="number"?(e.target.value===''?undefined:Number(e.target.value)):e.target.value)}/>)}
       {dirty&&<Button variant="contained" sx={{alignSelf:"start"}} aria-busy={save.isPending||undefined} disabled={save.isPending||reloadAction.isPending||!branch.versionId||parameterErrors.length>0} onClick={()=>save.mutate()}>{save.isPending?'Saving Variables…':'Save Variables'}</Button>}
     </Stack></Paper>:dirty&&parameterErrors.length===0?<Alert severity="warning">The published workflow no longer declares variables. {reload}</Alert>:null}
