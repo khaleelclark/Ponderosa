@@ -241,6 +241,7 @@ try{
    const starred=button('Starred',nav);
    const inlineStar=button('Star '+other.name,nav);
    const inlineUnstar=button('Unstar '+other.name,nav);
+   const runStatus=nav.locator(`[data-branch-folder-row="${other.id}"] [data-sidebar-column="activity"]`);
    await activate(button('Star '+unpublished.name,nav));
    await starred.waitFor();
    for(const width of mobile?[390,320]:[1440]){
@@ -249,6 +250,16 @@ try{
     await inlineUnstar.press('ContextMenu');
     await activate(choice(menu,'Unstar'));
     await focus(inlineStar);
+    assert.equal(owner(),branch.id);
+
+    await runStatus.press('Shift+F10');
+    await activate(choice(menu,'Star'));
+    await inlineUnstar.waitFor();
+    await focus(runStatus);
+    await runStatus.press('ContextMenu');
+    await activate(choice(menu,'Unstar'));
+    await inlineStar.waitFor();
+    await focus(runStatus);
     assert.equal(owner(),branch.id);
 
     await activate(starred);
@@ -266,7 +277,7 @@ try{
     await activate(overflow);
     await activate(choice(menu,'Unstar'));
     await focus(overflow);
-    console.log(`PASS ${width}px equivalent inline star and collapsed Starred disclosure focus`);
+    console.log(`PASS ${width}px equivalent inline star, run-status badge and collapsed Starred disclosure focus`);
    }
    await activate(sidebarOverflow(unpublished.name));
    await choice(quick(unpublished.name),'Rename…').waitFor();

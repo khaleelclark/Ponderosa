@@ -266,7 +266,8 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
             // Starring can move the workflow between sidebar sections and replace its opener.
             const {anchor} = menu;
             const id = menu.item!.id;
-            const openerAttribute = ["data-resource-menu-trigger", "data-resource-star-trigger"].find(attr => anchor.hasAttribute(attr)) ?? "data-resource-id";
+            const openerAttribute = ["data-resource-menu-trigger", "data-resource-star-trigger", "data-resource-status-trigger"]
+              .find(attr => anchor.hasAttribute(attr)) ?? "data-resource-id";
             const sidebar = '[aria-label="Workflows Navigation"]';
             const folder = folderFor(id);
             restoreAfterMenu.current = () => restoreOverlayFocus(anchor, [
