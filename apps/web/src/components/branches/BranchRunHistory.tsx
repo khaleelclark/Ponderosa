@@ -65,11 +65,9 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
   attemptedFilter.current=filterKey;automatic.current=candidate;
   if(!onSelect(candidate,true))automatic.current=undefined;
  },[active,selectedId,desktop,loading,error,runs,filterKey,rememberedId,onSelect]);
- const listed=runs.find(run=>run.id===selectedId);
- const selected=listed??(selectedRun?.id===selectedId?selectedRun:undefined);
- const outside=Boolean(selected&&filters.length&&!filters.includes(branchExecutionStatusValue(selected)));
- const retained=outside||!listed?selected:undefined;
- const matching=outside&&listed?runs.filter(run=>run.id!==selectedId):runs;
+ // A returned row already passed the server filter. Detail only classifies an off-page selection.
+ const retained=selectedRun?.id===selectedId&&!runs.some(run=>run.id===selectedId)?selectedRun:undefined;
+ const outside=Boolean(retained&&filters.length&&!filters.includes(branchExecutionStatusValue(retained)));
  const hasDetails=Boolean(selectedId||runs.length||loading);
  const renderRun=(run:BranchExecutionDto)=>{const preview=runPreview(run);return <ListItemButton key={run.id} ref={run.id===selectedId?chosenRow:undefined} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{if(onSelect(run.id))setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:48,py:0.75}}>
   <Stack spacing={0.25} sx={{minWidth:0,width:'100%'}}>
@@ -114,9 +112,9 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filters=[],onFilte
       {outside&&<Typography variant="body2" color="text.secondary">This run is outside your filters</Typography>}
       <List aria-label="Selected history run" disablePadding>{renderRun(retained)}</List>
      </Box>}
-     {loading&&!matching.length?<Stack role="status" aria-label="Loading Run History"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!matching.length?<Stack><Typography color="text.secondary">{filters.length?'No runs match these filters':'No Runs yet. Use Run once to begin.'}</Typography>{filters.length>0&&<Button sx={{alignSelf:'start',minHeight:44}} onClick={()=>onFilter([])}>Clear filters</Button>}</Stack>:null}
+     {loading&&!runs.length?<Stack role="status" aria-label="Loading Run History"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!runs.length?<Stack><Typography color="text.secondary">{filters.length?'No runs match these filters':'No Runs yet. Use Run once to begin.'}</Typography>{filters.length>0&&<Button sx={{alignSelf:'start',minHeight:44}} onClick={()=>onFilter([])}>Clear filters</Button>}</Stack>:null}
     </Stack>
-    <List aria-label="Workflow Runs" disablePadding sx={{mt:1}}>{matching.map(renderRun)}</List>
+    <List aria-label="Workflow Runs" disablePadding sx={{mt:1}}>{runs.map(renderRun)}</List>
     {hasMore&&<Button disabled={loadingMore} onClick={onMore} sx={{mt:1,flexShrink:0}}>{loadingMore?'Loading…':'Load Older Runs'}</Button>}
    </Box>
    <Box ref={detailScroll} onScroll={event=>{scroll.current.detail=event.currentTarget.scrollTop}} component="section" aria-label="Selected Run" sx={{display:showHistory?'none':'block',minWidth:0,minHeight:0,overflow:'auto',p:{xs:1.5,sm:2},[desktopLayout]:{display:hasDetails?'block':'none'}}}>

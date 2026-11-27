@@ -25,7 +25,13 @@ test('deep-linked and filtered-out selected Runs remain represented without repl
  const other=render({runs:[],selectedId:'older',selectedRun:run('foreign')});assert.doesNotMatch(other,/This run is outside/);
  const matchingOlder=render({runs:[run('newest')],selectedId:'older',selectedRun:run('older'),filters:['completed']});
  assert.doesNotMatch(matchingOlder,/This run is outside/);assert.match(matchingOlder,/aria-current="true"/);
- const noLongerMatching=render({runs:[{...run('older','running'),effectiveStatus:'waiting'},run('newest','failed')],selectedId:'older',filters:['running','failed']});
+ const waiting={...run('older','running'),effectiveStatus:'waiting'};
+ const delayed={...waiting,effectiveStatus:'retrying'};
+ const listed=render({runs:[waiting],selectedId:'older',selectedRun:delayed,filters:['waiting']});
+ assert.doesNotMatch(listed,/This run is outside|Selected history run/);
+ assert.equal(listed.match(/aria-current="true"/g)?.length,1);
+ assert.match(listed.split('aria-label="Workflow Runs"')[1],/aria-current="true"/);
+ const noLongerMatching=render({runs:[run('newest','failed')],selectedId:'older',selectedRun:delayed,filters:['waiting','failed']});
  const [retained,list]=noLongerMatching.split('aria-label="Workflow Runs"');
  assert.match(retained,/This run is outside your filters/);assert.match(retained,/aria-current="true"/);
  assert.doesNotMatch(list,/aria-current="true"/);
