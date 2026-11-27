@@ -126,3 +126,27 @@ When someone tries to open another workflow while editing, show a compact, cente
 - Edit a step and click another workflow. Verify the dialog is centered, all three actions are visible without scrolling on a phone, and **Stay here** or Escape keeps the editor, draft, and URL.
 - Verify **Save and switch** opens the existing review, switches exactly once after a confirmed save, and stays on the current workflow on validation failure, cancellation, or an uncertain response. Verify **Discard changes and switch** opens the intended workflow after a confirmed discard and leaves the last published version intact.
 - Verify a clean switch has no prompt. Exercise browser Back and Forward and a second navigation attempt while the modal is open. Extend the [existing leave-guard tests](../tests/branches/editing-navigation.test.mjs).
+
+## Execution settings help
+
+Add short help beside each control in **Settings → Execution Controls**. Use the existing tooltip styling and a small, labeled help target. Show the same text on hover, keyboard focus, or tap. Keep the value, field label, and validation feedback readable at narrow widths. Opening help leaves the field value unchanged and does not toggle a setting.
+
+| Control | Tooltip |
+| --- | --- |
+| **Automatic Execution Budget / Limit** | Caps how many automatic runs and calls from other workflows can start in each budget period. Run once is exempt. |
+| **Concurrent Executions** | How many runs of this workflow can do work at the same time. Additional runs wait for room. |
+| **Temporary Agents Per Execution** | How many temporary Agents one run can create, including Agents created by a temporary team. |
+| **Maximum Paths** | How many paths a single run can create in total, including the starting path, parallel paths, and paths for For Each items. |
+| **Maximum Step Invocations** | How many step visits one run can make across all its paths. Visiting the same step again in a loop uses another visit. |
+| **Pause Automatic Runs When Speaker Role Is Removed** | If this workflow’s designated Speaker Agent loses that role, pause new automatic runs. |
+| **Failure Handling** | Choose what to do when a step fails and hasn’t set its own behavior. |
+| **Nested Branch Depth** | How many workflows can be called in a chain beneath this one. A direct call is one level. |
+| **Loop Iterations** | How many times a run can follow a loop-back connection in total, including loops in workflows it calls. |
+| **Graph Traversals** | How many times a run can visit steps and routing points in total, including revisits and work in workflows it calls. |
+
+Keep **How this budget works** for the detailed budget explanation. Keep the difference between publishing **Execution policy** edits and saving **Local limits** visible in the panel.
+
+### Acceptance checks
+
+- Read every tooltip with a mouse and keyboard, then tap its help target at phone width. Verify help can be dismissed, the settings stay editable, and opening help does not change any setting.
+- Check that the copy distinguishes runs, paths, step visits, and routing visits. Verify the budget copy describes workflow calls and the manual-run exemption.
