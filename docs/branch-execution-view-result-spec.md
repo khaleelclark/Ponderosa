@@ -79,3 +79,31 @@ Keep the label **Trigger Events**. This is where users check what happened when 
 - Choose **Notification** from the picker. Verify the brief help is available there and the step inspector has no static alert. Remove it as the only step in Canvas and Outline, undo and redo the edit, then add a different first step.
 - Try the save and publish entry points with zero steps. Verify each leads back to adding a first step or explains what is required, and that a previously published workflow keeps its published version. Verify existing graph safety checks still apply to a step required by another node.
 - Right-click a step in Canvas and Outline. Verify the actions target that step, including removal of the only step. Right-click an unselected workflow and verify Rename and View runs target the clicked row. Check the keyboard and touch entry points and focus return.
+
+## Workflow variables
+
+A workflow variable is a named value you set once and reuse in steps, such as a report title or a folder path. A run uses the saved values it started with. **Run once** input is separate and supplies the starting input for that particular run.
+
+### Where to find and edit them
+
+- Remove **Workflow variables** from the Trigger settings footer. Open the existing right-side variables inspector from **Workflow Actions → Workflow variables**. Use **Workflow variables** and **Add variable** in the UI. Give the name field and button enough room at the narrowest inspector width.
+- Lead with **Set a value once and reuse it in this workflow.** Give one working example. Add a text variable named `report_title` with the default `Weekly team update`. In an Agent Task, write `Draft a report titled “{{parameter:report_title}}”.` The Agent receives **Draft a report titled “Weekly team update”.**
+- Explain the two places a user edits variables. In the Workflow inspector, define the name, type, and optional default, then publish the workflow changes. In **Settings → Workflow Variables**, edit the saved values for the published workflow. Link to that Settings section from the inspector when it is available. Use the existing publication and save flows, and keep existing draft edits recoverable when navigating between them.
+- Put name-format rules in validation or field help. Use plain labels such as **Text**, **Number**, **Yes/No**, and **File or folder path**. A path is a location, and a step must open it to read its contents. Keep engine-managed secrets separate from values that can be inserted into steps.
+
+### Where variables work
+
+| Step or field | How to use a variable |
+| --- | --- |
+| **Agent Task → Instructions** and **Approval → Review Prompt** | Insert the reference into the text. The run fills in its saved value. |
+| **Condition → Input Equals** | Use the reference as the value to compare with the incoming text. |
+| **Connection → Explicit Input** | Insert the reference into the text passed to the next step. This is also how to send a variable in a **Notification**, which sends its incoming input. |
+| **Script** | Read the values from `JSON.parse(process.env.PONDEROSA_PARAMETERS ?? '{}')`. A Script’s **Working Directory** can reference a folder variable. |
+
+Put **Insert variable** next to supported text fields when the workflow has variables. Insert the existing `{{parameter:name}}` reference at the cursor and keep the user in the field. For Script source, show a copyable example in the existing help. Keep advanced trigger configuration out of the primary picker unless the specific field supports a reference end to end. Reuse the existing variable definitions, saved-values editor, and runtime substitution.
+
+### Acceptance checks
+
+- From Canvas or Outline, find variables from Workflow Actions, create the example at phone and narrow desktop widths, and insert it into an Agent Task or Approval. Verify the picker returns focus to the field and the run resolves the value.
+- Save a changed value in Settings and start another run. Verify the new run uses the new value and the earlier run keeps its original value. Check that manually entering run input still works independently.
+- Verify available variable choices match each field’s support. Test a missing required value and a Script consuming a number or boolean. Engine-managed secrets remain out of the insertion list and Script parameters.
