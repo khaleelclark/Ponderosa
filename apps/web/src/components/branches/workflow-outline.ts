@@ -19,10 +19,10 @@ export type OutlineItem =
  | {kind:'missing'}
  | {kind:'unconnected';items:OutlineItem[]};
 
-export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
+export function workflowPaths(definition:BranchDefinition):Map<string,Path[]> {
  const nodes=new Map([...definition.steps,...definition.controls].map(node=>[node.id,node]));
  const terminals=workflowTerminalOutcomes(definition);
- const pathsByNode=new Map([...nodes.values()].map(node=>{
+ return new Map([...nodes.values()].map(node=>{
   const join='joinId' in node?nodes.get(node.joinId):undefined;
   const edges=definition.edges.filter(edge=>edge.from===node.id);
   if(node.kind==='fork'&&join?.kind==='join'){
@@ -43,6 +43,11 @@ export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
   paths.sort((a,b)=>Number(a.secondary)-Number(b.secondary));
   return [node.id,paths];
  }));
+}
+
+export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
+ const nodes=new Map([...definition.steps,...definition.controls].map(node=>[node.id,node]));
+ const pathsByNode=workflowPaths(definition);
  const rendered=new Set<string>(),levels=workflowGraphLevels(definition);
  const link=(id:string,prefix:string):OutlineItem=>({kind:'link',id,label:`${prefix} ${nodeName(nodes.get(id)!)}`});
  const visitPath=(path:Path,stops:Map<string,string>):OutlineItem[]=>{

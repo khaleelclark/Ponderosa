@@ -1,5 +1,5 @@
-import {Fragment,useLayoutEffect,useMemo,useRef,useState,type ReactNode,type RefObject} from 'react';
-import {Box,Button,IconButton,Menu,MenuItem,Stack,Tooltip,Typography} from '@mui/material';
+import {Fragment,useLayoutEffect,useMemo,useRef,type ReactNode,type RefObject} from 'react';
+import {Box,Button,IconButton,Stack,Tooltip,Typography} from '@mui/material';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import AddIcon from '@mui/icons-material/Add';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
@@ -8,23 +8,22 @@ import RedoIcon from '@mui/icons-material/Redo';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import CloseFullscreenIcon from '@mui/icons-material/CloseFullscreen';
 import type {AgentDto,BranchBindings,BranchDefinition,BranchValidationIssue} from '@ponderosa/core';
+import {isContextMenuKey} from "../contextMenuKeys";
 import {guidedInsertionRestriction,type GuidedInsertionTarget} from './guided-operations';
-import {nodeKind,nodeName,removeWorkflowNode} from './model';
+import {nodeKind,nodeName} from './model';
 import {workflowOutline,type OutlineItem} from './workflow-outline';
 import type {WorkflowUndoRedo} from './WorkflowCanvas';
 
-export function WorkflowOutline({definition,bindings,agents,issues,active,selected,onSelect,onInsert,onDelete,startControl,entryButtonRef,viewSelector,saveControl,undoRedo,expanded,onToggleExpanded,focusRequest,revealRequest,scrollPosition}:{
+export function WorkflowOutline({definition,bindings,agents,issues,active,selected,onSelect,onInsert,onStepMenu,stepMenuId,startControl,entryButtonRef,viewSelector,saveControl,undoRedo,expanded,onToggleExpanded,focusRequest,revealRequest,scrollPosition}:{
  definition:BranchDefinition;bindings:BranchBindings;agents:AgentDto[];issues:BranchValidationIssue[];
- active:boolean;selected?:string;onSelect(id:string):void;onDelete(id:string):void;
+ active:boolean;selected?:string;onSelect(id:string):void;onStepMenu(id:string,anchor:HTMLElement):void;stepMenuId?:string;
  onInsert(target:GuidedInsertionTarget,anchor:HTMLElement,returnTo?:HTMLElement,label?:string):void;
  startControl:ReactNode;entryButtonRef:RefObject<HTMLButtonElement>;viewSelector:ReactNode;saveControl:ReactNode;undoRedo:WorkflowUndoRedo;
  expanded:boolean;onToggleExpanded():void;focusRequest:number;revealRequest:number;scrollPosition:{current:number};
 }):JSX.Element {
  const items=useMemo(()=>workflowOutline(definition),[definition]);
- const nodes=useMemo(()=>new Map([...definition.steps,...definition.controls].map(node=>[node.id,node])),[definition]);
  const rows=useRef(new Map<string,HTMLButtonElement>()),scroll=useRef<HTMLDivElement>(null);
  const lastFocus=useRef(focusRequest),lastReveal=useRef(revealRequest);
- const [menu,setMenu]=useState<{id:string;anchor:HTMLElement}>();
  const showInViewport=(row:HTMLElement,region:HTMLElement)=>{
   const viewport=region.getBoundingClientRect(),rect=row.getBoundingClientRect();
   if(rect.top<viewport.top)region.scrollTop+=rect.top-viewport.top;
@@ -37,7 +36,7 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   showInViewport(row,region);
   if(focus)row.focus({preventScroll:true});
  };
- useLayoutEffect(()=>{if(active&&scroll.current)scroll.current.scrollTop=scrollPosition.current;else setMenu(undefined)},[active,scrollPosition]);
+ useLayoutEffect(()=>{if(active&&scroll.current)scroll.current.scrollTop=scrollPosition.current},[active,scrollPosition]);
  useLayoutEffect(()=>{
   if(!active){lastFocus.current=focusRequest;lastReveal.current=revealRequest;return}
   const focus=focusRequest!==0&&lastFocus.current!==focusRequest;
@@ -47,8 +46,6 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   if(selected&&(focus||reveal))showRow(selected,focus);
   else if(!selected&&focus)entryButtonRef.current?.focus({preventScroll:true});
  },[active,selected,focusRequest,revealRequest,entryButtonRef]);
- const menuNode=menu&&nodes.get(menu.id);
- const remove=menuNode&&removeWorkflowNode(definition,menuNode.id);
  const pathIndent={xs:1,sm:2};
  const link=(id:string,label:string,key:string,indent:number|typeof pathIndent=0)=><Button key={key} size="small" onClick={()=>showRow(id,true)} sx={{ml:indent,minHeight:44,justifyContent:'start',textAlign:'left',textTransform:'none',overflowWrap:'anywhere'}}>{label}</Button>;
  const render=(entries:OutlineItem[],depth=0):ReactNode=>entries.map((item,index)=>{
@@ -80,26 +77,18 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
    </Box>;
   }
   if(item.kind==='unconnected')return <Fragment key="unconnected"><Typography variant="body2" color="text.secondary" sx={{mt:1}}>Unconnected steps</Typography>{render(item.items,depth)}</Fragment>;
-  const {node,paths}=item,chosen=node.id===selected,problem=issues.some(issue=>issue.nodeId===node.id);
+  const {node}=item,chosen=node.id===selected,problem=issues.some(issue=>issue.nodeId===node.id);
   const agentId=node.kind==='agent'&&'ref' in node.target?bindings.agents[node.target.ref]:undefined;
   const agent=agents.find(agent=>agent.id===agentId)?.title;
-  const name=nodeName(node),options=paths.filter(path=>!guidedInsertionRestriction(definition,path.target));
-  const editable=options.length>0||Boolean(menu?.id===node.id?remove?.ok:removeWorkflowNode(definition,node.id).ok);
-  return <Stack key={`step:${node.id}`} direction="row" alignItems="center" sx={{border:1,borderColor:problem?'error.main':chosen?'primary.main':'divider',borderRadius:1.5,bgcolor:chosen?'action.selected':'background.paper',minWidth:0}}>
+  const name=nodeName(node);
+  return <Stack key={`step:${node.id}`} direction="row" alignItems="center"
+   onContextMenu={event=>{const row=rows.current.get(node.id);if(row){event.preventDefault();event.stopPropagation();onStepMenu(node.id,row)}}}
+   onKeyDown={event=>{if(isContextMenuKey(event)){event.preventDefault();event.stopPropagation();onStepMenu(node.id,event.target as HTMLElement)}}}
+   sx={{border:1,borderColor:problem?'error.main':chosen?'primary.main':'divider',borderRadius:1.5,bgcolor:chosen?'action.selected':'background.paper',minWidth:0}}>
    <Button ref={element=>{if(element)rows.current.set(node.id,element);else rows.current.delete(node.id)}} aria-pressed={chosen} onClick={event=>{event.currentTarget.focus({preventScroll:true});onSelect(node.id)}} color="inherit" sx={{flex:1,minWidth:0,minHeight:44,justifyContent:'start',textAlign:'left',textTransform:'none',px:1.25,py:.5}}>
     <Box component="span" sx={{overflowWrap:'anywhere'}}>{name}<Typography component="span" variant="caption" display="block" color="text.secondary">{nodeKind(node)}{agent?` · ${agent}`:''}{problem?' · Needs attention':''}</Typography></Box>
    </Button>
-   {editable&&<IconButton aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={menu?.id===node.id} onClick={event=>setMenu({id:node.id,anchor:event.currentTarget})} sx={{width:44,height:44,flexShrink:0}}><MoreHorizIcon/></IconButton>}
-   {menu?.id===node.id&&<Menu anchorEl={menu.anchor} open onClose={()=>{setMenu(undefined);requestAnimationFrame(()=>menu.anchor.focus({preventScroll:true}))}} disableRestoreFocus slotProps={{list:{'aria-label':`Actions for ${name}`},paper:{sx:{maxWidth:'calc(100vw - 32px)','& .MuiMenuItem-root':{minHeight:44,whiteSpace:'normal',overflowWrap:'anywhere'}}}}}>
-    {options.map(path=>{
-     const linear=paths.length===1&&!path.loop&&['On success','If approved'].includes(path.label);
-     const destination=path.to?nodes.get(path.to):undefined;
-     const route=destination?`${path.label} → ${path.loop?'loop to ':''}${nodeName(destination)}`:path.label;
-     const label=linear?'Add after this step':/^(On |If |Otherwise$)/.test(path.label)?`Add ${route[0]!.toLowerCase()}${route.slice(1)}`:`Add on ${route}`;
-     return <MenuItem key={path.key} onClick={()=>{setMenu(undefined);onInsert(path.target,menu.anchor,rows.current.get(node.id),linear?`After ${name}`:route)}}>{label}</MenuItem>;
-    })}
-    {!['fork','join','map'].includes(node.kind)&&<MenuItem disabled={!remove?.ok} onClick={()=>{setMenu(undefined);onDelete(node.id)}}>Remove step</MenuItem>}
-   </Menu>}
+   <IconButton aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={stepMenuId===node.id} onContextMenu={event=>{event.preventDefault();event.stopPropagation();onStepMenu(node.id,event.currentTarget)}} onClick={event=>onStepMenu(node.id,event.currentTarget)} sx={{width:44,height:44,flexShrink:0}}><MoreHorizIcon/></IconButton>
   </Stack>;
  });
  return <Stack role="region" aria-label="Workflow Outline" sx={{height:'100%',minHeight:0,minWidth:0}} onKeyDown={event=>{

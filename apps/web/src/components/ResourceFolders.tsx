@@ -1,3 +1,5 @@
+import {isContextMenuKey} from "./contextMenuKeys";
+import {restoreOverlayFocus} from "../overlayFocus";
 import {createClientId} from '../clientId';
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper, Popper, Stack, TextField, Typography, useMediaQuery } from "@mui/material";
@@ -22,7 +24,7 @@ const initialStarredExpansion = (kind: string, folder: ResourceFolder): boolean 
 };
 
 /** Shared presentation-only grouping for Chats and Branch workflows. */
-export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, starredItems = items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, renameLabel = "Rename", onDelete, onOpenInNewTab, onReorder, children }: {
+export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, starredItems = items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, renameLabel = "Rename", onDelete, onOpenInNewTab, rowActions, onReorder, children }: {
   resourceKind: "conversation" | "branch"; resourceLabel: string;
   starredItems?: Item[];
   items: Item[]; folders: ResourceFolder[]; sort: ProjectSort; starredIds: ReadonlySet<string>; filtering: boolean;
@@ -30,7 +32,8 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   folderUnread?: Record<string, UnreadNotificationProjection>;
   notificationState?: "loading" | "unavailable";
   renderFolderStatus?(folder: ResourceFolder): ReactNode;
-  renderRow(item: Item): ReactNode;
+  renderRow(item: Item, openMenu: (anchor: HTMLElement) => void): ReactNode;
+  rowActions?(item: Item): {id: string; label: string; run(): void; restoreFocus?: boolean}[];
   onChange(folders: ResourceFolder[], customOrder?: boolean): void;
   renameLabel?: string;
   onRename?(item: Item): void; onDelete?(item: Item): void; onOpenInNewTab?(item: Item): void;
@@ -59,6 +62,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   const [target, setTarget] = useState<{ id: string; zone: "group" | "before" | "after" }>();
   const [folderTarget, setFolderTarget] = useState<{ id: string; position: "before" | "after" }>();
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item?: Item; folder?: ResourceFolder }>();
+  const restoreAfterMenu = useRef<() => void>();
   const [renaming, setRenaming] = useState<ResourceFolder>();
   const [moving, setMoving] = useState<Item>();
   const [folderSearch, setFolderSearch] = useState("");
@@ -114,6 +118,11 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   const action = (run: () => void) => { closeMenu(); run(); };
   const row = (item: Item) => {
     const id = item.id;
+    const openMenu = (anchor: HTMLElement) => {
+      restoreAfterMenu.current = undefined;
+      if (rowActions) anchor.focus({preventScroll: true});
+      setMenu({anchor, item});
+    };
     return <Box component="li" key={id} {...{[resourceKind === "conversation" ? "data-chat-folder-row" : "data-branch-folder-row"]: id}} draggable
       onDragStart={event => { setDragged(id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData(dragType, id); }}
       onDragEnd={endDrag}
@@ -138,14 +147,24 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
         }
         endDrag();
       }}
-      onContextMenu={event => { event.preventDefault(); setMenu({ anchor: event.currentTarget, item }); }}
-      onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); setMenu({ anchor: event.currentTarget, item }); } }}
+      onContextMenu={event => {
+        event.preventDefault();
+        const anchor = rowActions
+          ? (event.target as Element).closest<HTMLElement>("a,button,[tabindex]") ?? event.currentTarget.querySelector<HTMLElement>("a")
+          : event.currentTarget;
+        openMenu(anchor ?? event.currentTarget);
+      }}
+      onKeyDown={event => {
+        if (!isContextMenuKey(event)) return;
+        event.preventDefault();
+        openMenu(rowActions ? event.target as HTMLElement : event.currentTarget);
+      }}
       sx={{ position: "relative", minWidth: 0, borderRadius: 1, opacity: dragged === id ? .5 : 1,
         outline: target?.id === id && target.zone === "group" ? "2px solid" : "none", outlineColor: "info.main",
         "&::after": target?.id === id && target.zone !== "group" ? { content: '""', position: "absolute", left: 0, right: 0,
           [target.zone === "before" ? "top" : "bottom"]: 0, height: 2, bgcolor: "primary.main", pointerEvents: "none" } : undefined,
         display: "flex", alignItems: "center", "& > .chat-row-content": { flex: 1, minWidth: 0 } }}>
-      <Box className="chat-row-content">{renderRow(item)}</Box>
+      <Box className="chat-row-content">{renderRow(item, openMenu)}</Box>
     </Box>;
   };
   const grouped = new Set(folders.flatMap(folder => folder.memberIds));
@@ -229,10 +248,27 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   </>;
   return <>
     {children({ openRows: openItems.map(row), starredRows: [...sortResourceFolders(visibleFolders.filter(folder => folder.starred), starredItems, sort).map(folder => folderRow(folder, "starred")), ...starredItems.filter(starred).map(row)], allRows })}
-    <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
+    <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}
+      slotProps={{
+        transition:{onExited: () => {
+          const restore = restoreAfterMenu.current;
+          restoreAfterMenu.current = undefined;
+          restore?.();
+        }},
+        ...(rowActions && menu?.item ? {list:{'aria-label':`Actions for ${menu.item.title}`},paper:{sx:{'& .MuiMenuItem-root':{minHeight:44}}}} : {}),
+      }}>
       {menu?.item ? [
         ...(onOpenInNewTab ? [<MenuItem key="open-tab" onClick={() => action(() => onOpenInNewTab(menu.item!))}>Open In New Tab</MenuItem>] : []),
         ...(onRename ? [<MenuItem key="rename" onClick={() => action(() => onRename(menu.item!))}>{renameLabel}</MenuItem>] : []),
+        ...(rowActions?.(menu.item).map(entry => <MenuItem key={entry.id} onClick={() => action(() => {
+          entry.run();
+          if (entry.restoreFocus) {
+            const attr = menu.anchor.hasAttribute("data-resource-menu-trigger") ? "data-resource-menu-trigger" : "data-resource-id";
+            // Starring can move the workflow between sidebar sections and replace its opener.
+            const selector = `[${attr}="${CSS.escape(menu.item!.id)}"]`;
+            restoreAfterMenu.current = () => restoreOverlayFocus(menu.anchor, selector);
+          }
+        })}>{entry.label}</MenuItem>) ?? []),
         <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.id), { id: createClientId(), name: "New folder", expanded: true, memberIds: [menu.item!.id] }]))}>Create Folder</MenuItem>,
         <MenuItem key="move" aria-haspopup="dialog" aria-expanded={Boolean(moving)}
           onMouseEnter={event => { if (!desktopHover) return; stopTimer(); const anchor = event.currentTarget; hoverTimer.current = setTimeout(() => openPicker(anchor), 180); }}

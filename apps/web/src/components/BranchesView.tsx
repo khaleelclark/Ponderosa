@@ -504,10 +504,13 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,colorMode,onToggleC
   }catch(cause){setError(cause instanceof Error?cause.message:'The selected Branch Chat could not be opened.')}
  };
  useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[]);
+ const starWorkflow=(branch:BranchDto)=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',branch.id));
  const workflowPanel=(drawer:boolean)=>preferences.data?<BranchFolders branches={branches.data??[]} preferences={preferences.data} filtering={Boolean(search.trim())}
-    onRename={requestRename} onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
-    renderRow={b=><SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Workflow ${b.name}`} title={b.name} selected={draft.branchId===b.id} emphasis={Boolean(branchUnread.data?.branches?.[b.id]?.totalCount||branchUnread.data?.branches?.[b.id]?.quietUnreadCount)} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
-      starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',b.id))}
+    onRename={branch=>{if(drawer)closeMobileNavigation();requestRename(branch)}}
+    onStar={starWorkflow} onViewRuns={branch=>{if(!branch.versionId)return;if(drawer)closeMobileNavigation();navigate({branchId:branch.id,tab:'executions'})}}
+    onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
+    renderRow={(b,openMenu)=><SidebarResourceRow onOpenMenu={openMenu} href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Workflow ${b.name}`} title={b.name} selected={draft.branchId===b.id} emphasis={Boolean(branchUnread.data?.branches?.[b.id]?.totalCount||branchUnread.data?.branches?.[b.id]?.quietUnreadCount)} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
+      starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>starWorkflow(b)}
       onOpen={()=>{if(loading||openingLink||creating||deploy.isPending)return;if(drawer)closeMobileNavigation();void select(b)}}/>}>
     {({starredRows,allRows})=><SharedSidebarPanel
       icon={<AccountTreeOutlinedIcon/>}

@@ -95,6 +95,61 @@ try{
    await page.goto(`${web.origin}/branches?branch=${branch.id}`);
    await button('Fit Workflow').waitFor();
    await settled();
+   const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
+   const quick=label=>page.getByRole('menu',{name:`Actions for ${label}`,exact:true});
+   const choice=(menu,label)=>menu.getByRole('menuitem',{name:label,exact:true});
+   const focus=async control=>{
+    const element=await control.elementHandle();
+    try{await page.waitForFunction(element=>element===document.activeElement,element)}
+    catch(error){throw Error(`Expected focus on ${await element.getAttribute('aria-label')}, found ${await page.evaluate(()=>document.activeElement?.outerHTML.slice(0,180))}`,{cause:error})}
+    finally{await element.dispose()}
+   };
+   for(const activeView of ['Canvas','Outline']){
+    const inCanvas=activeView==='Canvas',label=inCanvas?'Prepare request':'Choose follow-up';
+    const view=inCanvas?canvas:outline;
+    const row=inCanvas?canvas.getByLabel('Select '+label,{exact:true}):outline.getByRole('button',{name:label+' Choose route',exact:true});
+    const overflow=button('Actions for '+label,view);
+    const menu=quick(label);
+    if(activeView==='Outline')await activate(button('Outline'));
+    await row.focus();
+    if(!mobile){
+     await row.click({button:'right'});
+     await choice(menu,'Edit step').waitFor();
+     await page.keyboard.press('Escape');
+     await menu.waitFor({state:'hidden'});
+     assert.equal(await inspector.isVisible(),false,'Opening a menu leaves the editor closed');
+     if(activeView==='Canvas')assert.doesNotMatch(await row.getAttribute('class'),/\bselected\b/);
+     else assert.equal(await row.getAttribute('aria-pressed'),'false');
+     await focus(row);
+    }
+    await row.press(activeView==='Canvas'?'Shift+F10':'ContextMenu');
+    await choice(menu,'Remove step').waitFor();
+    await page.keyboard.press('Escape');
+    await menu.waitFor({state:'hidden'});
+    await focus(row);
+    await activate(overflow);
+    const route='Route 1 for manual follow-up → Finish request';
+    await activate(choice(menu,inCanvas?'Add after this step':'Add on '+route));
+    await page.getByRole('menu').getByText(inCanvas?'After Prepare request':route,{exact:true}).waitFor();
+    await page.keyboard.press('Escape');
+    await focus(overflow);
+    await activate(overflow);
+    await activate(choice(menu,'Edit step'));
+    assert.equal(await inspector.getByRole('textbox',{name:'Name',exact:true}).inputValue(),label);
+    await back.click();
+    await inspector.waitFor({state:'hidden'});
+    const protectedRow=activeView==='Canvas'?canvas.getByLabel('Select Finish request',{exact:true}):outline.getByRole('button',{name:'Finish request Script',exact:true});
+    await protectedRow.press('Shift+F10');
+    const protectedMenu=quick('Finish request');
+    await choice(protectedMenu,'Edit step').waitFor();
+    assert.equal(await choice(protectedMenu,'Remove step').count(),0,'The route fallback cannot be removed');
+    await page.keyboard.press('Escape');
+    await focus(protectedRow);
+   }
+   await activate(button('Canvas',outline));
+   await page.reload();
+   await button('Fit Workflow').waitFor();
+   await settled();
    assert.equal(await group.count(),0);
    await button('Expand Workflow').waitFor();
    const initialTop=(await viewport.boundingBox()).y;
@@ -141,7 +196,87 @@ try{
     verifyApproval(inserted.to,original.to);
     if(original.on==='failure')assert.equal(saved.controls.find(control=>control.id===original.from).otherwise,inserted.to);
    }
+   const create=async name=>f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
+   const other=await create(`Other published ${size}`);
+   const otherSaved=f.ok(await f.api('POST','/api/branches/deploy',{
+    branchId:other.id,chatId:other.chatId,expectedVersionId:other.versionId,idempotencyKey:randomUUID(),
+    definition:{...definition,name:other.name,entry:'other',steps:[script('other','Only step')],controls:[],edges:[]},
+    bindings:{agents:{},directories:{workspace:f.root}},
+   }));
+   const unpublished=await create(`Unpublished ${size}`);
+   await page.reload();
+   await settled();
+   const nav=page.getByRole('complementary',{name:'Workflows Navigation'});
+   const sidebarLink=name=>nav.getByRole('link',{name:'Open Workflow '+name,exact:true});
+   const sidebarOverflow=name=>button('Actions for '+name,nav);
+   const openNav=async()=>{if(mobile)await activate(button('Open Workspace Navigation',page))};
+   const owner=()=>new URL(page.url()).searchParams.get('branch');
+   await openNav();
+   const link=sidebarLink(other.name),overflow=sidebarOverflow(other.name),menu=quick(other.name);
+   if(!mobile){
+    await link.click({button:'right'});
+    await choice(menu,'View runs').waitFor();
+    assert.equal(owner(),branch.id);
+    await page.keyboard.press('Escape');
+    await menu.waitFor({state:'hidden'});
+    assert.match(await sidebarLink(branch.name).getAttribute('class'),/Mui-selected/);
+    await focus(link);
+   }
+   await link.press('Shift+F10');
+   await choice(menu,'Rename…').waitFor();
+   await page.keyboard.press('Escape');
+   await menu.waitFor({state:'hidden'});
+   await focus(link);
+   await activate(overflow);
+   await activate(choice(menu,'Star'));
+   await button('Unstar '+other.name,nav).waitFor();
+   assert.equal(owner(),branch.id);
+   await focus(overflow);
+   await activate(overflow);
+   await activate(choice(menu,'Unstar'));
+   await button('Star '+other.name,nav).waitFor();
+   await focus(overflow);
+   await activate(sidebarOverflow(unpublished.name));
+   await choice(quick(unpublished.name),'Rename…').waitFor();
+   assert.equal(await choice(quick(unpublished.name),'View runs').count(),0);
+   await page.keyboard.press('Escape');
+   await activate(overflow);
+   await activate(choice(menu,'View runs'));
+   await page.waitForURL(url=>url.searchParams.get('branch')===other.id&&url.searchParams.get('tab')==='executions');
+   await page.getByRole('heading',{name:other.name,exact:true}).waitFor();
+   assert.deepEqual(f.ok(await f.api('GET',`/api/branches/${other.id}/executions`)),[]);
+
+   await page.getByRole('tab',{name:'Workflow',exact:true}).press('Enter');
+   await settled();
+   const onlyOverflow=button('Actions for Only step');
+   await activate(onlyOverflow);
+   await activate(choice(quick('Only step'),'Remove step'));
+   await button('Add your first step').waitFor();
+   await focus(button('Add your first step'));
+   assert.equal(f.ok(await f.api('GET',`/api/branches/${other.id}`)).versionId,otherSaved.versionId);
+   await openNav();
+   await activate(sidebarOverflow(branch.name));
+   await activate(choice(quick(branch.name),'Rename…'));
+   await inspector.getByRole('heading',{name:'Unsaved Changes',exact:true}).waitFor();
+   await activate(back);
+   assert.equal(owner(),other.id);
+   await button('Add your first step').waitFor();
+   await activate(button('Undo'));
+   await onlyOverflow.waitFor();
+   await openNav();
+   await activate(sidebarOverflow(branch.name));
+   await activate(choice(quick(branch.name),'Rename…'));
+   await inspector.getByRole('textbox',{name:'Workflow Name',exact:true}).waitFor();
+   assert.equal(owner(),branch.id);
+   assert.equal(await inspector.getByRole('textbox',{name:'Workflow Name',exact:true}).inputValue(),branch.name);
+   await back.click();
+   console.log(`PASS ${size} shared step menus, exact workflow targeting, focus restore, and guarded navigation`);
    console.log(`PASS ${size} one/two/many, compact center, capped wrap/scroll, empty space, menu focus, and ${definition.edges.length+1} saved destinations`);
+  }catch(error){
+   const path=join(evidence,size+'-failed.png');
+   await page.screenshot({path}).catch(()=>{});
+   console.error('Fixture screenshot',path);
+   throw error;
   }finally{await page.close()}
  }
  console.log('Evidence:',evidence);

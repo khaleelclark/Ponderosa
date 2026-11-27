@@ -21,7 +21,8 @@ import type {AgentDto,BranchBindings,BranchDefinition,ConversationDto,EngineDto,
 import type {CanvasNavigation,CanvasPhase,CanvasViewState,WorkflowUndoRedo} from './WorkflowCanvas';
 const WorkflowCanvas=lazy(()=>import('./WorkflowCanvas').then(module=>({default:module.WorkflowCanvas})));
 import {guidedInsertionRestriction,insertGuidedStep,type GuidedInsertionTarget,type GuidedStepKind} from './guided-operations';
-import {removeWorkflowNode} from './model';
+import {nodeName,removeWorkflowNode} from './model';
+import {workflowPaths} from './workflow-outline';
 import {advancedSettingsNeedAttention,FailureEditor,NodeEditor} from './NodeEditor';
 import {changeAgentTarget} from './model';
 const standardSteps=[
@@ -85,6 +86,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const [canvasPhase,setCanvasPhase]=useState<CanvasPhase>('loading');
  const [canvasOpened,setCanvasOpened]=useState(view==='canvas'),[outlineOpened,setOutlineOpened]=useState(view==='outline');
  const outlineScroll=useRef(canvasViews.get(branchId)?.outlineScroll??0),outlineTrigger=useRef<HTMLButtonElement>(null),outlineEntry=useRef<HTMLButtonElement>(null);
+ const [stepMenu,setStepMenu]=useState<{id:string;anchor:HTMLElement}>();
  const [insertionLabel,setInsertionLabel]=useState<string>();
  useLayoutEffect(()=>{
   const previous=canvasViews.get(branchId);
@@ -164,7 +166,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  useEffect(()=>{if(!validationRequest||validationIssues.some(issue=>issue.nodeId))return;const missing=definition.steps.find(step=>advancedSettingsNeedAttention(step,bindings)||step.kind==='script'&&(!step.source.trim()||!bindings.directories[step.cwdRef]?.trim())||step.kind==='agent'&&'ref'in step.target&&!bindings.agents[step.target.ref]||step.kind==='human_gate'&&!step.prompt.trim()||step.kind==='branch_call'&&!bindings.branches?.[step.branchRef]);if(missing){openEditor(missing.id);onInvalidStep?.()}else if(!definition.steps.length){onInvalidStep?.();(view==='outline'?outlineEntry:addButton).current?.focus()}},[validationRequest]);
  useEffect(()=>{onPendingEdits?.(setupPending||triggerInvalid||(advanced!==undefined&&advanced!==JSON.stringify(definition,null,2)))},[advanced,definition,onPendingEdits,triggerInvalid,setupPending]);
  useEffect(()=>()=>onPendingEdits?.(false),[onPendingEdits]);
- useEffect(()=>{if(!active)setAddAnchor(null)},[active]);
+ useEffect(()=>{if(!active){setAddAnchor(null);setStepMenu(undefined)}},[active]);
  const closeEditor=()=>{onInspectorPane();setFocusRequest(value=>value+1)};
  const source=definition.trigger.kind==='manual'?undefined:bindings.triggers?.[definition.trigger.configRef];
  const sourceConfig=source?.sourceConfig;
@@ -204,11 +206,34 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   <ToggleButton value="canvas">Canvas</ToggleButton>
   <ToggleButton value="outline">Outline</ToggleButton>
  </ToggleButtonGroup>;
+ const menuNodes=[...definition.steps,...definition.controls];
+ const menuNode=stepMenu&&menuNodes.find(node=>node.id===stepMenu.id);
+ const menuPaths=menuNode?workflowPaths(definition).get(menuNode.id)??[]:[];
+ const openStepMenu=(id:string,anchor:HTMLElement)=>{if(active&&!setupPending)setStepMenu({id,anchor})};
+ const closeStepMenu=()=>{
+  setStepMenu(undefined);
+  const anchor=stepMenu?.anchor;
+  requestAnimationFrame(()=>{if(owner.current.active&&anchor?.isConnected&&anchor.getClientRects().length)anchor.focus({preventScroll:true})});
+ };
  const canEditInspector=()=>mounted.current&&editorAuthority.current.visible&&editorAuthority.current.branchId===branchId&&editorAuthority.current.nodeId===selectedNode?.id&&owner.current.definition===definition&&owner.current.bindings===bindings;
  return <Stack ref={canvas} onKeyDown={event=>{if(canvas.current?.contains(event.target as Node)&&event.key==='Escape'&&!event.defaultPrevented&&expanded){event.preventDefault();toggleExpanded()}}} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>
   {setupNotice&&<Alert severity="info" onClose={()=>setSetupNotice('')}>{setupNotice}</Alert>}
   {validationIssues.length>0&&<Stack component="section" aria-label="Publication Issues" spacing={.5} sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto'}}><Typography fontWeight={600}>Publication Issues</Typography>{validationIssues.map((issue,index)=><Button key={index} sx={{justifyContent:'flex-start',textAlign:'left'}} onClick={()=>{if(issue.nodeId){setChosenIssue(issue);setIssueFocus(value=>value+1);openEditor(issue.nodeId);onInvalidStep?.()}else if(issue.section==='settings')onSettingsIssue?.(issue.field);else (view==='outline'?outlineEntry:addButton).current?.focus()}}>{issue.message}</Button>)}</Stack>}
   {insertError&&<Alert severity="error" onClose={()=>setInsertError('')}>{insertError}</Alert>}
+  <Menu open={Boolean(menuNode&&stepMenu)} anchorEl={stepMenu?.anchor} onClose={closeStepMenu} disableRestoreFocus
+   slotProps={{list:{'aria-label':menuNode?`Actions for ${nodeName(menuNode)}`:undefined},paper:{sx:{maxWidth:'calc(100vw - 32px)','& .MuiMenuItem-root':{minHeight:44,whiteSpace:'normal',overflowWrap:'anywhere'}}}}}>
+   {menuNode&&stepMenu&&[
+    <MenuItem key="edit" onClick={()=>{setStepMenu(undefined);openEditor(menuNode.id)}}>Edit step</MenuItem>,
+    ...menuPaths.filter(path=>!guidedInsertionRestriction(definition,path.target)).map(path=>{
+     const linear=menuPaths.length===1&&!path.loop&&['On success','If approved'].includes(path.label);
+     const destination=menuNodes.find(node=>node.id===path.to);
+     const route=destination?`${path.label} → ${path.loop?'loop to ':''}${nodeName(destination)}`:path.label;
+     const label=linear?'Add after this step':/^(On |If |Otherwise$)/.test(path.label)?`Add ${route[0]!.toLowerCase()}${route.slice(1)}`:`Add on ${route}`;
+     return <MenuItem key={path.key} onClick={()=>{setStepMenu(undefined);openAdd(path.target,stepMenu.anchor,undefined,linear?`After ${nodeName(menuNode)}`:route)}}>{label}</MenuItem>;
+    }),
+    ...(removeWorkflowNode(definition,menuNode.id).ok?[<MenuItem key="remove" onClick={()=>{setStepMenu(undefined);removeSelected(menuNode.id)}}>Remove step</MenuItem>]:[]),
+   ]}
+  </Menu>
   <Menu anchorEl={addAnchor} anchorOrigin={{vertical:'bottom',horizontal:'center'}} transformOrigin={{vertical:'top',horizontal:'center'}} marginThreshold={16} open={Boolean(addAnchor)} onClose={closeAdd} disableRestoreFocus slotProps={{transition:{onExited:()=>{const anchor=dismissedInsertion.current;dismissedInsertion.current=null;if(mounted.current&&owner.current.active)anchor?.restoreFocus()}}}}>
    {branching&&<MenuItem onClick={()=>setBranching(false)}>← All Steps</MenuItem>}
    <ListSubheader disableSticky sx={{px:2,py:1,maxWidth:280,typography:'caption'}}>{restricted??insertionLabel??(insertionTarget.kind==='entry'?(definition.entry?'Before The First Step':'First Step'):insertionTarget.kind==='edge'?'On This Connection':'Before End This Path')}</ListSubheader>
@@ -222,7 +247,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   {canvasOpened&&<Stack ref={canvasRegion} hidden={view!=='canvas'} role="region" aria-label="Workflow Canvas"
    aria-busy={canvasPhase==='loading'||canvasPhase==='arranging'} sx={{display:view==='canvas'?'flex':'none',flex:1,minHeight:0,minWidth:0}}>
    <Suspense fallback={<Typography role="status" sx={{flex:1,minHeight:0}}>Loading Workflow Canvas…</Typography>}>
-    <WorkflowCanvas region={canvasRegion} navigationRef={canvasNavigation} onPhase={setCanvasPhase} startControl={triggerControl(triggerButton)} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active&&view==='canvas'} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} focusRequest={editorVisible?0:focusRequest}/>
+    <WorkflowCanvas region={canvasRegion} navigationRef={canvasNavigation} onPhase={setCanvasPhase} startControl={triggerControl(triggerButton)} entryButtonRef={addButton} branchId={branchId} canvasViews={canvasViews} undoRedo={undoRedo} active={active&&view==='canvas'} revealRequest={validationRequest+issueFocus+editorReveal} bindings={bindings} agents={agents} issues={validationIssues} definition={definition} selected={selected} onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} onStepMenu={openStepMenu} stepMenuId={stepMenu?.id} focusRequest={editorVisible?0:focusRequest}/>
    </Suspense>
    <WorkflowCanvasFooter viewSelector={view==='canvas'?viewSelector:null} saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
     zoomIn={canvasPhase==='loading'?undefined:()=>canvasNavigation.current?.zoomBy(1.2)}
@@ -231,7 +256,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
   </Stack>}
   {outlineOpened&&<Box hidden={view!=='outline'} sx={{flex:1,minHeight:0,minWidth:0}}>
    <WorkflowOutline definition={definition} bindings={bindings} agents={agents} issues={validationIssues} active={active&&view==='outline'} selected={selected}
-    onSelect={openEditor} onInsert={openAdd} onDelete={removeSelected} startControl={triggerControl(outlineTrigger)} entryButtonRef={outlineEntry}
+    onSelect={openEditor} onInsert={openAdd} onStepMenu={openStepMenu} stepMenuId={stepMenu?.id} startControl={triggerControl(outlineTrigger)} entryButtonRef={outlineEntry}
     viewSelector={view==='outline'?viewSelector:null} saveControl={saveControl} undoRedo={undoRedo} expanded={expanded} onToggleExpanded={toggleExpanded}
     focusRequest={editorVisible?0:focusRequest} revealRequest={validationRequest+issueFocus+editorReveal} scrollPosition={outlineScroll}/>
   </Box>}

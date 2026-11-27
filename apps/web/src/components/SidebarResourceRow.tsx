@@ -2,15 +2,16 @@ import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import type { ReactNode } from "react";
 import { Box, IconButton, ListItemButton, ListItemIcon, ListItemText, Tooltip } from "@mui/material";
 import { alpha } from "@mui/material/styles";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import { starColor } from "./WorkspaceSidebar.helpers";
 
 /** One row presentation for every sidebar resource; ownership/actions stay with callers. */
-export function SidebarResourceRow({ id, href, label, title, detail, subtitle, icon, selected, starred, emphasis, boldWhenStarred = true, nested, status, onOpen, onStar, onContextAction }: {
+export function SidebarResourceRow({ id, href, label, title, detail, subtitle, icon, selected, starred, emphasis, boldWhenStarred = true, nested, status, onOpen, onStar, onContextAction, onOpenMenu }: {
   id: string; href: string; label: string; title: string; detail?: string; subtitle?: string; icon: ReactNode;
   selected?: boolean; starred: boolean; emphasis?: boolean; boldWhenStarred?: boolean; nested?: boolean; status?: ReactNode;
-  onOpen(): void; onStar(): void; onContextAction?(anchor: HTMLElement): void;
+  onOpen(): void; onStar(): void; onContextAction?(anchor: HTMLElement): void; onOpenMenu?(anchor: HTMLElement): void;
 }) {
   const coarseTarget = { "@media (pointer: coarse)": { width: 44, height: 44, minWidth: 44, minHeight: 44 } };
   const control = { width: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, flexShrink: 0, ...coarseTarget };
@@ -34,5 +35,7 @@ export function SidebarResourceRow({ id, href, label, title, detail, subtitle, i
     <IconButton className={starred || selected ? undefined : "sidebar-secondary"} size="small" aria-label={`${starred ? "Unstar" : "Star"} ${title}`} onClick={onStar} sx={control}>
       {starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
     </IconButton>
+    {onOpenMenu && <IconButton size="small" data-resource-menu-trigger={id} aria-label={`Actions for ${title}`} aria-haspopup="menu"
+      onClick={event => onOpenMenu(event.currentTarget)} sx={control}><MoreHorizIcon fontSize="small" /></IconButton>}
   </Box>;
 }
