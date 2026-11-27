@@ -22,7 +22,7 @@ import { ApiRequestError } from "../api/types";
 import { definitiveSubmissionStatus } from "./idempotentAttempt";
 import { engineIsAvailable, engineUnavailableReason, resolveConversationEngine, resolveRuntimeSelection, type RuntimeSelection } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
-import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readDurableChatAttempts, saveCreationAttempts, sameCreationOwner, sameCreationAttempt, moveCreationDraft, settleCreationContinuation, settleCreationDraft, submitChatOpening, submitCreationAttempt, withChatCreationReceipt, type ChatCreationAttempt, type ChatCreationContinuation, type ChatCreationOwner } from "./chatCreationAttempts";
+import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readDurableChatAttempts, saveCreationAttempts, sameCreationOwner, sameCreationAttempt, keepChatOpeningAsDraft, moveCreationDraft, settleCreationContinuation, settleCreationDraft, submitChatOpening, submitCreationAttempt, withChatCreationReceipt, type ChatCreationAttempt, type ChatCreationContinuation, type ChatCreationOwner } from "./chatCreationAttempts";
 
 /** Ordinary Chats choose their working folder before the first saved action. */
 export function NewChatComposer({ creationKey, engines, enginesLoaded = true, onCreated, onCancel, onConfigureProvider, onPendingChange, owner, preferences, inline = false }: {
@@ -190,12 +190,16 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
       if (retired && fileCapture) void chatCreationFiles("remove", fileCapture.key).catch(() => {});
       if (mounted.current) {
         setRetryNeeded(!retired && persisted);
-        if (definite && completed?.opening && failure.status !== 409) {
+        let expired = false;
+        if (completed?.opening) {
           try {
-            setRejectedOpening(readDurableChatAttempts().find(item => sameCreationAttempt(item, current)));
+            const saved = readDurableChatAttempts().find(item => sameCreationAttempt(item, current));
+            expired = saved?.opening?.attachmentsExpired === true;
+            if (expired || (failure instanceof ApiRequestError && failure.status === 400)) setRejectedOpening(saved);
           } catch { /* Keep exact retry available if the receipt cannot be read. */ }
         }
         const next = !persisted ? "" : retired ? " Correct the settings and try again."
+          : expired ? " Retry to upload the retained attachments again, or open the Chat with the draft."
           : completed?.opening ? " Retry the same opening message."
           : completed ? " The Chat is saved. Retry to continue the same action."
           : " Creation is unconfirmed. Retry to open the same Chat if it was created.";
@@ -246,7 +250,8 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
     locked.current = true;
     setBusy(true);
     try {
-      if (attempt.draft) await moveCreationDraft(attempt, attempt.chat);
+      setRejectedOpening(undefined);
+      if (attempt.draft) await keepChatOpeningAsDraft(attempt, attempt.chat);
       else {
         moveLocalDraft(attempt.chat, attempt.opening?.text);
         settleCreationDraft(attempt, attempt.chat);

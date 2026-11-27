@@ -1,8 +1,10 @@
-import type { ConversationDto, CreateProjectRequest } from "@ponderosa/core";
+import { AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED, type ConversationDto, type CreateProjectRequest } from "@ponderosa/core";
 import { chatCreationFiles } from "./chatCreationFiles";
 import { conversationHeaderActions, isConversationDetailView, type ConversationDetailView, type ConversationHeaderAction } from "../routing";
 import { api } from "../api";
 import { requestJson } from "../api/real";
+import { ApiRequestError } from "../api/types";
+import { durableSubmissionFingerprint } from "./idempotentAttempt";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { readBrowserStorage, writeBrowserStorage } from "../browserStorage.js";
 
@@ -38,6 +40,8 @@ export interface ChatCreationAttempt {
   opening?: {
     text: string;
     title: string;
+    idempotencyKey?: string;
+    attachmentsExpired?: true;
     runtime?: Pick<CreateProjectRequest, "defaultEngine" | "defaultModel" | "defaultEffort" | "defaultSpeed">;
   };
 }
@@ -81,25 +85,37 @@ export async function submitChatOpening(attempt: ChatCreationAttempt, chat: Conv
   if (!opening.runtime) throw new Error("The opening message runtime could not be recovered.");
   const { defaultEngine, defaultModel, defaultEffort, defaultSpeed } = opening.runtime;
   attempt = await stageCreationFiles(attempt, chat);
-  await api.createAgent(chat.projectId, chat.id, {
-    title: opening.title,
-    engine: defaultEngine,
-    model: defaultModel,
-    effort: defaultEffort,
-    speed: defaultSpeed,
-    initialMessage: opening.text,
-    ...(attempt.draft?.files ? {
-      draftAttachmentIds: attempt.draft.files.ids,
-      draftOwnerId: attempt.draft.ownerId,
-    } : {}),
-    idempotencyKey: `${attempt.key}:opening`,
-  });
+  const idempotencyKey = attempt.opening?.idempotencyKey ?? `${attempt.key}:opening`;
+  try {
+    await api.createAgent(chat.projectId, chat.id, {
+      title: opening.title,
+      engine: defaultEngine,
+      model: defaultModel,
+      effort: defaultEffort,
+      speed: defaultSpeed,
+      initialMessage: opening.text,
+      ...(attempt.draft?.files ? {
+        draftAttachmentIds: attempt.draft.files.ids,
+        draftOwnerId: attempt.draft.ownerId,
+      } : {}),
+      idempotencyKey,
+    });
+  } catch (error) {
+    if (attempt.draft?.files?.ids && error instanceof ApiRequestError && error.status === 400 &&
+        (error.body as { code?: string } | undefined)?.code === AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED) {
+      replaceCreationReceipt(attempt, {
+        ...attempt, opening: { ...attempt.opening!, attachmentsExpired: true },
+      }, chat);
+    }
+    throw error;
+  }
   settleCreationDraft(attempt, chat);
 }
 
-export async function stageCreationFiles(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<ChatCreationAttempt> {
+async function stageCreationFiles(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<ChatCreationAttempt> {
   const draft = attempt.draft;
-  if (!draft?.files || draft.files.ids) return attempt;
+  const expired = attempt.opening?.attachmentsExpired;
+  if (!draft?.files || (draft.files.ids && !expired)) return attempt;
   const files = await chatCreationFiles("read", draft.files.key);
   if (!files || files.length !== draft.files.count)
     throw new Error("The original attachments are unavailable. The opening message has been held.");
@@ -108,8 +124,31 @@ export async function stageCreationFiles(attempt: ChatCreationAttempt, chat: Pic
     ids.push((await api.uploadDraftAttachment(chat.id, draft.ownerId, file)).id);
   }
   const staged = { ...attempt, draft: { ...draft, files: { ...draft.files, ids } } };
+  if (expired && attempt.opening) {
+    staged.opening = {
+      ...attempt.opening,
+      attachmentsExpired: undefined,
+      // Independent recoveries of the same rejected request must share one key.
+      idempotencyKey: await durableSubmissionFingerprint(attempt.opening.idempotencyKey ?? `${attempt.key}:opening`),
+    };
+  }
   replaceCreationReceipt(attempt, staged, chat);
   return staged;
+}
+
+export async function keepChatOpeningAsDraft(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<void> {
+  const draft = attempt.draft;
+  if (!draft) return;
+  const next = {
+    ...attempt, opening: undefined,
+    draft: {
+      ...draft,
+      text: draft.text ?? attempt.opening?.text,
+      files: attempt.opening?.attachmentsExpired && draft.files ? { ...draft.files, ids: undefined } : draft.files,
+    },
+  };
+  replaceCreationReceipt(attempt, next, chat);
+  await moveCreationDraft(next, chat);
 }
 
 export async function moveCreationDraft(attempt: ChatCreationAttempt, chat: Pick<ConversationDto, "id" | "projectId">): Promise<ChatCreationAttempt> {
@@ -123,13 +162,25 @@ export async function moveCreationDraft(attempt: ChatCreationAttempt, chat: Pick
     const matches = existing.text === text && JSON.stringify(existing.attachmentIds) === JSON.stringify(attachmentIds);
     if (!matches) {
       if (existing.revision !== 0) throw new Error("The saved Chat already has a draft. The New Chat draft is retained.");
-      await api.putConversationDraft(chat.id, {
-        text,
-        attachmentIds,
-        ownerId: draft.ownerId,
-        expectedRevision: 0,
-        clientId: attempt.key,
-      });
+      try {
+        await api.putConversationDraft(chat.id, {
+          text,
+          attachmentIds,
+          ownerId: draft.ownerId,
+          expectedRevision: 0,
+          clientId: attempt.key,
+        });
+      } catch (error) {
+        if (draft.files && error instanceof ApiRequestError && error.status === 400) {
+          const unavailable = (error.body as { unavailableAttachmentIds?: unknown } | undefined)?.unavailableAttachmentIds;
+          if (Array.isArray(unavailable) && unavailable.some(id => attachmentIds.includes(id))) {
+            replaceCreationReceipt(attempt, {
+              ...attempt, draft: { ...draft, files: { ...draft.files, ids: undefined } },
+            }, chat);
+          }
+        }
+        throw error;
+      }
     }
   }
   return settleCreationDraft(attempt, chat);
@@ -179,6 +230,8 @@ export function readCreationAttempts(): ChatCreationAttempt[] {
       (item.opening === undefined || (!item.owner && !item.origin &&
         typeof item.opening?.text === "string" && Boolean(item.opening.text || item.draft?.files) &&
         typeof item.opening?.title === "string" && Boolean(item.opening.title) &&
+        (item.opening.idempotencyKey === undefined || (typeof item.opening.idempotencyKey === "string" && /^[a-f0-9]{64}$/u.test(item.opening.idempotencyKey))) &&
+        (item.opening.attachmentsExpired === undefined || (item.opening.attachmentsExpired === true && item.draft?.files?.ids)) &&
         (item.opening.runtime === undefined || (typeof item.opening.runtime?.defaultEngine === "string" &&
           ["defaultModel", "defaultEffort", "defaultSpeed"].every(field =>
             item.opening.runtime[field] === undefined || typeof item.opening.runtime[field] === "string"))))) &&
