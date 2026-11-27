@@ -41,7 +41,10 @@ function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:Branc
   <Stack spacing={1}>
    <Typography id={choiceLabel+'-step'} component="h2" fontWeight={650}>{label}</Typography>
    {(refreshing||gate.purpose==='recovery')&&<Typography role="status" variant="body2">{refreshing?'Refreshing Review…':'A Failed Step Needs Your Decision'}</Typography>}
-   <Typography sx={{overflowWrap:'anywhere'}}>{gate.prompt}</Typography>
+   <Typography component="div" role="region" aria-label="Review prompt" tabIndex={0}
+    sx={{maxHeight:{xs:'4.5rem',sm:'none'},overflowY:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>
+    {gate.prompt}
+   </Typography>
    {choices.length===1?<Typography variant="body2">If approved · {choice}</Typography>:choices.length>1&&(
     choices.length<=3?<FormControl disabled={choicePending}>
      <FormLabel id={choiceLabel}>If approved</FormLabel>

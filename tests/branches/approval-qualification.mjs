@@ -62,15 +62,29 @@ try{
 
    const scorecard='# Blind scorecard\n\n| Candidate | Hard checks |\n|---|---|\n| A | Passed |\n| B | Failed |\n\nChoose A or **No winner**.\n\n'+
     'Supporting detail for the pinned trial.\n\n'.repeat(55)+'End of scorecard evidence.';
+   const prompt='Read the scorecard and choose A or No winner. '+
+    'Compare the eligibility criteria before selecting a result. '.repeat(14);
+   const promptEnding=' End of review prompt.';
+   const longPrompt=prompt.slice(0,800-promptEnding.length)+promptEnding;
    const name='Disposable blind verdict '+viewport.width;
    const owner=await write('/api/branches',{name,idempotencyKey:randomUUID()});
    const benchmark=await write('/api/branches/deploy',{branchId:owner.id,chatId:'',expectedVersionId:'',idempotencyKey:randomUUID(),
     bindings:{agents:{},directories:{}},definition:{schema:'ponderosa.branch.v1',name,entry:'verdict',trigger:{kind:'manual'},controls:[],edges:[],
-     steps:[{id:'verdict',label:'Record a blind verdict',kind:'human_gate',prompt:'Read the scorecard and choose A or No winner.',choices:['A','No winner'],editable:false}],
+     steps:[{id:'verdict',label:'Record a blind verdict',kind:'human_gate',prompt:longPrompt,choices:['A','No winner'],editable:false}],
      policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}}});
    const run=await launch(benchmark,scorecard);
    const gate=selected.getByRole('region',{name:'Record a blind verdict'});
    assert.deepEqual(await gate.getByRole('radio').evaluateAll(radios=>radios.map(radio=>radio.value)),['A','No winner']);
+   const promptRegion=gate.getByRole('region',{name:'Review prompt'});
+   assert.equal(await promptRegion.textContent(),longPrompt);
+   const bottom=await promptRegion.evaluate(node=>node.scrollHeight-node.clientHeight);
+   assert.ok(bottom>0,'the long prompt scrolls within the card');
+   await promptRegion.press('End');
+   await page.waitForFunction(({bottom})=>{
+    const prompt=document.querySelector('[aria-label="Review prompt"]');
+    return Math.abs(prompt.scrollTop-bottom)<=1;
+   },{bottom});
+   await arrival();
    await activate(gate.getByText('Supporting evidence',{exact:true}));
    await gate.getByRole('table').getByRole('cell',{name:'Failed',exact:true}).waitFor();
    await gate.getByText('End of scorecard evidence.',{exact:true}).waitFor();
@@ -80,7 +94,7 @@ try{
    assert.equal(completed.gates[0].resolution.choice,'No winner');
    assert.equal(completed.execution.output,'No winner');
    await selected.getByRole('region',{name:'Results',exact:true}).getByText('No winner',{exact:true}).waitFor();
-   console.log('Approval actions, both decisions, and Markdown scorecard passed at '+viewport.width+' × '+viewport.height);
+   console.log('Short and long approval prompts, both decisions, and Markdown scorecard passed at '+viewport.width+' × '+viewport.height);
   }finally{await context.close()}
  }
 }finally{
