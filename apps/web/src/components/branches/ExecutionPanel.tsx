@@ -39,25 +39,30 @@ function Gate({gate,label,onChanged,disabled=false,refreshing=false}:{gate:Branc
  const editable=!choices.length&&gate.editable&&gate.purpose==='approval';
  return <Paper component="section" aria-labelledby={choiceLabel+'-step'} variant="outlined" sx={{p:{xs:1.25,sm:2},borderColor:'warning.main',minWidth:0}}>
   <Stack spacing={1}>
-   <Typography id={choiceLabel+'-step'} component="h2" fontWeight={650}>{label}</Typography>
-   {(refreshing||gate.purpose==='recovery')&&<Typography role="status" variant="body2">{refreshing?'Refreshing Review…':'A Failed Step Needs Your Decision'}</Typography>}
-   <Typography component="div" role="region" aria-label="Review prompt" tabIndex={0}
-    sx={{maxHeight:{xs:'4.5rem',sm:'none'},overflowY:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>
-    {gate.prompt}
-   </Typography>
-   {choices.length===1?<Typography variant="body2">If approved · {choice}</Typography>:choices.length>1&&(
-    choices.length<=3?<FormControl disabled={choicePending}>
-     <FormLabel id={choiceLabel}>If approved</FormLabel>
-     <RadioGroup row aria-labelledby={choiceLabel} value={choice} onChange={(_,value)=>changeChoice(value)}>
-      {choices.map(option=><FormControlLabel value={option} key={option} control={<Radio size="small"/>} label={option}/>)}
-     </RadioGroup>
-    </FormControl>:<TextField select label="If approved" disabled={choicePending} value={choice} onChange={e=>changeChoice(e.target.value)}>{choices.map(option=><MenuItem value={option} key={option}>{option}</MenuItem>)}</TextField>
-   )}
-   {resolve.error&&<Alert severity="error">{/revision|stale|conflict/i.test(resolve.error.message)?'This decision changed while you were reviewing it. Refresh the execution and try again. ':''}{resolve.error.message}</Alert>}
+   {choices.length>1&&<Typography variant="caption" sx={{display:{xs:'block',sm:'none'}}}>Review prompt · {choices.length} choices</Typography>}
+   <Stack spacing={1} role="region" aria-label={choices.length?'Review prompt and choices':'Review prompt'} tabIndex={0}
+    sx={{maxHeight:{xs:'10rem',sm:'none'},overflowY:'auto',minWidth:0,'& > *':{flexShrink:0}}}>
+    <Typography id={choiceLabel+'-step'} component="h2" fontWeight={650} sx={{overflowWrap:'anywhere'}}>{label}</Typography>
+    {(refreshing||gate.purpose==='recovery')&&<Typography role="status" variant="body2">{refreshing?'Refreshing Review…':'A Failed Step Needs Your Decision'}</Typography>}
+    <Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{gate.prompt}</Typography>
+    {choices.length===1?<Typography variant="body2" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>If approved · {choice}</Typography>:choices.length>1&&(
+     choices.length<=3?<FormControl disabled={choicePending}>
+      <FormLabel id={choiceLabel}>If approved</FormLabel>
+      <RadioGroup row aria-labelledby={choiceLabel} value={choice} onChange={(_,value)=>changeChoice(value)}>
+       {choices.map(option=><FormControlLabel value={option} key={option} control={<Radio size="small"/>} label={option}
+        sx={{mx:0,maxWidth:'100%',alignItems:'flex-start','& .MuiFormControlLabel-label':{py:1,minWidth:0,whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}}/>)}
+      </RadioGroup>
+     </FormControl>:<TextField select label="If approved" disabled={choicePending} value={choice} onChange={e=>changeChoice(e.target.value)}
+      sx={{'& .MuiSelect-select':{whiteSpace:'pre-wrap',overflowWrap:'anywhere',textOverflow:'clip'}}}>
+      {choices.map(option=><MenuItem value={option} key={option} sx={{display:'block',whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{option}</MenuItem>)}
+     </TextField>
+    )}
+   </Stack>
    <Stack direction="row" gap={1} flexWrap="wrap">
     <Button variant="contained" disabled={choicePending} onClick={()=>resolve.mutate(gate.purpose==='recovery'?'retry':'approve')} sx={{minHeight:44}}>{resolve.isPending?'Saving Decision…':gate.purpose==='recovery'?'Retry Step':text!==gate.proposal?'Approve Edited Text':'Approve'}</Button>
     <Button color="error" disabled={choicePending} onClick={()=>resolve.mutate('reject')} sx={{minHeight:44}}>Reject</Button>
    </Stack>
+   {resolve.error&&<Alert severity="error">{/revision|stale|conflict/i.test(resolve.error.message)?'This decision changed while you were reviewing it. Refresh the execution and try again. ':''}{resolve.error.message}</Alert>}
    {(editable||gate.proposal.trim())&&<Box component="details" sx={{minWidth:0,overflowWrap:'anywhere'}}>
     <Typography component="summary" variant="body2" sx={{cursor:'pointer',minHeight:44,py:1.5}}>{editable?'If approved · Edit proposed result':choices.length||gate.purpose==='recovery'?'Supporting evidence':'If approved'}</Typography>
     {editable?<TextField fullWidth label="Proposed Result" disabled={choicePending} multiline minRows={3} maxRows={8} value={text} onChange={e=>{setText(e.target.value);setKey(createClientId())}}/>:
