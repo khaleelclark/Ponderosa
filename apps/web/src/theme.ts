@@ -235,10 +235,11 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
         defaultProps: { disableRipple: true },
         styleOverrides: {
           root: {
-            "&.Mui-focusVisible": {
+            "&.Mui-focusVisible:focus-within, &:focus-visible": {
               outline: `2px solid ${focusIndicator}`,
               outlineOffset: 2,
             },
+            "html[data-pointer-focus] &:focus-within": { outline: "none" },
           },
         },
       },

@@ -1,4 +1,5 @@
-import {Box,Tooltip} from '@mui/material';
+import { SidebarTooltip } from "../SidebarTooltip";
+import {Box} from '@mui/material';
 import type {BranchDto} from '@ponderosa/core';
 import {SemanticStatusCircle} from '../SemanticStatus';
 import {branchRunStatus} from './branchRunStatus';
@@ -17,12 +18,12 @@ export function BranchDirectoryStatus({branch,delayed=false}:{branch:BranchDto;d
  const activity=branchRunStatus(branch.runCounts,delayed);
  const count=activity.total;
  const lines=['Workflow Runs',availability,intake,...(nextRun?[`Next run ${nextRun.toLocaleString()}`]:[]),...activity.lines.slice(1)],detail=lines.join(' · ');
- return <Tooltip title={<>{lines.map(line=><Box key={line}>{line}</Box>)}</>} slotProps={{tooltip:{sx:{maxWidth:'min(280px, calc(100vw - 32px))'}}}}>
+ return <SidebarTooltip title={<>{lines.map(line=><Box key={line}>{line}</Box>)}</>} slotProps={{tooltip:{sx:{maxWidth:'min(280px, calc(100vw - 32px))'}}}}>
   <Box component="span" role="img" aria-label={detail} tabIndex={0} data-sidebar-column="activity" data-branch-availability={state} data-resource-status-trigger={branch.id}
    sx={{display:'inline-flex',alignItems:'center',gap:.5,flexShrink:0,color:state==='enabled'?'success.main':'text.disabled',fontSize:11,fontVariantNumeric:'tabular-nums',lineHeight:'18px',whiteSpace:'nowrap'}}>
    <SemanticStatusCircle/>
    <Box component="span" sx={{color:'text.secondary'}}>{mode}</Box>
    {count!==undefined&&count>0?<Box component="span" sx={{color:'text.secondary'}}>{count>99?'99+':count}</Box>:null}
   </Box>
- </Tooltip>;
+ </SidebarTooltip>;
 }

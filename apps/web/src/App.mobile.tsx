@@ -19,6 +19,7 @@ interface MobileWorkspaceDrawerProps {
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
   onOpenChange(open: boolean): void;
+  onFocusReturn(): void;
   onNavigate(route: Route): void;
   onCreate(
     kind: "chat" | "agent",
@@ -46,6 +47,7 @@ export function MobileWorkspaceDrawer({
   notifications,
   notificationCounts,
   onOpenChange,
+  onFocusReturn,
   onNavigate,
   onCreate,
   onPreferences,
@@ -71,6 +73,10 @@ export function MobileWorkspaceDrawer({
       SwipeAreaProps={{ style: { touchAction: "pan-y" }, onTouchStart: () => setContentsMounted(true) }}
       hysteresis={0.25}
       ModalProps={{ disableRestoreFocus: true }}
+      SlideProps={{ onExited: drawer => {
+        const focused = document.activeElement;
+        if (focused === document.body || drawer.contains(focused)) onFocusReturn();
+      } }}
       PaperProps={{
         sx: {
           width: "auto",

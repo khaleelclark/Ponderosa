@@ -36,6 +36,14 @@ import { queryRetryDelay, shouldRetryQuery } from "./api/queryRetry";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
 import { writeBrowserStorage } from "./browserStorage";
 
+// A pointer can activate an already focused button without sending another focus event.
+document.addEventListener("pointerdown", () => document.documentElement.setAttribute("data-pointer-focus", ""), true);
+document.addEventListener("keydown", event => {
+  if (!["Alt", "Control", "Meta", "Shift"].includes(event.key)) {
+    document.documentElement.removeAttribute("data-pointer-focus");
+  }
+}, true);
+
 installServiceWorkerReloadGuard();
 // A product switch needs its own root and QueryClient, including push clicks.
 navigator.serviceWorker?.addEventListener('message',(event:MessageEvent)=>{

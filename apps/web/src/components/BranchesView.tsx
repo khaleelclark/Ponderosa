@@ -508,6 +508,11 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,leaveConfirmationOp
  const searchReturnFocus=useRef<HTMLElement>();
  const restoreSearchTrigger=()=>{const previous=searchReturnFocus.current;searchReturnFocus.current=undefined;restoreOverlayFocus(previous,'[aria-label="Open Workspace Navigation"], [aria-label="Search Workflow Chats"]')};
  const closeMobileNavigation=()=>setMobileNavOpen(false);
+ const restoreMobileNavigationFocus=(drawer:HTMLElement)=>{
+  const focused=document.activeElement;
+  if(globalSearchOpen||leaveConfirmationOpen||(focused!==document.body&&!drawer.contains(focused)))return;
+  restoreOverlayFocus(sharedNavigationButton.current??undefined,'[aria-label="Open Workspace Navigation"]');
+ };
  const openGlobalSearch=()=>{searchReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setGlobalSearchOpen(true);setMobileNavOpen(false)};
  const openGlobalSearchSelection=async(selection:GlobalSearchSelection)=>{
   try{
@@ -726,7 +731,7 @@ function BranchesWorkspace({route,navigate,leaveConfirmation,leaveConfirmationOp
    </Stack>}
    </WorkflowInspector>
   </Box>
-  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen&&!leaveConfirmationOpen} onOpen={()=>{if(mobileWorkspace&&!leaveConfirmationOpen)setMobileNavOpen(true)}} onClose={closeMobileNavigation} SlideProps={{onExited:()=>{if(!globalSearchOpen&&document.activeElement===document.body)sharedNavigationButton.current?.focus({preventScroll:true})}}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
+  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen&&!leaveConfirmationOpen} onOpen={()=>{if(mobileWorkspace&&!leaveConfirmationOpen)setMobileNavOpen(true)}} onClose={closeMobileNavigation} ModalProps={{disableRestoreFocus:true}} SlideProps={{onExited:restoreMobileNavigationFocus}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
   <GlobalChatSearch open={globalSearchOpen} onClose={()=>setGlobalSearchOpen(false)} onExited={restoreSearchTrigger} onSelect={selection=>void openGlobalSearchSelection(selection)}/>
   {fullExport&&<BranchPackageExportDialog key={fullExport.branchId} source={fullExport} pending={exportPending} error={exportError} onCancel={()=>setFullExport(undefined)} onConfirm={confirmFullExport}/>}
   {install&&<BranchPackageDialog pkg={install.pkg} branchId={install.branchId} branches={branches.data??[]} engines={engines.data??[]} onClose={()=>setInstall(undefined)} onInstalled={branch=>{if(branch.id!==route.branchId){const accepted=navigate({branchId:branch.id,tab:'workflow'});if(accepted)setInstall(undefined);return accepted}return guard(()=>{setInstall(undefined);void reloadWorkflow(branch.id)},true)}}/>}
