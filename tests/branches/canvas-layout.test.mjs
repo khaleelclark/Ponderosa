@@ -180,6 +180,17 @@ test('Outline reads authored routes, joins and loop links without calling the la
  assert.deepEqual(rows.filter(item=>item.kind==='link').map(item=>item.label),['Continue at fork','Continue at fork','Rejoin at join','Rejoin at join','Loop to after']);
  assert.ok(paths.some(([label,secondary,target])=>label==='On failure'&&secondary&&target.edgeId==='retry'));
  assert.equal(rows.find(item=>item.kind==='path'&&item.path.key==='match').path.summary,'Input equals "yes"');
+ assert.equal(rows.find(item=>item.kind==='path'&&item.path.key==='otherwise').path.summary,'no');
+ const labeled=structuredClone(d);
+ const condition=labeled.controls.find(control=>control.kind==='condition');
+ const summaries=()=>flatten(workflowOutline(labeled)).find(item=>item.kind==='routes'&&item.id==='condition').items.map(item=>item.path.summary);
+ condition.matchLabel=' Source-only receipt ';
+ condition.otherwiseLabel='Full audit';
+ assert.deepEqual(summaries(),['Source-only receipt','Full audit']);
+ condition.matchLabel='  ';
+ assert.deepEqual(summaries(),['Input equals "yes"','Full audit']);
+ delete condition.otherwiseLabel;
+ assert.deepEqual(summaries(),['Input equals "yes"','no']);
  const changed={...d,edges:d.edges.map(item=>item.id==='otherwise'?{...item,to:''}:item)};
  assert.ok(flatten(workflowOutline(changed)).some(item=>item.kind==='missing'));
  const draft={...d,controls:d.controls.map(control=>control.id==='condition'?{id:'condition',kind:'route',otherwise:'no'}:control.id==='join'?{...control,forkId:'other'}:control),

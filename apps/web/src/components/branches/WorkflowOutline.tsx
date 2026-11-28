@@ -89,6 +89,7 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
    const first=items[0],destination=path.to?nodes.get(path.to):undefined;
    const name=destination?nodeName(destination):undefined;
    const heading=parallel&&name?name:path.label;
+   const condition=group?.mode==='decision'&&nodes.get(group.id)?.kind==='condition';
    const summary=group?.mode==='decision'?path.summary:!parallel?name:undefined;
    if(first?.kind==='link'&&group?.mode!=='decision'){
     if(parallel)return link(first.id,`${path.label} → ${first.label}`,key);
@@ -106,7 +107,7 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
    </Fragment>;
    if(parallel&&items.length===1&&first.kind==='step')return <Fragment key={key}>{render(items,depth)}</Fragment>;
    return <Box component="details" key={key} open={!parallel&&!path.secondary} sx={detailsStyle}>
-    {disclosure(heading,summary!==heading?summary:undefined)}
+    {disclosure(heading,condition||summary!==heading?summary:undefined)}
     <Stack sx={group?{pl:indent(depth)}:guide(depth)}>{render(items,depth+1)}</Stack>
    </Box>;
   }

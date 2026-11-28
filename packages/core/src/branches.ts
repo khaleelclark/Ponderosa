@@ -75,7 +75,7 @@ export type BranchStep =
   | (StepBase & { kind: "human_gate"; prompt: string; editable: boolean; choices?: string[] })
   | (StepBase & { kind: "action"; action: string; configRefs: string[] });
 export type BranchControl =
-  | { id: string; label?: string; kind: "condition"; predicate: { source: string; equals: string }; otherwise: string }
+  | { id: string; label?: string; kind: "condition"; predicate: { source: string; equals: string }; otherwise: string; matchLabel?: string; otherwiseLabel?: string }
   | { id: string; label?: string; kind: "route"; otherwise: string }
   | { id: string; label?: string; kind: "fork"; joinId: string }
   | { id: string; label?: string; kind: "map"; joinId: string; workerId: string; source: "interpret" | "list" | "lines"; maxItems: number; maxConcurrentItems: number }

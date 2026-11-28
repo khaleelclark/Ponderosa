@@ -148,7 +148,14 @@ function validateDefinition(value: unknown): BranchDefinition {
     const c = record(raw);
     try {
     if (c.kind === "condition") {
-      keys(c, ["id", "label", "kind", "predicate", "otherwise"]);
+      keys(c, ["id", "label", "kind", "predicate", "otherwise", "matchLabel", "otherwiseLabel"]);
+      for (const field of ["matchLabel", "otherwiseLabel"]) {
+        if (c[field] === undefined) continue;
+        const label = branchText(c[field]).trim();
+        if (label.length > 240) throw new Error("Condition route label is too long");
+        if (label) c[field] = label;
+        else delete c[field];
+      }
       const predicate = keys(c.predicate, ["source", "equals"]);
       if (predicate.source !== "input") throw new Error("Conditions read their explicit input; use a Script to transform it");
       predicate.equals = branchText(predicate.equals); branchKey(c.otherwise);
