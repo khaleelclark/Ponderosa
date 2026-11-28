@@ -54,11 +54,11 @@ try{
    const branch=f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
    const tail=Array.from({length:14},(_,i)=>script('tail'+i,'Follow-up '+i));
    const definition={schema:'ponderosa.branch.v1',name,trigger:{kind:'manual'},entry:'condition',
-    steps:[...tail,script('right','Second worker'),script('no','Fallback input'),script('yes','Matched input'),script('shared','Shared work'),script('recover','Recover input'),script('left','First worker')],
-    controls:[{id:'join',kind:'join',label:'Combine workers',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['left','right']},
+    steps:[...tail,script('right','Second worker'),script('verify','Verify second result'),script('third','Third worker'),script('report','Report failed input'),script('no','Fallback input'),script('yes','Matched input'),script('shared','Shared work'),script('recover','Recover input'),script('left','First worker')],
+    controls:[{id:'join',kind:'join',label:'Combine workers',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['left','right','third']},
      {id:'condition',kind:'condition',label:'Check input',predicate:{source:'input',equals:'yes'},otherwise:'no'},{id:'fork',kind:'fork',label:'Run workers',joinId:'join'}],
-    edges:[edge('no','condition','no','failure'),edge('right','fork','right','selected'),edge('yes','condition','yes','selected'),edge('yes-next','yes','shared'),edge('no-next','no','shared'),
-     edge('failure','shared','recover','failure'),edge('recover-next','recover','fork'),edge('ready','shared','fork'),edge('left','fork','left','selected'),edge('left-done','left','join'),edge('right-done','right','join'),
+    edges:[edge('no','condition','no','failure'),edge('right','fork','right','selected'),edge('yes','condition','yes','selected'),edge('yes-next','yes','shared'),edge('no-next','no','shared'),edge('yes-failure','yes','report','failure'),edge('no-failure','no','report','failure'),
+     edge('failure','shared','recover','failure'),edge('recover-next','recover','fork'),edge('ready','shared','fork'),edge('left','fork','left','selected'),edge('left-done','left','join'),edge('right-verify','right','verify'),edge('right-done','verify','join'),edge('third-done','third','join'),edge('third','fork','third','selected'),
      edge('finish','join','tail0'),...tail.slice(1).map((node,index)=>edge('after'+index,'tail'+index,node.id)),edge('retry','tail1','tail0','failure',{loop:true})],
     policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
    const initial=f.ok(await f.api('POST','/api/branches/deploy',{branchId:branch.id,chatId:branch.chatId,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{workspace:f.root}}}));
@@ -66,7 +66,7 @@ try{
    const canvas=page.getByRole('region',{name:'Workflow Canvas',exact:true});
    const outline=page.getByRole('region',{name:'Workflow Outline',exact:true});
    const view=label=>page.getByRole('button',{name:label,exact:true});
-   const row=text=>outline.getByRole('button',{name:new RegExp('^'+text+' (?:Script|Condition|Join|Parallel paths|Human approval)$')});
+   const row=text=>outline.getByRole('button',{name:new RegExp('^'+text+' (?:Script|Condition|Join|· 3 parallel paths|Human approval)$')});
    const inspector=page.getByRole(mobile?'dialog':'region',{name:'Workflow inspector',exact:true});
    const back=inspector.getByRole('button',{name:'Back to workflow',exact:true});
    const activate=button=>mobile?button.tap():button.press('Enter');
@@ -128,6 +128,12 @@ try{
    await toggle(matches);
    await row('Matched input').waitFor();
    assert.equal(await row('Shared work').count(),1);
+   assert.equal(await row('Report failed input').count(),1);
+   const failedInput=outline.getByRole('button',{name:'On failure → Report failed input',exact:true});
+   assert.equal(await failedInput.count(),2);
+   assert.equal(await row('Matched input').evaluate(node=>node.parentElement.nextElementSibling.textContent),'On failure → Report failed input');
+   await activate(failedInput.last());
+   assert.equal(await row('Report failed input').evaluate(node=>node===document.activeElement),true);
    const shared=outline.getByRole('button',{name:'Continue at Shared work',exact:true});
    assert.equal(await shared.count(),2);
    await activate(shared.first());
@@ -167,15 +173,35 @@ try{
    await page.getByRole('alert').getByText('Fixture layout failure').waitFor();
    await switchTo('Outline');
    await row('Fallback input').waitFor();
-   await activate(path('On failure'));
+   assert.equal(await row('Recover input').count(),0);
+   await activate(outline.getByRole('button',{name:'On failure → Recover input',exact:true}));
+   assert.equal(await row('Recover input').evaluate(node=>node===document.activeElement),true);
+   assert.equal(await matched.getAttribute('aria-pressed'),'true');
    await row('Recover input').waitFor();
    assert.equal(await row('Run workers').count(),1);
    assert.equal(await path('On success').count(),0);
    assert.equal(await outline.getByRole('button',{name:/Continue at Run workers$/}).count(),2);
-   assert.equal(await outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).count(),2);
-   assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Second worker|Combine workers) /}).allTextContents(),['First workerScript','Second workerScript','Combine workersJoin']);
-   await activate(outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).last());
-   assert.equal(await row('Combine workers').evaluate(node=>node===document.activeElement),true);
+   const secondPath=path('Second worker');
+   assert.equal(await isOpen(secondPath),false);
+   assert.equal(await row('Second worker').count(),0);
+   assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Third worker|Combine workers) /}).allTextContents(),['First workerScript','Third workerScript','Combine workersJoin']);
+   await toggle(secondPath);
+   assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Second worker|Verify second result|Third worker|Combine workers) /}).allTextContents(),['First workerScript','Second workerScript','Verify second resultScript','Third workerScript','Combine workersJoin']);
+   assert.equal(await outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).count(),0);
+   assert.equal(await matched.getAttribute('aria-pressed'),'true');
+   await toggle(secondPath);
+   const checkRowLayout=async(narrow,step=matched)=>{
+    const layout=await step.evaluate(node=>{
+     const [name,type]=node.children;
+     const row=node.parentElement;
+     return {height:row.getBoundingClientRect().height,target:node.getBoundingClientRect().height,menu:row.lastElementChild.getBoundingClientRect().height,
+      border:getComputedStyle(row).borderBottomWidth,stacked:type.getBoundingClientRect().top>=name.getBoundingClientRect().bottom-1};
+    });
+    assert.equal(layout.border,'1px');
+    assert.equal(layout.stacked,narrow);
+    assert.ok(narrow?layout.target>=44&&layout.menu>=44:layout.height>=38&&layout.height<=40,JSON.stringify(layout));
+   };
+   await checkRowLayout(mobile);
    const loop=outline.getByRole('button',{name:'On failure → Loop to Follow-up 0',exact:true});
    await activate(loop);
    assert.equal(await row('Follow-up 0').evaluate(node=>node===document.activeElement),true);
@@ -196,7 +222,8 @@ try{
    assert.equal(await row('Review unmatched input').evaluate(node=>node===document.activeElement),true);
 
    await activate(outline.getByRole('button',{name:'Actions for Matched input',exact:true}));
-   await page.getByRole('menuitem',{name:'Add after this step',exact:true}).waitFor();
+   await page.getByRole('menuitem',{name:'Add on success → Shared work',exact:true}).waitFor();
+   await page.getByRole('menuitem',{name:'Add on failure → Report failed input',exact:true}).waitFor();
    await page.keyboard.press('Escape');
    const actions=outline.getByRole('button',{name:'Actions for Shared work',exact:true});
    await activate(actions);
@@ -222,6 +249,16 @@ try{
     assert.equal(await width(),first+56);
     const dock=await inspector.boundingBox(),list=await outline.boundingBox();
     assert.ok(list.width>=380&&list.x+list.width<dock.x);
+    await checkRowLayout(false);
+    await divider.press('End');
+    assert.equal(await width(),Number(await divider.getAttribute('aria-valuemax')));
+    await checkRowLayout(true);
+   }else{
+    await page.waitForFunction(()=>{
+     const sheet=document.querySelector('[role="dialog"][aria-label="Workflow inspector"]')?.getBoundingClientRect();
+     return sheet&&sheet.left===0&&sheet.right<=innerWidth&&sheet.bottom<=innerHeight;
+    });
+    assert.ok(await nameField.isVisible());
    }
    await back.click();
    await inspector.waitFor({state:'hidden'});
@@ -235,7 +272,18 @@ try{
 
    await toggle(matches);
    assert.equal(await isOpen(matches),false);
-   if(mobile)await page.setViewportSize({width:320,height:844});
+   if(mobile){
+    await page.setViewportSize({width:320,height:640});
+    await activate(row('Check input'));
+    await inspector.getByRole('textbox',{name:'Name',exact:true}).waitFor();
+    await back.tap();
+    await inspector.waitFor({state:'hidden'});
+    assert.equal(await row('Check input').evaluate(node=>node===document.activeElement),true);
+    await checkRowLayout(true,row('Check input'));
+    assert.equal(await isOpen(matches),false);
+    await activate(row('Review fallback'));
+    await back.tap();
+   }
    await activate(outline.getByRole('button',{name:'Expand Workflow',exact:true}));
    await row('Follow-up 13').scrollIntoViewIfNeeded();
    await footer(outline,'Outline');

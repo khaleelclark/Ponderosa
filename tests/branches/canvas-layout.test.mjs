@@ -181,4 +181,12 @@ test('Outline reads authored routes, joins and loop links without calling the la
  assert.ok(paths.some(([label,secondary,target])=>label==='On failure'&&secondary&&target.edgeId==='retry'));
  const changed={...d,edges:d.edges.map(item=>item.id==='otherwise'?{...item,to:''}:item)};
  assert.ok(flatten(workflowOutline(changed)).some(item=>item.kind==='missing'));
+ const draft={...d,controls:d.controls.map(control=>control.id==='condition'?{id:'condition',kind:'route',otherwise:'no'}:control.id==='join'?{...control,forkId:'other'}:control),
+  edges:d.edges.map(item=>item.id==='match'?{...item,choice:'Use matched input'}:item)};
+ const draftRows=flatten(workflowOutline(draft));
+ const decision=draftRows.find(item=>item.kind==='routes'&&item.id==='condition');
+ assert.deepEqual(decision.items.map(item=>[item.path.label,item.path.to]),[['Use matched input','yes'],['Otherwise','no']]);
+ const parallel=draftRows.find(item=>item.kind==='routes'&&item.id==='fork');
+ assert.equal(parallel.joinId,undefined,'An unpaired draft Join cannot be presented as the fork’s Join');
+ assert.equal(draftRows.filter(item=>item.kind==='step'&&item.node.id==='join').length,1);
 });

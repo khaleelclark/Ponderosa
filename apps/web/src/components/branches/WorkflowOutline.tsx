@@ -14,6 +14,10 @@ import {nodeKind,nodeName} from './model';
 import {workflowOutline,type OutlineItem} from './workflow-outline';
 import type {WorkflowUndoRedo} from './WorkflowCanvas';
 
+const rowHeight={minHeight:39,'@container (max-width: 440px)':{minHeight:44},'@media (any-pointer: coarse)':{minHeight:44}} as const;
+const actionStyle={justifyContent:'start',textAlign:'left',textTransform:'none',overflowWrap:'anywhere',borderRadius:0} as const;
+type RouteGroup=Extract<OutlineItem,{kind:'routes'}>;
+
 export function WorkflowOutline({definition,bindings,agents,issues,active,selected,onSelect,onInsert,onStepMenu,stepMenuId,startControl,entryButtonRef,viewSelector,saveControl,undoRedo,expanded,onToggleExpanded,focusRequest,revealRequest,scrollPosition}:{
  definition:BranchDefinition;bindings:BranchBindings;agents:AgentDto[];issues:BranchValidationIssue[];
  active:boolean;selected?:string;onSelect(id:string):void;onStepMenu(id:string,anchor:HTMLElement):void;stepMenuId?:string;
@@ -46,16 +50,35 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   if(selected&&(focus||reveal))showRow(selected,focus);
   else if(!selected&&focus)entryButtonRef.current?.focus({preventScroll:true});
  },[active,selected,focusRequest,revealRequest,entryButtonRef]);
- const pathIndent={xs:1,sm:2};
- const link=(id:string,label:string,key:string,indent:number|typeof pathIndent=0)=><Button key={key} size="small" onClick={()=>showRow(id,true)} sx={{ml:indent,minHeight:44,justifyContent:'start',textAlign:'left',textTransform:'none',overflowWrap:'anywhere'}}>{label}</Button>;
- const render=(entries:OutlineItem[],depth=0):ReactNode=>entries.map((item,index)=>{
+ const nodes=useMemo(()=>new Map([...definition.steps,...definition.controls].map(node=>[node.id,node])),[definition]);
+ const indent=(depth:number)=>depth<4?1.25:.5;
+ const guide=(depth:number)=>({ml:depth<4?1:0,pl:indent(depth),borderLeft:1,borderColor:'divider',minWidth:0});
+ const link=(id:string,label:string,key:string,failure=false)=><Button key={key} size="small" color="inherit" onClick={()=>showRow(id,true)} sx={[{...rowHeight,minHeight:30},actionStyle,{alignSelf:'start',px:1,fontWeight:400,color:failure?'warning.main':'text.secondary','&:hover':{textDecoration:'underline'}}]}>{label}</Button>;
+ const render=(entries:OutlineItem[],depth=0,group?:RouteGroup):ReactNode=>entries.map((item,index)=>{
   if(item.kind==='link')return link(item.id,item.label,`link:${item.id}:${index}`);
   if(item.kind==='missing')return <Typography key="missing" variant="body2" color="error.main">Choose a destination</Typography>;
+  if(item.kind==='routes')return <Stack key={`routes:${item.id}`} sx={guide(depth)}>{render(item.items,depth+1,item)}</Stack>;
   if(item.kind==='path'){
-   const {path,items}=item,key=`path:${path.key}`,first=items[0],indent=depth<4?pathIndent:0;
-   if(first?.kind==='link')return link(first.id,`${path.label} → ${first.label}`,key,indent);
-   if(!first||first.kind==='missing')return <Typography key={key} variant="body2" color={first?'error.main':'text.secondary'} sx={{ml:indent,py:.25}}>{path.label} → {first?'Choose a destination':'End this path'}</Typography>;
-   return <Box component="details" key={key} open={!path.secondary} sx={{ml:indent,minWidth:0,'&[open] > summary .outline-destination':{display:'none'},'&[open] > summary > svg':{transform:'rotate(90deg)'}}}>
+   const {path}=item,key=`path:${path.key}`;
+   const parallel=group?.mode==='parallel';
+   const failure=!group&&path.on==='failure';
+   const items=parallel&&group.joinId&&item.items[0]?.kind==='step'?item.items.filter(child=>child.kind!=='link'||child.id!==group.joinId||child.prefix!=='Rejoin at'):item.items;
+   const first=items[0],destination=path.to?nodes.get(path.to):undefined;
+   const name=destination?nodeName(destination):undefined;
+   const heading=parallel&&name?name:path.label;
+   const showPreview=!parallel&&name&&name!==heading;
+   if(first?.kind==='link')return link(first.id,path.loop?`${path.label} → ${first.label}`:showPreview?`${heading} → ${name}`:heading,key,failure);
+   if(!first||first.kind==='missing')return <Typography key={key} variant="body2" color={first?'error.main':'text.secondary'} sx={{px:1,py:.5,overflowWrap:'anywhere'}}>{heading} → {first?'Choose a destination':'End this path'}</Typography>;
+   if(failure&&destination)return <Fragment key={key}>
+    {link(destination.id,`On failure → ${name}`,key,true)}
+    <Box component="details">
+     {/* The link reveals this destination through the same ancestor walk as other jumps. */}
+     <summary hidden />
+     <Stack sx={guide(depth)}>{render(items,depth+1)}</Stack>
+    </Box>
+   </Fragment>;
+   if(parallel&&items.length===1&&first.kind==='step')return <Fragment key={key}>{render(items,depth)}</Fragment>;
+   return <Box component="details" key={key} open={!parallel&&!path.secondary} sx={{minWidth:0,'&[open] > summary .outline-destination':{display:'none'},'&[open] > summary > svg':{transform:'rotate(90deg)'}}}>
     <Box component="summary" onClick={event=>{
      const summary=event.currentTarget,details=summary.parentElement as HTMLDetailsElement,region=scroll.current;
      if(!region)return;
@@ -66,14 +89,14 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
      region.scrollTop+=summary.getBoundingClientRect().top-top;
      showInViewport(summary,region);
      scrollPosition.current=region.scrollTop;
-    }} sx={{display:'flex',alignItems:'flex-start',gap:.5,px:.5,py:1.5,minHeight:44,cursor:'pointer',borderRadius:1,bgcolor:'action.hover',
-     '&::-webkit-details-marker':{display:'none'},'&:hover':{bgcolor:'action.selected'},'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:-2}}}>
-     <ChevronRightIcon fontSize="small" sx={{flexShrink:0,color:'text.secondary'}}/>
+    }} sx={[rowHeight,{boxSizing:'border-box',display:'flex',alignItems:'center',gap:.5,px:1,py:.5,cursor:'pointer',
+     '&::-webkit-details-marker':{display:'none'},'&:hover':{bgcolor:'action.hover'},'&:focus-visible':{outline:'2px solid',outlineColor:'primary.main',outlineOffset:-2}}]}>
+     <ChevronRightIcon sx={{fontSize:16,flexShrink:0,color:'text.secondary'}}/>
      <Typography component="span" variant="body2" sx={{minWidth:0,overflowWrap:'anywhere'}}>
-      <Box component="span" fontWeight={600}>{path.label}</Box>{first.kind==='step'&&<Box component="span" className="outline-destination" sx={{color:'text.secondary'}}> → {nodeName(first.node)}</Box>}
+      <Box component="span" fontWeight={600}>{heading}</Box>{showPreview&&<Box component="span" className="outline-destination" sx={{color:'text.secondary'}}> → {name}</Box>}
      </Typography>
     </Box>
-    <Stack spacing={.5} sx={{ml:.5,pl:depth<4?1.25:.5,pb:.5,borderLeft:1,borderColor:'divider'}}>{render(items,depth+1)}</Stack>
+    <Stack sx={group?{pl:indent(depth)}:guide(depth)}>{render(items,depth+1)}</Stack>
    </Box>;
   }
   if(item.kind==='unconnected')return <Fragment key="unconnected"><Typography variant="body2" color="text.secondary" sx={{mt:1}}>Unconnected steps</Typography>{render(item.items,depth)}</Fragment>;
@@ -81,14 +104,21 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   const agentId=node.kind==='agent'&&'ref' in node.target?bindings.agents[node.target.ref]:undefined;
   const agent=agents.find(agent=>agent.id===agentId)?.title;
   const name=nodeName(node);
+  const decision=node.kind==='condition'||node.kind==='route';
+  const pathCount=node.kind==='fork'?item.paths.filter(path=>path.on==='selected').length:0;
   return <Stack key={`step:${node.id}`} direction="row" alignItems="center"
    onContextMenu={event=>{const row=rows.current.get(node.id);if(row){event.preventDefault();event.stopPropagation();onStepMenu(node.id,row)}}}
    onKeyDown={event=>{if(isContextMenuKey(event)){event.preventDefault();event.stopPropagation();onStepMenu(node.id,event.target as HTMLElement)}}}
-   sx={{border:1,borderColor:problem?'error.main':chosen?'primary.main':'divider',borderRadius:1.5,bgcolor:chosen?'action.selected':'background.paper',minWidth:0}}>
-   <Button ref={element=>{if(element)rows.current.set(node.id,element);else rows.current.delete(node.id)}} aria-pressed={chosen} onClick={event=>{event.currentTarget.focus({preventScroll:true});onSelect(node.id)}} color="inherit" sx={{flex:1,minWidth:0,minHeight:44,justifyContent:'start',textAlign:'left',textTransform:'none',px:1.25,py:.5}}>
-    <Box component="span" sx={{overflowWrap:'anywhere'}}>{name}<Typography component="span" variant="caption" display="block" color="text.secondary">{nodeKind(node)}{agent?` · ${agent}`:''}{problem?' · Needs attention':''}</Typography></Box>
+   sx={{borderBottom:1,borderColor:'divider',bgcolor:chosen?'action.selected':decision?'action.hover':undefined,minWidth:0}}>
+   <Button ref={element=>{if(element)rows.current.set(node.id,element);else rows.current.delete(node.id)}} aria-pressed={chosen} onClick={event=>{event.currentTarget.focus({preventScroll:true});onSelect(node.id)}} color="inherit" sx={[rowHeight,actionStyle,{flex:1,minWidth:0,gap:.5,px:1,py:.5,justifyContent:'space-between',
+    '@container (max-width: 440px)':{minHeight:44,flexDirection:'column',alignItems:'start',gap:0}}]}>
+    <Box component="span" sx={{minWidth:0,overflowWrap:'anywhere',fontWeight:decision||node.kind==='fork'?600:500}}>{name}
+     {node.kind==='fork'&&<Typography component="span" variant="body2" color="text.secondary">{` · ${pathCount} parallel ${pathCount===1?'path':'paths'}`}</Typography>}
+    </Box>
+    {node.kind!=='fork'&&<Typography component="span" variant="caption" color={problem?'error.main':'text.secondary'} sx={{minWidth:0,overflowWrap:'anywhere',textAlign:'right','@container (max-width: 440px)':{textAlign:'left'}}}>{nodeKind(node)}{agent?` · ${agent}`:''}{problem?' · Needs attention':''}</Typography>}
+    {node.kind==='fork'&&problem&&<Typography component="span" variant="caption" color="error.main">Needs attention</Typography>}
    </Button>
-   <IconButton aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={stepMenuId===node.id} onContextMenu={event=>{event.preventDefault();event.stopPropagation();onStepMenu(node.id,event.currentTarget)}} onClick={event=>onStepMenu(node.id,event.currentTarget)} sx={{width:44,height:44,flexShrink:0}}><MoreHorizIcon/></IconButton>
+   <IconButton aria-label={`Actions for ${name}`} aria-haspopup="menu" aria-expanded={stepMenuId===node.id} onContextMenu={event=>{event.preventDefault();event.stopPropagation();onStepMenu(node.id,event.currentTarget)}} onClick={event=>onStepMenu(node.id,event.currentTarget)} sx={[rowHeight,{width:44,p:.5,flexShrink:0}]}><MoreHorizIcon/></IconButton>
   </Stack>;
  });
  return <Stack role="region" aria-label="Workflow Outline" sx={{height:'100%',minHeight:0,minWidth:0}} onKeyDown={event=>{
@@ -97,12 +127,12 @@ export function WorkflowOutline({definition,bindings,agents,issues,active,select
   if(event.shiftKey)undoRedo.onRedo();else undoRedo.onUndo();
  }}>
   <Box ref={scroll} onScroll={event=>{if(active)scrollPosition.current=event.currentTarget.scrollTop}} sx={{flex:1,minHeight:0,overflowY:'auto',overscrollBehavior:'contain',overflowAnchor:'none',p:{xs:1.5,sm:2}}}>
-   <Stack spacing={.75} sx={{maxWidth:760,mx:'auto'}}>
+   <Stack spacing={.75} sx={{maxWidth:760,mx:'auto',containerType:'inline-size'}}>
     <Box sx={{alignSelf:'start'}}>{startControl}</Box>
     {!guidedInsertionRestriction(definition,{kind:'entry'})&&<Button ref={entryButtonRef} variant={definition.entry?'text':'outlined'} startIcon={<AddIcon/>} onClick={event=>onInsert({kind:'entry'},event.currentTarget)} sx={{alignSelf:'start',minHeight:44}}>
      {definition.entry?'Insert before the first step':'Add your first step'}
     </Button>}
-    {render(items)}
+    <Stack>{render(items)}</Stack>
    </Stack>
   </Box>
   <Stack direction="row" alignItems="center" gap={.5} sx={{px:1.5,pt:1,pb:'calc(8px + env(safe-area-inset-bottom, 0px))',borderTop:1,borderColor:'divider',flexWrap:'wrap',flexShrink:0}}>

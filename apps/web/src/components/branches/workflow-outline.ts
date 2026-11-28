@@ -7,15 +7,18 @@ type Connection = BranchDefinition['edges'][number];
 type Path = {
  key:string;
  label:string;
+ on:Connection['on'];
  to?:string;
  loop?:boolean;
  secondary:boolean;
  target:GuidedInsertionTarget;
 };
+type LinkPrefix='Rejoin at'|'Continue at'|'Loop to';
 export type OutlineItem =
  | {kind:'step';node:WorkflowNode;paths:Path[]}
+ | {kind:'routes';id:string;mode:'decision'|'parallel';joinId?:string;items:OutlineItem[]}
  | {kind:'path';path:Path;items:OutlineItem[]}
- | {kind:'link';id:string;label:string}
+ | {kind:'link';id:string;label:string;prefix:LinkPrefix}
  | {kind:'missing'}
  | {kind:'unconnected';items:OutlineItem[]};
 
@@ -25,7 +28,7 @@ export function workflowPaths(definition:BranchDefinition):Map<string,Path[]> {
  return new Map([...nodes.values()].map(node=>{
   const join='joinId' in node?nodes.get(node.joinId):undefined;
   const edges=definition.edges.filter(edge=>edge.from===node.id);
-  if(node.kind==='fork'&&join?.kind==='join'){
+  if(node.kind==='fork'&&join?.kind==='join'&&join.forkId===node.id){
    const order=new Map(join.inputOrder.map((id,index)=>[id,index]));
    edges.sort((a,b)=>(order.get(a.id)??Infinity)-(order.get(b.id)??Infinity));
   }
@@ -37,8 +40,8 @@ export function workflowPaths(definition:BranchDefinition):Map<string,Path[]> {
    return {success:'On success',failure:'On failure',selected:'Selected',approved:'If approved',rejected:'If rejected',canceled:'If canceled'}[on];
   };
   const paths:Path[]=[
-   ...edges.map((edge,index):Path=>({key:edge.id,label:label(edge.on,index,edge.choice),to:edge.to,loop:edge.loop,secondary:['failure','rejected','canceled'].includes(edge.on),target:{kind:'edge',edgeId:edge.id}})),
-   ...terminals.filter(terminal=>terminal.from===node.id).map(({on}):Path=>({key:`end:${node.id}:${on}`,label:label(on,0),secondary:on!=='success'&&on!=='approved',target:{kind:'terminal',nodeId:node.id,on}}))
+   ...edges.map((edge,index):Path=>({key:edge.id,label:label(edge.on,index,edge.choice),on:edge.on,to:edge.to,loop:edge.loop,secondary:['failure','rejected','canceled'].includes(edge.on),target:{kind:'edge',edgeId:edge.id}})),
+   ...terminals.filter(terminal=>terminal.from===node.id).map(({on}):Path=>({key:`end:${node.id}:${on}`,label:label(on,0),on,secondary:on!=='success'&&on!=='approved',target:{kind:'terminal',nodeId:node.id,on}}))
   ];
   paths.sort((a,b)=>Number(a.secondary)-Number(b.secondary));
   return [node.id,paths];
@@ -49,14 +52,14 @@ export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
  const nodes=new Map([...definition.steps,...definition.controls].map(node=>[node.id,node]));
  const pathsByNode=workflowPaths(definition);
  const rendered=new Set<string>(),levels=workflowGraphLevels(definition);
- const link=(id:string,prefix:string):OutlineItem=>({kind:'link',id,label:`${prefix} ${nodeName(nodes.get(id)!)}`});
- const visitPath=(path:Path,stops:Map<string,string>):OutlineItem[]=>{
+ const link=(id:string,prefix:LinkPrefix):OutlineItem=>({kind:'link',id,prefix,label:`${prefix} ${nodeName(nodes.get(id)!)}`});
+ const visitPath=(path:Path,stops:Map<string,LinkPrefix>):OutlineItem[]=>{
   if(path.target.kind==='terminal')return [];
   if(!path.to||!nodes.has(path.to))return [{kind:'missing'}];
   if(path.loop)return [link(path.to,'Loop to')];
   return visit(path.to,stops);
  };
- const reachable=(path:Path,stops:Map<string,string>):Set<string>=>{
+ const reachable=(path:Path,stops:Map<string,LinkPrefix>):Set<string>=>{
   const seen=new Set<string>(),pending=path.loop?[]:[path.to];
   while(pending.length){
    const id=pending.pop();
@@ -66,13 +69,15 @@ export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
   }
   return seen;
  };
- function visit(id:string,stops:Map<string,string>):OutlineItem[]{
+ function visit(id:string,stops:Map<string,LinkPrefix>):OutlineItem[]{
   if(stops.has(id)||rendered.has(id))return [link(id,stops.get(id)??'Continue at')];
   const node=nodes.get(id)!,paths=pathsByNode.get(id)!;
   rendered.add(id);
   const items:OutlineItem[]=[{kind:'step',node,paths}];
-  const joinId='joinId' in node&&nodes.has(node.joinId)?node.joinId:undefined;
-  const grouped=paths.length>1||joinId||node.kind==='condition'||node.kind==='route';
+  const join='joinId' in node?nodes.get(node.joinId):undefined;
+  const joinId=join?.kind==='join'&&join.forkId===id?join.id:undefined;
+  const mode=node.kind==='condition'||node.kind==='route'?'decision':node.kind==='fork'?'parallel':undefined;
+  const grouped=paths.length>1||joinId||mode;
   if(!grouped){
    if(paths[0])items.push(...visitPath(paths[0],stops));
    return items;
@@ -89,10 +94,12 @@ export function workflowOutline(definition:BranchDefinition):OutlineItem[] {
   }
   for(const target of shared)boundaries.set(target,'Continue at');
   const branches=paths.map(path=>({kind:'path' as const,path,items:visitPath(path,boundaries)}));
-  const straight=!joinId&&node.kind!=='condition'&&node.kind!=='route'&&branches.find(({path,items})=>items[0]?.kind==='step'&&(
-   path.label==='On success'||(path.label==='If approved'&&paths.every(other=>other===path||other.target.kind==='terminal'))
-  ));
-  for(const branch of branches)if(branch!==straight)items.push(branch);
+  const straight=!joinId&&!mode&&branches.find(({path,items:[first]})=>(
+   first?.kind==='step'||(first?.kind==='link'&&first.prefix==='Continue at')
+  )&&(path.on==='success'||(path.on==='approved'&&paths.every(other=>other===path||other.target.kind==='terminal'))));
+  const routes=branches.filter(branch=>branch!==straight);
+  if(mode&&routes.length)items.push({kind:'routes',id,mode,joinId:joinId&&!stops.has(joinId)&&!rendered.has(joinId)?joinId:undefined,items:routes});
+  else items.push(...routes.sort((a,b)=>Number(b.path.on==='failure')-Number(a.path.on==='failure')));
   if(straight)items.push(...straight.items);
   const incoming=new Map([...shared].map(target=>[target,0]));
   for(const target of shared)for(const path of pathsByNode.get(target)!){
