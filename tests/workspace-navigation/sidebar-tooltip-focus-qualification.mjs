@@ -114,7 +114,7 @@ try {
       // Exercise trigger removal independently of the outside-pointer listener.
       await button(page, 'Collapse Sidebar').evaluate(element => element.click());
       await first.waitFor({ state: 'hidden' });
-      await tooltip.waitFor({ state: 'hidden' });
+      await tooltip.filter({ hasText: 'Tooltip first' }).waitFor({ state: 'hidden' });
     });
   }
 
@@ -188,6 +188,25 @@ try {
     assert.notEqual((await visual()).color, selected.color, 'Validation retains a different border color');
     await keyboardFocus(page, node);
     assert.equal((await visual()).border, '1px');
+  });
+
+  await check('one Escape dismisses hovered sidebar help and closes the focused Canvas inspector', desktop, false, async page => {
+    await page.goto(web.origin + workflowPath);
+    const card = page.getByLabel('Select Inspect this step', { exact: true });
+    const row = page.getByRole('link', { name: 'Open Workflow Tooltip first workflow', exact: true });
+    const tooltip = page.getByRole('tooltip').filter({ hasText: 'Tooltip first workflow' });
+    const inspector = page.getByRole('region', { name: 'Workflow inspector' });
+    const name = inspector.getByRole('textbox', { name: 'Name', exact: true });
+    await card.waitFor();
+    await row.hover();
+    await tooltip.waitFor();
+    await card.press('Enter');
+    await name.focus();
+    assert.equal((await style(name)).focused, true);
+    assert.equal(await tooltip.isVisible(), true);
+    await page.keyboard.press('Escape');
+    await tooltip.waitFor({ state: 'hidden' });
+    await inspector.waitFor({ state: 'hidden' });
   });
 
   for (const width of [390, 320]) for (const product of ['Chats', 'Workflows']) {

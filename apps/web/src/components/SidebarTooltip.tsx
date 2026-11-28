@@ -53,7 +53,6 @@ export function SidebarTooltip(props: TooltipProps): JSX.Element {
     document.addEventListener("keydown", event => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       dismiss();
-      event.stopPropagation();
     }, { capture: true, signal: listeners.signal });
     dispose.current = () => {
       window.clearTimeout(timer);
