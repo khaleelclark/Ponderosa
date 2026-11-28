@@ -3,14 +3,14 @@ import {VariableTextField} from './VariableTextField';
 import {AgentStepFields,type AgentSetupRequest} from './AgentStepFields';
 import {guidedInsertionRestriction} from './guided-operations';
 import {createClientId} from '../../clientId';
-import {useEffect,useRef,useState,type ReactNode} from 'react';
+import {useEffect,useId,useRef,useState,type ReactNode} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {requestJson} from '../../api/real';
 import type {BranchDto} from '@ponderosa/core';
 import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,Divider,FormControlLabel,MenuItem,Stack,Switch,TextField,Typography} from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type {AgentDto,BranchBindings,BranchDefinition,BranchFailurePolicy,BranchStep,ConversationDto,EngineDto} from '@ponderosa/core';
-import {makeScript,nodeName,removeWorkflowNode,effectiveStepFailure,setStepFailure,workflowIncoming,isSteeringAgent,type WorkflowNode} from './model';
+import {conditionOutcomeLabel,makeScript,nodeName,removeWorkflowNode,effectiveStepFailure,setStepFailure,workflowIncoming,isSteeringAgent,type WorkflowNode} from './model';
 import {ExecutionControlHelp} from './ExecutionControlHelp';
 
 // UI discoverability only. The existing server validator remains the publication authority.
@@ -48,13 +48,20 @@ export function StepInputField({input,noResult=false,onChange}:{input?:BranchDef
 export function NodeEditor({definition,nodeId,onChange,onRemove,bindings,onBindings,agents,contexts,engines,branchId,onSetup,onProviderSetup,validationRequest=0,validationIssue,retainedTemplates,onDraft,active=true}:{active?:boolean;onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;retainedTemplates?:NonNullable<BranchDefinition['templates']>;branchId:string;onSetup(request:AgentSetupRequest):void;onProviderSetup?():void;validationIssue?:import("@ponderosa/core").BranchValidationIssue;validationRequest?:number;definition:BranchDefinition;nodeId:string;onChange(value:BranchDefinition):void;onRemove(id:string):void;bindings:BranchBindings;onBindings(value:BranchBindings):void;agents:AgentDto[];contexts:ConversationDto[];engines:EngineDto[]}):JSX.Element{
  const focusedNode=useRef<string>(),focusedValidation=useRef<{nodeId:string;request:number;issue:typeof validationIssue}>();
  const editor=useRef<HTMLDivElement>(null),[advancedOpen,setAdvancedOpen]=useState(false),[touched,setTouched]=useState(false);
- useEffect(()=>{if(active&&focusedNode.current!==nodeId){focusedNode.current=nodeId;editor.current?.querySelector<HTMLElement>('[data-step-heading]')?.focus({preventScroll:true})}},[active,nodeId]);
+ const routeHeadingId=useId();
+ const node=[...definition.steps,...definition.controls].find(node=>node.id===nodeId);
+ const condition=node?.kind==='condition';
+ useEffect(()=>{
+  if(!active)return;
+  if(condition){editor.current?.focus({preventScroll:true});return;}
+  if(focusedNode.current!==nodeId){focusedNode.current=nodeId;editor.current?.querySelector<HTMLElement>('[data-step-heading]')?.focus({preventScroll:true})}
+ },[active,condition,nodeId]);
  const showErrors=touched||validationRequest>0;
  const fieldLabels:Record<string,string>={instructions:'Agent Instructions',target:'Agent',cwdRef:'Working Directory',timeoutMs:'Timeout (Seconds)',source:'Script',branchRef:'Destination Workflow','failure.maxAttempts':'Maximum Attempts','failure.delayMs':'Retry Delay','failure.agentRef':'Recovery Agent',to:'Failure Destination',input:'Explicit Input'};
  useEffect(()=>{if(validationIssue?.section==='advanced')setAdvancedOpen(true)},[validationIssue]);
  useEffect(()=>{if(!active||!validationRequest&&!validationIssue||validationIssue?.section==='agent_setup'||validationIssue?.section==='advanced'&&!advancedOpen)return;const previous=focusedValidation.current;if(previous?.nodeId===nodeId&&previous.request===validationRequest&&previous.issue===validationIssue)return;focusedValidation.current={nodeId,request:validationRequest,issue:validationIssue};const edgeField=validationIssue?.edgeId?Array.from(editor.current?.querySelectorAll<HTMLElement>('[data-edge-id]')??[]).find(element=>element.dataset.edgeId===validationIssue.edgeId&&element.dataset.branchSection===validationIssue.section):undefined;const edgeControls=Array.from(edgeField?.querySelectorAll<HTMLElement>('[data-branch-field]')??[]).filter(element=>element.dataset.branchField===validationIssue?.field),edgeControl=edgeControls.find(element=>element.querySelector('textarea'))??edgeControls[0];const edgeInput=(edgeControl??edgeField)?.querySelector<HTMLElement>('[role="combobox"], textarea, input:not([aria-hidden])');const label=validationIssue?.field?fieldLabels[validationIssue.field]:undefined;const matching=label?Array.from(editor.current?.querySelectorAll<HTMLLabelElement>('label')??[]).find(element=>element.textContent?.replace(/\s*\*$/,'')===label):undefined;const named=matching?.htmlFor?editor.current?.querySelector<HTMLElement>('[id="'+CSS.escape(matching.htmlFor)+'"]'):undefined;const invalid=editor.current?.querySelector<HTMLElement>('[aria-invalid="true"], :invalid');const field=edgeInput??named??invalid?.closest('.MuiFormControl-root')?.querySelector<HTMLElement>('input:not([aria-hidden]), textarea, [role="combobox"]');field?.focus();field?.scrollIntoView({block:'center'})},[active,validationRequest,nodeId,validationIssue,advancedOpen]);
  const branchChoices=useQuery({queryKey:['branch-call-options'],queryFn:()=>requestJson<BranchDto[]>('/api/branches'),enabled:definition.steps.some(node=>node.id===nodeId&&node.kind==='branch_call')});
- const node=[...definition.steps,...definition.controls].find(n=>n.id===nodeId);if(!node)return <Typography color="text.secondary">Select a step to edit it.</Typography>;
+ if(!node)return <Typography color="text.secondary">Select a step to edit it.</Typography>;
  const steering=isSteeringAgent(node);
  const update=(next:WorkflowNode)=>onChange({...definition,steps:definition.steps.map(n=>n.id===node.id?next as BranchStep:n),controls:definition.controls.map(n=>n.id===node.id?next as typeof n:n)});
  const nodes=[...definition.steps,...definition.controls];
@@ -62,24 +69,42 @@ export function NodeEditor({definition,nodeId,onChange,onRemove,bindings,onBindi
  const mapOwner=definition.controls.find(control=>control.kind==='map'&&control.workerId===node.id);
  const routes=mapOwner||node.kind==='fork'||node.kind==='map'||node.kind==='route'?[]:node.kind==='condition'?['selected','failure'] as const:node.kind==='branch_call'?['success','failure','canceled'] as const:node.kind==='human_gate'?['approved','rejected'] as const:node.kind==='join'?['success','failure'] as const:['success','failure'] as const;
 
+ const incoming=workflowIncoming(definition,node.id);
+ const receivedFrom=incoming.length?incoming.map(source=><Typography key={source.id} variant="body2">{source.label}{source.custom?' · Custom Input':''}</Typography>):<Typography variant="body2">No Incoming Connection</Typography>;
+ const destinations=routes.filter(outcome=>node.kind!=='agent'||outcome!=='failure').map(outcome=>{
+  const edge=definition.edges.find(edge=>edge.from===node.id&&edge.on===outcome);
+  const headingId=routeHeadingId+'-'+outcome;
+  const heading=node.kind==='condition'?(outcome==='selected'?'If it matches':'Otherwise'):undefined;
+  const configured=node.kind==='condition'?conditionOutcomeLabel(node,outcome):undefined;
+  const picker=<TextField key={outcome} data-branch-section="connections" data-edge-id={edge?.id} select size="small"
+   label={heading?undefined:outcome==='success'?(steering?'After Guidance Delivery':'Next Step'):`After ${outcome}`}
+   SelectProps={{displayEmpty:true,...(heading?{labelId:headingId}:{})}} InputLabelProps={{shrink:true}}
+   sx={heading?{'& .MuiInputBase-root .MuiSelect-select':{whiteSpace:'normal',overflowWrap:'anywhere',textOverflow:'clip'}}:undefined}
+   value={edge?.to??''} onChange={e=>route(outcome,e.target.value)}>
+    <MenuItem value="">End This Path</MenuItem>
+    {nodes.map(n=><MenuItem key={n.id} value={n.id} sx={heading?{whiteSpace:'normal',overflowWrap:'anywhere',display:'block'}:undefined}>{nodeName(n)}</MenuItem>)}
+  </TextField>;
+  return heading?<Stack key={outcome} spacing={0.5}>
+   <Typography component="h4" id={headingId} variant="body2" fontWeight={600}>{heading}{configured?` · ${configured}`:''}</Typography>
+   {picker}
+  </Stack>:picker;
+ });
  const removal=node.kind==='fork'||node.kind==='join'||node.kind==='map'?undefined:removeWorkflowNode(definition,node.id);
- return <Stack ref={editor} onBlurCapture={()=>setTouched(true)} spacing={2} sx={{minWidth:0}}>
-  <Typography tabIndex={-1} data-step-heading variant="subtitle2">Task</Typography>
+ return <Stack ref={editor} tabIndex={condition?-1:undefined} onBlurCapture={()=>setTouched(true)} spacing={2} sx={{minWidth:0}}>
+  {!condition&&<Typography tabIndex={-1} data-step-heading variant="subtitle2">Task</Typography>}
   <TextField label="Name" size="small" value={node.label??node.id} onChange={e=>update({...node,label:e.target.value})}/>
   {mapOwner&&definition.steps.some(step=>step.id===node.id)&&<TextField select label="For Each Worker Type" size="small" value={node.kind} onChange={e=>{const kind=e.target.value;const replacement:BranchStep=kind==='script'?{...makeScript(node.id),label:node.label}:kind==='branch_call'?{id:node.id,label:node.label,kind:'branch_call',branchRef:node.id}:{id:node.id,label:node.label,kind:'agent',target:{kind:'persistent_agent',ref:node.id},instructions:''};update(replacement)}}><MenuItem value="agent">Agent</MenuItem><MenuItem value="script">Script</MenuItem><MenuItem value="branch_call">Run Branch</MenuItem></TextField>}
   {node.kind==='branch_call'&&<><TextField select label="Destination Workflow" required error={showErrors&&!bindings.branches?.[node.branchRef]} value={bindings.branches?.[node.branchRef]??''} onChange={e=>onBindings({...bindings,branches:{...bindings.branches,[node.branchRef]:e.target.value}})}><MenuItem value="">Choose A Branch</MenuItem>{branchChoices.data?.map(b=><MenuItem key={b.id} value={b.id}>{b.name}</MenuItem>)}</TextField><TextField select label="If The Child Is Canceled" value={node.canceled??'ask_human'} onChange={e=>update({...node,canceled:e.target.value as 'retry'|'ask_human'|'terminate'})}><MenuItem value="ask_human">Ask Me</MenuItem><MenuItem value="retry">Use Retry Policy</MenuItem><MenuItem value="terminate">End This Path</MenuItem></TextField></>}
   {node.kind==='script'&&<TextField label="Script" required error={showErrors&&!node.source.trim()} multiline minRows={7} value={node.source} onChange={e=>update({...node,source:e.target.value})} slotProps={{input:{sx:{fontFamily:'monospace',fontSize:12}}}}/>}
   {node.kind==='agent'&&<AgentStepFields retainedTemplates={retainedTemplates} branchId={branchId} node={node} definition={definition} bindings={bindings} onDefinition={onChange} onDraft={onDraft} agents={agents} contexts={contexts} engines={engines} validationRequest={validationRequest} validationIssue={validationIssue} onSetup={onSetup} onProviderSetup={onProviderSetup}/>}
   {node.kind==='human_gate'&&<><VariableTextField parameters={definition.parameters} label="Review Prompt" required error={showErrors&&!node.prompt.trim()} multiline minRows={3} value={node.prompt} onValueChange={prompt=>update({...node,prompt})}/><FormControlLabel control={<Switch checked={node.editable} onChange={(_,checked)=>update({...node,editable:checked})}/>} label="Allow Editing The Proposed Result"/><TextField label="Choices (One Per Line, Optional)" multiline minRows={2} value={node.choices?.join('\n')??''} onChange={e=>update({...node,choices:e.target.value?e.target.value.split('\n'):undefined})}/></>}
-  {node.kind==='condition'&&<>
-   <Typography variant="body2">First path · input equals this value · complex checks: preceding Script</Typography>
-   <VariableTextField parameters={definition.parameters} label="Input Equals" multiline value={node.predicate.equals}
-    onValueChange={equals=>update({...node,predicate:{source:'input',equals}})}/>
-   <TextField label="If it matches label" size="small" value={node.matchLabel??''}
-    slotProps={{htmlInput:{maxLength:240}}} onChange={e=>update({...node,matchLabel:e.target.value||undefined})}/>
-   <TextField label="Otherwise label" size="small" value={node.otherwiseLabel??''}
-    slotProps={{htmlInput:{maxLength:240}}} onChange={e=>update({...node,otherwiseLabel:e.target.value||undefined})}/>
-  </>}
+  {node.kind==='condition'&&<Stack component="section" aria-label="Check" spacing={1}>
+   <Typography component="h3" variant="subtitle2">Check</Typography>
+   <Box><Typography variant="caption" color="text.secondary">Receives from</Typography>{receivedFrom}</Box>
+   <Typography variant="body2">Equals</Typography>
+   <VariableTextField parameters={definition.parameters} label="Comparison value" multiline value={node.predicate.equals}
+    onValueChange={equals=>update({...node,predicate:{...node.predicate,equals}})}/>
+  </Stack>}
   {node.kind==='route'&&<><Typography variant="body2">Unknown route names follow Otherwise and are recorded.</Typography>{definition.edges.filter(edge=>edge.from===node.id&&edge.on==='selected').map(edge=><Stack key={edge.id} direction="row" gap={1} flexWrap="wrap"><TextField label="Route Name" size="small" value={edge.choice??''} onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,choice:e.target.value}:item)})}/><TextField select label="Go To" size="small" value={edge.to} onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,to:e.target.value}:item)})}>{nodes.filter(n=>n.id!==node.id).map(n=><MenuItem key={n.id} value={n.id}>{nodeName(n)}</MenuItem>)}</TextField><Button disabled={definition.edges.filter(item=>item.from===node.id&&item.on==='selected').length===1} onClick={()=>onChange({...definition,edges:definition.edges.filter(item=>item.id!==edge.id)})}>Remove</Button></Stack>)}<Button onClick={()=>{const id='edge_'+createClientId();onChange({...definition,edges:[...definition.edges,{id,from:node.id,to:definition.steps[0]!.id,on:'selected',choice:'New Route'}]})}}>Add Route</Button><TextField select label="Otherwise / Invalid Choice" value={node.otherwise} onChange={e=>onChange({...definition,controls:definition.controls.map(control=>control.id===node.id?{...node,otherwise:e.target.value}:control),edges:definition.edges.map(edge=>edge.from===node.id&&edge.on==='failure'?{...edge,to:e.target.value}:edge)})}>{nodes.filter(n=>n.id!==node.id).map(n=><MenuItem key={n.id} value={n.id}>{nodeName(n)}</MenuItem>)}</TextField></>}
   {node.kind==='map'&&<><Stack spacing={0.25}><Typography variant="body2">Worker for each previous-result item: “{nodeName(nodes.find(n=>n.id===node.workerId)??node)}”</Typography><Typography variant="body2">Items are sealed before work starts</Typography><Typography variant="body2">Configure the Agent, Script or Branch Call on the worker card</Typography></Stack><TextField select label="Items From Previous Result" value={node.source} onChange={e=>update({...node,source:e.target.value as typeof node.source})}><MenuItem value="interpret">Interpret A Bulleted List Or JSON List</MenuItem><MenuItem value="list">Explicit JSON List</MenuItem><MenuItem value="lines">One Item Per Line</MenuItem></TextField><TextField type="number" label="Maximum Items" value={node.maxItems} onChange={e=>update({...node,maxItems:Number(e.target.value)})}/><TextField type="number" label="Concurrent Items" value={node.maxConcurrentItems} onChange={e=>update({...node,maxConcurrentItems:Number(e.target.value)})}/><Typography variant="caption">Raise the workflow path, Step and traversal limits too when running a large Map.</Typography></>}
   {node.kind==='join'&&<>
@@ -92,17 +117,26 @@ export function NodeEditor({definition,nodeId,onChange,onRemove,bindings,onBindi
   {node.kind==='fork'&&<><Typography variant="body2">Each path runs independently and returns to the paired join.</Typography><Button onClick={()=>{const id='path_'+createClientId(),edge=id+'_start';onChange({...definition,steps:[...definition.steps,makeScript(id)],edges:[...definition.edges,{id:edge,from:node.id,to:id,on:'selected'},{id:id+'_end',from:id,to:node.joinId,on:'success'}],controls:definition.controls.map(c=>c.id===node.joinId&&c.kind==='join'?{...c,inputOrder:[...c.inputOrder,edge]}:c)})}}>Add Parallel Path</Button></>}
   {node.kind==='branch_call'&&bindings.branches?.[node.branchRef]&&<Button href={`/branches?branch=${encodeURIComponent(bindings.branches[node.branchRef]!)}`}>Open Called Branch</Button>}
   <Divider/>
-  <Typography variant="subtitle2">What Happens Next</Typography>
+  {!condition&&<Typography variant="subtitle2">What Happens Next</Typography>}
   {[...new Set(definition.edges.filter(edge=>edge.from===node.id).map(edge=>guidedInsertionRestriction(definition,{kind:'edge',edgeId:edge.id})).filter(Boolean))].map(reason=><Typography key={reason} variant="body2" color="text.secondary" role="note">{reason}</Typography>)}
-  <Box><Typography variant="caption">Receives From</Typography>{workflowIncoming(definition,node.id).map(source=><Typography key={source.id} variant="body2">{source.label}{source.custom?' · Custom Input':''}</Typography>)}{!workflowIncoming(definition,node.id).length&&<Typography variant="body2">No Incoming Connection</Typography>}</Box>
+  {!condition&&<Box><Typography variant="caption">Receives From</Typography>{receivedFrom}</Box>}
   {mapOwner?.kind==='map'&&<Typography variant="body2">Each item continues to {nodeName(nodes.find(candidate=>candidate.id===mapOwner.joinId)??mapOwner)}.</Typography>}
-  {routes.filter(outcome=>node.kind!=='agent'||outcome!=='failure').map(outcome=><TextField key={outcome} data-branch-section="connections" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} data-edge-id={definition.edges.find(edge=>edge.from===node.id&&edge.on===outcome)?.id} select size="small" label={node.kind==='condition'?(outcome==='selected'?'Matches':'Otherwise'):outcome==='success'?(steering?'After Guidance Delivery':'Next Step'):`After ${outcome}`} value={definition.edges.find(e=>e.from===node.id&&e.on===outcome)?.to??''} onChange={e=>route(outcome,e.target.value)}><MenuItem value="">End This Path</MenuItem>{nodes.map(n=><MenuItem key={n.id} value={n.id}>{nodeName(n)}</MenuItem>)}</TextField>)}
+  {condition?<Stack component="section" aria-label="Send to" spacing={1}>
+   <Typography component="h3" variant="subtitle2">Send to</Typography>
+   {destinations}
+  </Stack>:destinations}
   {steering&&node.kind==='agent'&&(Boolean(node.requireUserCommunication)||node.stateWrites!==undefined)&&<Alert severity="warning">Steering has no separate Agent result; remove result writes or required replies in the advanced definition before saving.</Alert>}
   {node.kind==='agent'&&<Stack component="section" aria-label="Failure Handling" spacing={1.5}><FailureEditor value={node.failure} optional workflowDefault={definition.policy.failure} mode={effectiveStepFailure(definition,node)} showErrors={showErrors} recoveryRef={node.id+'_recovery'} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts} onChange={failure=>update({...node,failure})} onMode={mode=>{
    if(mode==='goto'){const edge=definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure');if(!edge)onChange({...definition,edges:[...definition.edges,{id:'edge_'+createClientId(),from:node.id,to:'',on:'failure'}]});return;}
    onChange(setStepFailure(definition,node.id,mode==='inherit'?undefined:mode==='retry'?{action:'retry',maxAttempts:3,delayMs:1000}:mode==='recover'?{action:'recover',agentRef:node.id+'_recovery',maxAttempts:1}:{action:mode as 'stop'|'ask_human'}));
   }} destination={!mapOwner?<TextField data-branch-section="connections" data-edge-id={definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.id} select required label="Failure Destination" size="small" error={showErrors&&!definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.to} value={definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.to??''} onChange={event=>onChange({...definition,edges:definition.edges.map(edge=>edge.from===node.id&&edge.on==='failure'?{...edge,to:event.target.value}:edge)})}><MenuItem value="">Choose A Step</MenuItem>{nodes.map(candidate=><MenuItem key={candidate.id} value={candidate.id}>{nodeName(candidate)}</MenuItem>)}</TextField> :undefined}/>{effectiveStepFailure(definition,node)==='goto'&&validationIssue?.field?.startsWith('failure.')&&<Stack spacing={1}><Typography variant="caption">The Retained Inactive Policy Also Requires Correction Before Publication.</Typography><FailureEditor hideSelector value={node.failure} onChange={failure=>update({...node,failure})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/></Stack>}</Stack>}
   <Accordion disableGutters expanded={advancedOpen||validationIssue?.section==='advanced'||steering&&definition.edges.some(edge=>edge.from===node.id&&edge.input?.kind!=='literal')||showErrors&&advancedSettingsNeedAttention(node,bindings)} onChange={(_,open)=>setAdvancedOpen(open)}><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Advanced</AccordionSummary><AccordionDetails><Stack spacing={2}>
+   {node.kind==='condition'&&<>
+    <TextField label="If it matches label" size="small" value={node.matchLabel??''}
+     slotProps={{htmlInput:{maxLength:240}}} onChange={e=>update({...node,matchLabel:e.target.value||undefined})}/>
+    <TextField label="Otherwise label" size="small" value={node.otherwiseLabel??''}
+     slotProps={{htmlInput:{maxLength:240}}} onChange={e=>update({...node,otherwiseLabel:e.target.value||undefined})}/>
+   </>}
    {node.kind==='script'&&<Box>
     <Typography variant="body2" color="text.secondary">The script reads input from stdin, writes its result to stdout, and reports diagnostics on stderr. Workflow variables are available as JSON. Working Directory can use a folder variable.</Typography>
     <CopyableCodeBlock format="text" text={"const { report_title = 'Weekly team update' } = JSON.parse(process.env.PONDEROSA_PARAMETERS ?? '{}');\nprocess.stdout.write(report_title);"} />

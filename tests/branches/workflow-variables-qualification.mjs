@@ -38,9 +38,9 @@ try{
    await activate(page.getByRole('menuitem',{name:'Workflow variables',exact:true}));
    await inspector.getByRole('heading',{name:'Workflow variables',exact:true}).waitFor();
   }
-  async function editStep(label){
+  async function editStep(label,heading='Step Settings'){
    await activate(outline.getByRole('button',{name:new RegExp('^'+label+' ')}));
-   await inspector.getByRole('heading',{name:'Step Settings',exact:true}).waitFor();
+   await inspector.getByRole('heading',{name:heading,exact:true}).waitFor();
   }
   async function insert(label,source,start,end,name='report_title'){
    const field=text(label);
@@ -136,8 +136,8 @@ process.stdout.write(JSON.stringify({input, cwd:process.cwd(), parameters}));`;
    await editStep('Review request');
    await insert('Review Prompt','Review [draft].',8,13);
    await activate(back);
-   await editStep('Match starting input');
-   await insert('Input Equals','old text',0,8);
+   await editStep('Match starting input','Condition');
+   await insert('Comparison value','old text',0,8);
    await activate(button('Advanced',inspector));
    await insert('Explicit Input','Report: ',8,8);
    await activate(back);

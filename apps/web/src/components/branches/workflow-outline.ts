@@ -1,6 +1,6 @@
 import type {BranchDefinition} from '@ponderosa/core';
 import {workflowTerminalOutcomes} from './canvas-layout.js';
-import {nodeName,workflowGraphLevels,type WorkflowNode} from './model.js';
+import {conditionOutcomeLabel,nodeName,workflowGraphLevels,type WorkflowNode} from './model.js';
 import type {GuidedInsertionTarget} from './guided-operations.js';
 
 type Connection = BranchDefinition['edges'][number];
@@ -47,8 +47,8 @@ export function workflowPaths(definition:BranchDefinition):Map<string,Path[]> {
     const destination=nodes.get(edge.to);
     const preview=destination&&nodeName(destination);
     const predicate=node.kind==='condition'&&edge.on==='selected'?node.predicate.equals:undefined;
-    const configuredLabel=node.kind==='condition'?(edge.on==='selected'?node.matchLabel:node.otherwiseLabel):undefined;
-    const summary=configuredLabel?.trim()||(predicate?.trim()?`Input equals ${JSON.stringify(predicate)}`:node.kind==='condition'||node.kind==='route'?preview:undefined);
+    const configuredLabel=node.kind==='condition'?conditionOutcomeLabel(node,edge.on):undefined;
+    const summary=configuredLabel||(predicate?.trim()?`Input equals ${JSON.stringify(predicate)}`:node.kind==='condition'||node.kind==='route'?preview:undefined);
     return {key:edge.id,label:label(edge.on,index,edge.choice),summary,on:edge.on,to:edge.to,loop:edge.loop,
      failure:edge.on==='failure'&&node.kind!=='condition'&&node.kind!=='route',
      secondary:['failure','rejected','canceled'].includes(edge.on),target:{kind:'edge',edgeId:edge.id}};

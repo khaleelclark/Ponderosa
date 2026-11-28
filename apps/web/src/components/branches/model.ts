@@ -147,6 +147,10 @@ export function effectiveStepFailure(definition:BranchDefinition,node:BranchStep
 export function setStepFailure(definition:BranchDefinition,nodeId:string,failure:BranchStep['failure']):BranchDefinition {
  return {...definition,steps:definition.steps.map(step=>step.id===nodeId?{...step,failure}:step),edges:definition.edges.filter(edge=>edge.from!==nodeId||edge.on!=='failure')};
 }
+export function conditionOutcomeLabel(node:Extract<WorkflowNode,{kind:'condition'}>,outcome:BranchDefinition['edges'][number]['on']):string|undefined {
+ return (outcome==='selected'?node.matchLabel:node.otherwiseLabel)?.trim()||undefined;
+}
+
 export function workflowIncoming(definition:BranchDefinition,nodeId:string):Array<{id:string;label:string;custom:boolean}> {
  const nodes=[...definition.steps,...definition.controls];
  return [...(definition.entry===nodeId?[{id:'workflow-input',label:'Workflow Input',custom:false}]:[]),...definition.edges.filter(edge=>edge.to===nodeId).map(edge=>({id:edge.id,label:nodeName(nodes.find(node=>node.id===edge.from)??{id:edge.from} as WorkflowNode),custom:edge.input?.kind==='literal'}))];
