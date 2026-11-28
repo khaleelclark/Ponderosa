@@ -117,23 +117,31 @@ try{
    assert.equal(await row('Fallback input').count(),0,'Secondary path starts collapsed');
    await toggle(matches);
    assert.equal(await isOpen(matches),false);
-   await matches.getByText('→ Matched input',{exact:true}).waitFor();
-   await otherwise.getByText('→ Fallback input',{exact:true}).waitFor();
+   await matches.getByText('· Input equals "yes"',{exact:true}).waitFor();
+   await otherwise.getByText('· Fallback input',{exact:true}).waitFor();
    await toggle(otherwise);
    await row('Fallback input').waitFor();
    assert.equal(await isOpen(matches),false,'Sibling expansion stays unchanged');
    await toggle(otherwise);
-   await otherwise.getByText('→ Fallback input',{exact:true}).waitFor();
+   await otherwise.getByText('· Fallback input',{exact:true}).waitFor();
    await toggle(otherwise);
    await toggle(matches);
    await row('Matched input').waitFor();
    assert.equal(await row('Shared work').count(),1);
-   assert.equal(await row('Report failed input').count(),1);
+   await matches.getByText('· Input equals "yes"',{exact:true}).waitFor();
+   await otherwise.getByText('· Fallback input',{exact:true}).waitFor();
+   const failureSection=path('Shared failure step');
+   assert.equal(await isOpen(failureSection),false);
+   assert.equal(await row('Report failed input').count(),0);
    const failedInput=outline.getByRole('button',{name:'On failure → Report failed input',exact:true});
    assert.equal(await failedInput.count(),2);
    assert.equal(await row('Matched input').evaluate(node=>node.parentElement.nextElementSibling.textContent),'On failure → Report failed input');
-   await activate(failedInput.last());
-   assert.equal(await row('Report failed input').evaluate(node=>node===document.activeElement),true);
+   for(const source of [failedInput.first(),failedInput.last()]){
+    await activate(source);
+    assert.equal(await isOpen(failureSection),true);
+    assert.equal(await row('Report failed input').count(),1);
+    assert.equal(await row('Report failed input').evaluate(node=>node===document.activeElement),true);
+   }
    const shared=outline.getByRole('button',{name:'Continue at Shared work',exact:true});
    assert.equal(await shared.count(),2);
    await activate(shared.first());
@@ -144,6 +152,8 @@ try{
    const initialName=inspector.getByRole('textbox',{name:'Name',exact:true});
    await initialName.fill('Matched input edited');
    await back.click();
+   assert.equal(await isOpen(matches),true);
+   assert.equal(await isOpen(otherwise),true);
    assert.equal(await row('Matched input edited').getAttribute('aria-pressed'),'true');
    await activate(outline.getByRole('button',{name:'Undo',exact:true}));
    await matched.waitFor();
@@ -186,6 +196,11 @@ try{
    assert.equal(await row('Second worker').count(),0);
    assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Third worker|Combine workers) /}).allTextContents(),['First workerScript','Third workerScript','Combine workersJoin']);
    await toggle(secondPath);
+   const [forkBounds,firstBounds,verifyBounds,joinBounds]=await Promise.all(
+    [row('Run workers'),row('First worker'),row('Verify second result'),row('Combine workers')].map(control=>control.boundingBox())
+   );
+   assert.ok(firstBounds.x>forkBounds.x&&verifyBounds.x>firstBounds.x,'Parallel paths and their nested steps are indented');
+   assert.equal(joinBounds.x,forkBounds.x,'Join aligns with the split');
    assert.deepEqual(await outline.getByRole('button',{name:/^(First worker|Second worker|Verify second result|Third worker|Combine workers) /}).allTextContents(),['First workerScript','Second workerScript','Verify second resultScript','Third workerScript','Combine workersJoin']);
    assert.equal(await outline.getByRole('button',{name:'Rejoin at Combine workers',exact:true}).count(),0);
    assert.equal(await matched.getAttribute('aria-pressed'),'true');
@@ -195,10 +210,12 @@ try{
      const [name,type]=node.children;
      const row=node.parentElement;
      return {height:row.getBoundingClientRect().height,target:node.getBoundingClientRect().height,menu:row.lastElementChild.getBoundingClientRect().height,
-      border:getComputedStyle(row).borderBottomWidth,stacked:type.getBoundingClientRect().top>=name.getBoundingClientRect().bottom-1};
+      border:getComputedStyle(row).borderBottomWidth,wrap:getComputedStyle(node).flexWrap,
+      inline:type.getBoundingClientRect().left>=name.getBoundingClientRect().right};
     });
     assert.equal(layout.border,'1px');
-    assert.equal(layout.stacked,narrow);
+    assert.equal(layout.wrap,narrow?'wrap':'nowrap');
+    assert.equal(layout.inline,true,'Short labels and types fit on one line');
     assert.ok(narrow?layout.target>=44&&layout.menu>=44:layout.height>=38&&layout.height<=40,JSON.stringify(layout));
    };
    await checkRowLayout(mobile);
@@ -279,7 +296,7 @@ try{
     await back.tap();
     await inspector.waitFor({state:'hidden'});
     assert.equal(await row('Check input').evaluate(node=>node===document.activeElement),true);
-    await checkRowLayout(true,row('Check input'));
+    await checkRowLayout(true,row('Review fallback'));
     assert.equal(await isOpen(matches),false);
     await activate(row('Review fallback'));
     await back.tap();

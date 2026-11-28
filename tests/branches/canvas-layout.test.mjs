@@ -179,14 +179,35 @@ test('Outline reads authored routes, joins and loop links without calling the la
  assert.deepEqual(paths.slice(0,4),[['If it matches',false,{kind:'edge',edgeId:'match'}],['Otherwise',true,{kind:'edge',edgeId:'otherwise'}],['Path 1',false,{kind:'edge',edgeId:'first-edge'}],['Path 2',false,{kind:'edge',edgeId:'second-edge'}]]);
  assert.deepEqual(rows.filter(item=>item.kind==='link').map(item=>item.label),['Continue at fork','Continue at fork','Rejoin at join','Rejoin at join','Loop to after']);
  assert.ok(paths.some(([label,secondary,target])=>label==='On failure'&&secondary&&target.edgeId==='retry'));
+ assert.equal(rows.find(item=>item.kind==='path'&&item.path.key==='match').path.summary,'Input equals "yes"');
  const changed={...d,edges:d.edges.map(item=>item.id==='otherwise'?{...item,to:''}:item)};
  assert.ok(flatten(workflowOutline(changed)).some(item=>item.kind==='missing'));
  const draft={...d,controls:d.controls.map(control=>control.id==='condition'?{id:'condition',kind:'route',otherwise:'no'}:control.id==='join'?{...control,forkId:'other'}:control),
   edges:d.edges.map(item=>item.id==='match'?{...item,choice:'Use matched input'}:item)};
  const draftRows=flatten(workflowOutline(draft));
  const decision=draftRows.find(item=>item.kind==='routes'&&item.id==='condition');
- assert.deepEqual(decision.items.map(item=>[item.path.label,item.path.to]),[['Use matched input','yes'],['Otherwise','no']]);
+ assert.deepEqual(decision.items.map(item=>[item.path.label,item.path.summary]),[['Use matched input','yes'],['Otherwise','no']]);
  const parallel=draftRows.find(item=>item.kind==='routes'&&item.id==='fork');
  assert.equal(parallel.joinId,undefined,'An unpaired draft Join cannot be presented as the fork’s Join');
  assert.equal(draftRows.filter(item=>item.kind==='step'&&item.node.id==='join').length,1);
+});
+
+
+test('Outline keeps normally reachable handlers in sequence and puts shared failure-only handlers after it',async()=>{
+ const {workflowOutline}=await import('../../apps/web/src/components/branches/workflow-outline.ts');
+ const linear=graph([script('finish'),script('start'),script('next')],[],[
+  edge('next','start','next'),edge('finish','next','finish')
+ ],'start');
+ assert.deepEqual(workflowOutline(linear).map(item=>item.node.id),['start','next','finish']);
+ const withFailures={...linear,steps:[...linear.steps,script('handler')],edges:[...linear.edges,
+  edge('skip','start','finish','failure'),edge('next-fails','next','handler','failure'),
+  edge('finish-fails','finish','handler','failure')
+ ]};
+ const outline=workflowOutline(withFailures);
+ assert.deepEqual(outline.filter(item=>item.kind==='step').map(item=>item.node.id),['start','next','finish']);
+ const failure=outline.at(-1);
+ assert.equal(failure.kind,'sharedFailure');
+ assert.deepEqual(failure.items.filter(item=>item.kind==='step').map(item=>item.node.id),['handler']);
+ const links=outline.flatMap(item=>item.kind==='path'&&item.path.failure?item.items:[]);
+ assert.deepEqual(links.map(item=>[item.kind,item.id]),[['link','finish'],['link','handler'],['link','handler']]);
 });
