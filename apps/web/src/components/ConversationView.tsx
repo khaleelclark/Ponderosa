@@ -65,7 +65,7 @@ import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import type { AgentsTab } from "./AgentsTab";
 import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
-import type { ConversationDetailView } from "../routing";
+import type { ConversationDetailView, ConversationHeaderAction } from "../routing";
 import {
   conversationComposerRuntime,
   reconcileQueuedProjectMessages,
@@ -87,7 +87,7 @@ import {
   useConversationMessageFocusRefs,
 } from "./useConversationMessageFocus";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
-import { useConversationHistory } from "./useConversationHistory";
+import { useConversationHistory, type ConversationHistorySnapshot } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { ProviderFailureBanner } from "./ProviderFailureBanner";
 import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
@@ -103,7 +103,7 @@ import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirect
 import { ChatContextSettings } from "./ChatContextSettings";
 import { ChatDecisionPanel } from "./decisions/ChatDecisionPanel";
 
-import { chatStateKey } from "../chatState";
+import { chatStateKey, conversationScrollKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { pendingRuntimeSelection, runtimeMutationKey, runtimeMutationOptions, runtimeFeedbackKey, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 
@@ -117,6 +117,8 @@ export function ConversationView({
   conversationId,
   focusMessageId,
   initialView,
+  historySnapshot,
+  initialAction,
   onViewChange,
   onClearMessageFocus,
   engines,
@@ -140,6 +142,8 @@ export function ConversationView({
   conversationId: string;
   focusMessageId?: string;
   initialView?: ConversationDetailView;
+  historySnapshot: React.MutableRefObject<ConversationHistorySnapshot | undefined>;
+  initialAction?: ConversationHeaderAction;
   onViewChange?(view: ConversationDetailView): void;
   onClearMessageFocus(): void;
   engines: EngineDto[];
@@ -195,9 +199,11 @@ export function ConversationView({
     olderError,
     operationalEvents,
     operationalLayoutKey,
+    readingAnchors,
+    restoringReadingPosition,
     setOlderCollaboration,
     setOlderMain,
-  } = useConversationHistory(conversationId, activeView, detailQuery);
+  } = useConversationHistory(conversationId, activeView, detailQuery, historySnapshot, focusMessageId);
   const notificationsQuery = useNotifications();
   const markCommunicationVisible = useConversationNotificationVisibility(
     queryClient,
@@ -211,6 +217,24 @@ export function ConversationView({
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [addAgentsOpen, setAddAgentsOpen] = useState(false);
   const [agentWorkRequested, setAgentWorkOpen] = useState(false);
+  const handleHeaderAction = (action: ConversationHeaderAction) => {
+    if (!conversation || auditOnly) return;
+    switch (action) {
+      case "settings": setContextSettingsOpen(true); break;
+      case "work": setAgentWorkOpen(true); break;
+      case "rename": setRenameValue(conversation.title); setRenameOpen(true); break;
+      case "addAgents": setAddAgentsOpen(true); break;
+      case "archive": setArchiveOpen(true); break;
+      case "delete": setDeleteOpen(true); break;
+      case "browser": onOpenProjectBrowser(); break;
+    }
+  };
+  const continuedAction = useRef<ConversationHeaderAction>();
+  useEffect(() => {
+    if (!initialAction || !conversation || continuedAction.current === initialAction) return;
+    continuedAction.current = initialAction;
+    handleHeaderAction(initialAction);
+  }, [conversation, initialAction]);
   const agentWorkOpen = agentWorkRequested && !auditOnly;
   const collaborationVisited = useRef(activeView === "collaboration");
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
@@ -906,19 +930,13 @@ export function ConversationView({
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
-        onChatSettings={() => setContextSettingsOpen(true)}
         projectLabel={project?.label}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
-        onOpenProjectBrowser={onOpenProjectBrowser}
-        setAgentWorkOpen={setAgentWorkOpen}
-        setRenameValue={setRenameValue}
-        setRenameOpen={setRenameOpen}
-        setAddAgentsOpen={setAddAgentsOpen}
-        setDeleteOpen={setDeleteOpen}
-        setArchiveOpen={setArchiveOpen}
+        onAction={handleHeaderAction}
         setActiveView={next => {
+          setAgentWorkOpen(false);
           setActiveView(next);
           onViewChange?.(next);
         }}
@@ -971,20 +989,21 @@ export function ConversationView({
             outgoingInTimeline
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
             layout="project"
-            layoutKey={`main:${visibleMessageLayoutKey}`}
+            layoutKey={`main:${!agentWorkOpen && activeView === "main"}:${visibleMessageLayoutKey}`}
             label="Chat Messages"
             initialTranscript={{ rowIds: visibleMainTimeline.map(entry => entry.id), reveal: Boolean(focusMessageId || agentWorkOpen || activeView !== "main") }}
             follow={{
               kind: "latest",
-              storageKey: chatStateKey(
-                "scroll",
-                `conversation.${conversationId}.main`,
-              ),
+              storageKey: conversationScrollKey(conversationId, "main"),
+              readingPosition: {
+                anchor: focusMessageId ? undefined : readingAnchors.main,
+                loading: activeView === "main" && restoringReadingPosition,
+              },
             }}
             history={{
               kind: "cursor",
               hasEarlier: mainHistory.hasMore,
-              loading: loadingOlder,
+              loading: loadingOlder || (restoringReadingPosition && !olderError),
               onLoadEarlier: () => void loadOlderHistory(),
             }}
             beforeMessages={
@@ -1071,21 +1090,22 @@ export function ConversationView({
           >
             <ChatSurface
               layout="project"
-              layoutKey={`collaboration:${collaborationLayoutKey}:${operationalLayoutKey}`}
+              layoutKey={`collaboration:${!agentWorkOpen && activeView === "collaboration"}:${collaborationLayoutKey}:${operationalLayoutKey}`}
               label="Team Chat Messages"
               follow={{
                 kind: "latest",
-                storageKey: chatStateKey(
-                  "scroll",
-                  `conversation.${conversationId}.collaboration`,
-                ),
+                storageKey: conversationScrollKey(conversationId, "collaboration"),
+                readingPosition: {
+                  anchor: focusMessageId ? undefined : readingAnchors.collaboration,
+                  loading: activeView === "collaboration" && restoringReadingPosition,
+                },
               }}
               history={{
                 kind: "cursor",
                 hasEarlier:
                   collaborationHistory.hasMore ||
                   collaborationHistory.operationHasMore,
-                loading: loadingOlder,
+                loading: loadingOlder || (restoringReadingPosition && !olderError),
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
               beforeMessages={<>

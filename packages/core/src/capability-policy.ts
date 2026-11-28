@@ -49,6 +49,7 @@ export interface CapabilityCatalogEntry extends CapabilityDescriptor {
   unavailableReason?: string;
   includedTools?: CapabilityTool[];
   toolDetailsReason?: string;
+  toolDetailsUnavailable?: boolean;
 }
 export interface CapabilityPolicyChange {
   revision: number;
@@ -66,7 +67,12 @@ export interface CapabilityPolicyResponse {
   policy: CapabilityPolicyRecord;
   effective: EffectiveCapabilityPolicy;
   catalog: CapabilityCatalogEntry[];
-  catalogNotice?: string;
+}
+
+export interface ConnectedToolsResponse {
+  catalog: CapabilityCatalogEntry[];
+  selectionLimited?: boolean;
+  discoveryFailed?: boolean;
 }
 
 export interface RuntimeCapabilityRestrictions {

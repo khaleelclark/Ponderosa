@@ -441,13 +441,15 @@ export function projectProviderCapabilities(value: unknown): EngineCapabilities 
   try {
     const record = dataRecord(value, [
       "steering", "persistentSessions", "sessionId", "selectedModel", "model",
-      "catalogVersion", "modelCatalog", "commands", "mcpServers", "composerCapabilities",
+      "catalogVersion", "modelCatalog", "commands", "mcpServers", "composerCapabilities", "mcpInventoryIncomplete",
     ], "capabilities", budget, 0);
     const sessionId = optionalIdentifierString(record, "sessionId", "capabilities", budget, 1);
     const selectedModel = optionalString(record, "selectedModel", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
     const activeModel = optionalString(record, "model", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
     const catalogVersion = optionalString(record, "catalogVersion", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
+    const mcpInventoryIncomplete = optionalBoolean(record, "mcpInventoryIncomplete", "capabilities", budget, 1);
     return {
+      ...(mcpInventoryIncomplete === undefined ? {} : {mcpInventoryIncomplete}),
       steering: requiredBoolean(record, "steering", "capabilities", budget, 1),
       persistentSessions: requiredBoolean(record, "persistentSessions", "capabilities", budget, 1),
       ...(sessionId === undefined ? {} : { sessionId }),

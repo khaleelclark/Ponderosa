@@ -23,6 +23,27 @@ function forkGraph(mode='all',remainder='finish') {
 }
 function runTwo(f) {f.branches.advance();return [f.branches.claimScript('worker'),f.branches.claimScript('worker')]}
 
+test('condition route labels are normalized and retained in the published definition',t=>{
+ const condition={id:'choose',kind:'condition',predicate:{source:'input',equals:'input'},otherwise:'b',
+  matchLabel:'  Source-only receipt  ',otherwiseLabel:'Full audit'};
+ const f=fixture(t,{entry:'choose',steps:[script('a'),script('b')],controls:[condition],
+  edges:[edge('matched','choose','a','selected'),edge('fallback','choose','b','failure')]},{accept:false});
+ f.reopen();
+ const read=versionId=>f.branches.version(f.branch.id,versionId).definition;
+ const first=read(f.branch.versionId);
+ assert.deepEqual(first.controls,[{...condition,matchLabel:'Source-only receipt'}]);
+ const publish=otherwiseLabel=>f.branches.deploy({branchId:f.branch.id,chatId:f.chat.id,expectedVersionId:f.branch.versionId,
+  idempotencyKey:'edit-label',definition:{...first,controls:[{...first.controls[0],otherwiseLabel}]},
+  bindings:{agents:{worker:f.agent.id},directories:{root:f.dir}}});
+ assert.throws(()=>publish(42),/Branch text must be a string/);
+ const {versionId}=publish('   ');
+ f.reopen();
+ const saved=read(versionId);
+ assert.equal(saved.controls[0].matchLabel,'Source-only receipt');
+ assert.ok(!Object.hasOwn(saved.controls[0],'otherwiseLabel'));
+ assert.deepEqual(saved.edges,first.edges);
+});
+
 function wideForkGraph(count,{condition=false}={}) {
  const steps=Array.from({length:count},(_,i)=>script(`s${i}`));
  const armIds=steps.map((_,i)=>`arm${i}`);

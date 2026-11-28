@@ -87,7 +87,7 @@ for (const extra of [0, 1]) test(`aggregate output budget accepts its boundary a
   assert.equal(rpc.isAlive(), false);
 });
 
-for (const flood of ['none', 'large-valid', 'before-initialize', 'after-initialize', 'many-small']) test(`discovery bounds retained output and reports overflow: ${flood}`, { timeout: 15_000 }, async () => {
+for (const flood of ['none', 'mcp-refused', 'mcp-partial', 'large-valid', 'before-initialize', 'after-initialize', 'many-small']) test(`discovery projects inventory status and bounds retained output: ${flood}`, { timeout: 15_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-discovery-'));
   const handles = [];
   try {
@@ -99,16 +99,34 @@ for (const flood of ['none', 'large-valid', 'before-initialize', 'after-initiali
       const flood=()=>{const count=mode==='many-small'?9216:mode==='large-valid'?1:9;const size=mode==='many-small'?1024:mode==='large-valid'?3*1024*1024:1024*1024;for(let i=0;i<count;i++)process.stdout.write(JSON.stringify({method:'fixture',params:'x'.repeat(size)})+'\\n');};
       require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
         const m=JSON.parse(line);if(m.id===undefined)return;seen.push([m.method,m.params?.cursor]);fs.writeFileSync('requests.json',JSON.stringify(seen));
-        if(!flooded&&(${JSON.stringify(flood)}==='before-initialize'||(['after-initialize','many-small','large-valid'].includes(mode)&&m.method!=='initialize'))){flooded=true;flood();}
-        const result=m.method==='model/list'&&!m.params?.cursor?{data:[],nextCursor:'page-2'}:{data:[],nextCursor:null};
+        if(!flooded&&(mode==='before-initialize'||(['after-initialize','many-small','large-valid'].includes(mode)&&m.method!=='initialize'))){flooded=true;flood();}
+        if(mode==='mcp-refused'&&m.method==='mcpServerStatus/list'){console.log(JSON.stringify({id:m.id,error:{code:-32000,message:'Fixture inventory unavailable'}}));return;}
+        const result=m.method==='mcpServerStatus/list'&&mode==='mcp-partial'?{data:[
+          {name:'calendar',runtimeStatus:'authenticationRequired',toolsError:'Lookup failed'},
+          {name:'mail',toolsError:'Lookup failed'},
+          {name:'files',tools:{lookup_updated:{}}},
+          {name:'records',runtimeStatus:'connected',toolsError:'Lookup failed'},
+        ],nextCursor:null}
+          :m.method==='model/list'&&!m.params?.cursor?{data:[],nextCursor:'page-2'}:{data:[],nextCursor:null};
         console.log(JSON.stringify({id:m.id,result}));
       });
     `);
     const operation = discoverCodexAppServerCapabilities({ bin: process.execPath, cwd: root, sandboxMode: 'read-only',
       signal: new AbortController().signal, killGraceMs: 50, configuredMcps: [], timeoutMs: 10_000,
       onRuntimeSpawned: handle => handles.push(handle) });
-    if (flood === 'none' || flood === 'large-valid') {
-      await operation;
+    if (['none', 'mcp-refused', 'mcp-partial', 'large-valid'].includes(flood)) {
+      const capabilities = await operation;
+      assert.equal(capabilities.mcpInventoryIncomplete, flood.startsWith('mcp-') ? true : undefined);
+      if (flood==='mcp-partial') {
+        const servers=new Map(capabilities.mcpServers.map(server=>[server.name,server]));
+        assert.equal(servers.get('calendar').usable,false);
+        assert.equal(servers.get('calendar').initialization,'failed');
+        assert.equal(servers.get('mail').initialization,'not_initialized');
+        assert.equal(servers.get('mail').toolsDiscovered,false);
+        assert.equal(servers.get('records').usable,true);
+        assert.equal(servers.get('records').toolsDiscovered,false);
+        assert.deepEqual(servers.get('files').tools,[{name:'lookup_updated'}]);
+      }
       assert.ok(JSON.parse(readFileSync(path.join(root, 'requests.json'), 'utf8')).some(([method,cursor]) => method === 'model/list' && cursor === 'page-2'));
     } else {
       await assert.rejects(operation, /aggregate limit/);

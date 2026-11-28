@@ -296,13 +296,15 @@ select {
 
 /* Raw controls do not pass through MUI's focus-visible class. Keep their
    keyboard focus distinct on both dark and light surfaces. */
-button:focus-visible,
+:root:not([data-pointer-focus]) button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: 2px solid var(--ponderosa-focus-ring);
   outline-offset: 2px;
 }
+
+:root[data-pointer-focus] button:focus { outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   *,

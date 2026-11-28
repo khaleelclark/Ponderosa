@@ -105,7 +105,7 @@ export function CreateWorkspace({
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onCancel(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route): boolean | void;
 }): JSX.Element {
   if (route.resource === "chat") return <CreateFormContent
     route={route} projects={projects} projectsLoaded={projectsLoaded} projectsError={projectsError} onRetryProjects={onRetryProjects} engines={engines} enginesLoaded={enginesLoaded}
@@ -157,7 +157,7 @@ function CreateFormContent({
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onCancel(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route): boolean | void;
   onDirty?(): void;
   onPendingChange?(pending: boolean): void;
   onSubmitted?(): void;
@@ -178,10 +178,10 @@ function CreateFormContent({
       engines={engines}
       enginesLoaded={enginesLoaded}
       preferences={preferences}
-      onCreated={(projectId, conversationId) => {
+      onCreated={(projectId, conversationId, continuation) => {
         refresh("conversation");
         refresh("project");
-        onNavigate({ kind: "conversation", projectId, conversationId });
+        return onNavigate({ kind: "conversation", projectId, conversationId, ...continuation });
       }}
     />
   ) : !projectsLoaded ? (
@@ -242,7 +242,7 @@ export function ContextualCreateDialog({
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onClose(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route): boolean | void;
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));

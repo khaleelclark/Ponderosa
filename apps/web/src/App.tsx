@@ -288,6 +288,7 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchInitial, setGlobalSearchInitial] = useState<{ query: string; scope: "chats" }>();
   const overlayReturnFocus = useRef<HTMLElement>();
+  const mobileNavReturnFocus = useRef<HTMLElement>();
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
@@ -323,20 +324,18 @@ export default function App({
     setNotificationPanelOpen(false);
     restoreOverlayTrigger();
   };
-  const setMobileNavigationOpen = (open: boolean) => {
-    if (open) rememberOverlayTrigger();
+  const setMobileNavigationOpen = (open: boolean, opener?: HTMLElement) => {
+    if (open) mobileNavReturnFocus.current = opener;
     setMobileNavOpen(open);
-    if (!open) restoreOverlayTrigger();
+  };
+  const restoreMobileNavigationTrigger = () => {
+    const opener = mobileNavReturnFocus.current;
+    mobileNavReturnFocus.current = undefined;
+    restoreOverlayFocus(opener);
   };
   useEffect(() => {
     if (mobileWorkspace || !mobileNavOpen) return;
-    const drawerTrigger = overlayReturnFocus.current;
-    overlayReturnFocus.current = undefined;
     setMobileNavOpen(false);
-    // Let the Drawer transition release its focus trap before moving focus to
-    // the equivalent desktop navigation control.
-    const focusTimer = window.setTimeout(() => restoreOverlayFocus(drawerTrigger), 400);
-    return () => window.clearTimeout(focusTimer);
   }, [mobileWorkspace]);
   useEffect(() => {
     let stopped = false;
@@ -626,9 +625,9 @@ export default function App({
     >
       <MobileNavigationProvider
         desktopVisible={!mobileWorkspace && sidebarPresentation.collapsed}
-        onOpen={() => {
+        onOpen={opener => {
           if (mobileWorkspace) {
-            setMobileNavigationOpen(true);
+            setMobileNavigationOpen(true, opener);
             return;
           }
           setSidebarPresentation(current => ({ ...current, collapsed: false }));
@@ -762,7 +761,7 @@ export default function App({
                   {route.kind !== "assistant" && <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />}
                   <ChatCreationRecovery key={JSON.stringify(route)}
                     activeCreationKey={route.kind === "create" && route.resource === "chat" ? route.creationKey : undefined}
-                    onCreated={(projectId, conversationId) => navigateWorkspace({ kind: "conversation", projectId, conversationId })} />
+                    onCreated={(projectId, conversationId, continuation) => navigateWorkspace({ kind: "conversation", projectId, conversationId, ...continuation })} />
                 </>}
                 preferredProvider={defaultUsageProvider}
                 onOpenProviderSettings={() =>
@@ -869,6 +868,7 @@ export default function App({
           notifications={presentedNotifications}
           notificationCounts={notificationsQuery.data}
           onOpenChange={setMobileNavigationOpen}
+          onFocusReturn={restoreMobileNavigationTrigger}
           onNavigate={navigateWorkspace}
           onCreate={openCreationForm}
           onPreferences={savePreferences}

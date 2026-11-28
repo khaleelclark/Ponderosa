@@ -26,6 +26,8 @@ export type ConversationDetailView =
   | "collaboration"
   | "files"
   | "agents";
+export const conversationHeaderActions = ["settings", "work", "rename", "addAgents", "archive", "delete", "browser"] as const;
+export type ConversationHeaderAction = (typeof conversationHeaderActions)[number];
 export type CreateResourceKind = "chat" | "agent";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "artifacts", "settings", "technical"];
@@ -45,6 +47,11 @@ export function isConversationDetailView(
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
+}
+
+export interface AgentChatReturn {
+  conversationId: string;
+  view: ConversationDetailView;
 }
 
 export type Route =
@@ -67,8 +74,8 @@ export type Route =
   | { kind: "workspaceFile"; projectId: string; path: string; agentId?: string; conversationId?: string; returnTo?: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; urlDriven?: boolean }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; initialAction?: ConversationHeaderAction; urlDriven?: boolean }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; chatReturn?: AgentChatReturn; urlDriven?: boolean }
   | { kind: "review"; projectId: string; agentId: string; path?: string; executionId?: string; returnTo?: string };
 
 function decodeRouteSegment(value: string): string | undefined {
@@ -188,8 +195,12 @@ function parseRoutePath(pathname: string, search = ""): Route {
   if (parts[2] === "agents" && parts[3]) {
     const agentId = decodeRouteSegment(parts[3]);
     if (!agentId) return { kind: "home" };
+    const returnChatId = query.get("returnChat");
+    const returnView = query.get("returnView");
     return {
       kind: "agent", projectId, agentId, urlDriven: true,
+      ...(returnChatId && isConversationDetailView(returnView)
+        ? { chatReturn: { conversationId: returnChatId, view: returnView } } : {}),
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),

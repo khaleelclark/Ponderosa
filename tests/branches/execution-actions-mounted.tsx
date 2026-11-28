@@ -32,7 +32,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(method==='GET','Only controlled projection reads are allowed');gets.push(url.pathname);
   if(url.pathname==='/api/decisions'){assert(url.searchParams.get('id')===decision.id,'Exact canonical Decision read');return json([decision]);}
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
-  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',revision:detail.execution.revision,state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions')){
    const response={executionId:mode==='wrong-id'?'foreign-run':'race-run',revision,generation:'generation-'+revision,items:terminal?[]:items};
    if(mode==='503')return json({error:'Actions service temporarily unavailable'},503);
@@ -47,8 +47,9 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
  const gateInput=()=>host.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
  const refresh=()=>client.invalidateQueries({queryKey:actionsKey,exact:true});
  try{
-  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled&&host.textContent?.includes('1 waiting for review')),'Initial actions did not load');
-  assert(host.textContent?.includes('Approval Requested')&&host.textContent.includes('1 waiting for review'),'Fresh Gate shows its actual pending state');
+  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled),'Initial actions did not load');
+  assert(button('Approve')&&!host.textContent?.includes('1 waiting for review'),'Fresh Gate has one approval prompt');
+  assert(!/0 (steps? completed|running|retrying)/i.test(host.textContent??''),'Run progress shows only nonzero counts');
   const proposal=gateInput();input(proposal,'Gate draft retained Ω');await until(()=>Boolean(button('Approve Edited Text')),'Gate edit not applied');
   button('Answer').click();await until(()=>Boolean(document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])')),'Decision dialog missing');
   const answer=document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
@@ -60,13 +61,13 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(proposal===gateInput()&&proposal.value==='Gate draft retained Ω','Gate draft node and value retained');
   assert(answer.isConnected&&answer.value==='Separate Decision draft retained 🙂','Open shared Decision draft retained');
   assert(button('Approve Edited Text').disabled&&button('Retry Step').disabled,'Known stale Branch actions remain disabled');
-  assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Stale Gate stays mounted with a neutral heading');
-  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
+  assert(host.textContent?.includes('Refreshing Review…'),'Stale Gate stays mounted with a neutral heading');
+  assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
   assert(button('Refresh Run'),'Manual refresh remains available during synchronization');
   mode='ok';detail={...detail,execution:{...detail.execution,revision:2}};render();
   await until(()=>Boolean(!button('Retry Step').disabled&&!host.textContent?.includes('Refreshing Run actions')),'Matching revisions did not converge');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&answer.value==='Separate Decision draft retained 🙂','Convergence cannot replace dirty forms');
-  assert(host.textContent?.includes('Approval Requested')&&host.textContent.includes('1 waiting for review'),'Fresh convergence restores the actual approval heading and count');
+  assert(!button('Approve Edited Text').disabled&&!host.textContent?.includes('Refreshing Review…'),'Fresh convergence restores the approval action');
   for(const failure of ['503','wrong-id','malformed'] as const){
    mode=failure;await refresh();await until(()=>Boolean(host.textContent?.includes('Decisions and failures could not refresh')),'Real '+failure+' failure must remain visible');
    assert(button('Refresh Run'),'Real failure keeps manual recovery');
@@ -84,10 +85,10 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   await client.invalidateQueries({queryKey:['branch-execution-operations','race-run'],exact:true});
   await until(()=>Boolean(host.textContent?.includes('Completed')),'Terminal operations header did not arrive');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&proposal.disabled,'Terminal refresh retains the same disabled dirty Gate');
-  assert(host.textContent?.includes('Refreshing Review…')&&!host.textContent.includes('Approval Requested'),'Terminal header never coexists with a stale approval request');
-  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral review-count cue');
+  assert(host.textContent?.includes('Refreshing Review…'),'Terminal header never coexists with a stale approval request');
+  assert(host.textContent?.includes('Refreshing Run actions')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral refresh cue');
   mode='ok';release!();await until(()=>!host.textContent?.includes('Refreshing Run actions'),'Terminal actions did not converge');
-  assert(!gateInput()&&!host.textContent?.includes('Approval Requested'),'Only the fresh empty action page removes the settled Gate');
+  assert(!gateInput()&&!button('Approve Edited Text'),'Only the fresh empty action page removes the settled Gate');
   assert(posts.length===0,'Read synchronization and recovery cannot replay any POST');
   assert(gets.filter(url=>url.endsWith('/actions')).length>=6,'Exercise actual action reads across success, delay and real failures');
  }finally{
@@ -112,16 +113,18 @@ export async function executionSkipWithoutReasonRegression():Promise<void>{
   }
   assert(!/checkpoint|disclosure|issued-destinations|resource-group/.test(url.pathname),'Advanced review reads stay closed: '+url.pathname);
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
-  if(url.pathname.endsWith('/operations'))return json({executionId:'skip-run',state:'running',label:'Running',observedAt:detail.execution.updatedAt,counts:{completed:0,running:1,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/operations'))return json({executionId:'skip-run',revision:detail.execution.revision,state:'running',label:'Running',observedAt:detail.execution.updatedAt,counts:{completed:0,running:1,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions'))return json({executionId:'skip-run',revision:4,generation:'generation-4',items:[]});
   throw Error('Unexpected projection read '+url.pathname);
  };
  const button=(text:string,scope:ParentNode=document)=>Array.from(scope.querySelectorAll('button')).find(node=>node.textContent===text) as HTMLButtonElement|undefined;
  try{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ExecutionPanel detail={detail} viewStates={new Map()}/></MutationNotificationProvider></QueryClientProvider>);
-  await until(()=>Boolean(button('Skip Run',host)&&!button('Skip Run',host)!.disabled),'Skip Run did not become available');
+  await until(()=>Boolean(button('Run actions',host)),'Run actions did not become available');
   assert(!button('Review Saved Work')&&!button('Review Resource Group'),'Advanced reviews are not mounted outside Technical Details');
-  button('Skip Run',host)!.click();
+  button('Run actions',host)!.click();
+  const skip=()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item=>item.textContent==='Skip Run');
+  await until(()=>Boolean(skip()),'Run actions contains Skip Run');skip()!.click();
   await until(()=>Boolean(document.querySelector('[role="dialog"]')),'Skip confirmation did not open');
   const dialog=document.querySelector('[role="dialog"]')!;
   assert(!dialog.querySelector('textarea:not([aria-hidden="true"])'),'Skip asks for no reason');
@@ -135,7 +138,10 @@ export async function executionSkipWithoutReasonRegression():Promise<void>{
   assert(JSON.stringify(first!.body)===JSON.stringify(second!.body),'Retry resends the identical idempotent command');
   assert(host.textContent?.includes('Running'),'Skip request alone never presents Skipped before the Engine drains work');
   (Array.from(host.querySelectorAll('summary')).find(node=>node.textContent?.startsWith('Technical Details')) as HTMLElement).click();
-  await until(()=>Boolean(button('Review Saved Work')&&button('Review Resource Group')),'Technical Details did not reveal advanced reviews');
+  await until(()=>Boolean(button('Recovery options')),'Technical Details did not reveal recovery options');
+  assert(!button('Review Saved Work')&&!button('Review Resource Group'),'Recovery launchers start collapsed');
+  button('Recovery options')!.click();
+  await until(()=>Boolean(button('Review Saved Work')&&button('Review Resource Group')),'Recovery options did not reveal advanced reviews');
  }finally{
   root.unmount();await client.cancelQueries();client.clear();host.remove();globalThis.fetch=original;
  }

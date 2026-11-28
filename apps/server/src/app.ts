@@ -283,7 +283,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const activeContextRecoveries=new Map<string,import("./routes/provider-commands.js").ContextRecoveryOperation>();
   const contextRecoveryMaintenance={reconcile:async()=>{},recovering:(_agentId:string)=>false};
   const contextRecoveryActivity=(agentId:string):"running"|"cleanup_pending"|"idle"=>{const operation=activeContextRecoveries.get(agentId);if(!operation)return contextRecoveryMaintenance.recovering(agentId)?'running':'idle';
-    if(operation.phase==='cleanup_pending'&&(coordinationV3.contextRecovery.active(agentId)?.progress?.maintenanceAttempts??0)>=3)return 'idle';
+    if(operation.phase==='cleanup_pending'&&!operation.stopped&&(coordinationV3.contextRecovery.active(agentId)?.progress?.maintenanceAttempts??0)>=3)return 'idle';
     return operation.phase==='cleanup_pending'?'cleanup_pending':'running';};
   const contextRecoveryRunning=(agentId:string)=>contextRecoveryActivity(agentId)!=='idle';
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
@@ -294,6 +294,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   store.recoverInterruptedExecutions();
   let closed = false;
   const diagnosticOperations = new Set<Promise<unknown>>();
+  const runningAuthRefreshes = new Map<string, string>();
   const engines = new Map(opts.engines.map((engine) => {
     const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => (options?: import("@ponderosa/core").EngineProbeOptions): Promise<T> => {
       if (closed) return Promise.reject(new Error("Server is shutting down"));
@@ -302,11 +303,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         await providerProcessAuthority.terminatePurpose(purpose);
         if (closed) throw new Error("Server is shutting down");
         try {
-          return await probe({ ...options, onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
-            providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+          return await probe({ ...options, onRuntimeTeardown: () => runningAuthRefreshes.delete(engine.adapter.id), onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
+            const receipt = providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+            if (receipt && kind === "authentication" && options?.proactiveAuthRefresh) runningAuthRefreshes.set(engine.adapter.id, receipt);
             if (closed) throw new Error("Server is shutting down");
           } });
         } finally {
+          if (kind === "authentication") runningAuthRefreshes.delete(engine.adapter.id);
           // A probe admitted before shutdown may register its native child after
           // an await. Keep storage/cleanup authority until that probe settles.
           if (closed) await providerProcessAuthority.terminatePurpose(purpose);
@@ -877,6 +880,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeAdmissionBlocker,
     validateEngineModel,
   } = createEngineControlPlane({
+    runningAuthRefreshes,
     resourceAdmission,
     engines,
     store,
@@ -942,6 +946,11 @@ app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     workflowOperations:{
       tick:async admit=>{
+        const codex = engines.get("codex");
+        if (admit && codex?.authStatus && providerEnabled("codex") && codex.isInstalled?.() !== false
+          && resourceAdmission?.snapshot(activeRuns.size).state !== "held") {
+          engineAuthStatuses.refreshBeforeExpiry("codex", () => codex.authStatus!({ proactiveAuthRefresh: true }));
+        }
         if(sourceAdmission!==admit){await branchSources?.refresh();sourceAdmission=admit;}
         await branchScripts?.tick(admit);
       },
@@ -969,6 +978,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     resolveOperationalNotification,
     cachedModelOptions,
     runtimeStatus,
+    runtimeAdmissionBlocker,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     coordinationV3WorkerId,

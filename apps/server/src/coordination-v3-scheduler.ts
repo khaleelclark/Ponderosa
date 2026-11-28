@@ -167,6 +167,7 @@ export class CoordinationV3Scheduler {
       blockedAgentIds?: () => readonly string[] | Promise<readonly string[]>;
       /** Preflight exactly the candidate that the subsequent claim may lease. */
       prepareRunAdmission?: (excludedAgentIds:readonly string[]) => Promise<string|null>;
+      revalidateRunAdmission?: (activationId:string) => boolean;
       workflowOperations?: WorkflowOperations;
       onPassError?: (error: unknown) => void;
       onPassHealthChanged?: (healthy: boolean) => void;
@@ -337,6 +338,7 @@ export class CoordinationV3Scheduler {
         const expectedActivationId = this.options.prepareRunAdmission
           ? await this.options.prepareRunAdmission(excludedAgentIds ?? []) : undefined;
         if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
+        if (expectedActivationId && this.options.revalidateRunAdmission?.(expectedActivationId) === false) break;
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,

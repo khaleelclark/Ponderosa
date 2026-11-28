@@ -44,6 +44,7 @@ function budgetOwner(){
   if(name==='../../api/real')return {requestJson:async(path,init)=>{writes.push({path,...init,body:JSON.parse(init.body)});if(scope.failure)throw scope.failure;return scope.response??{...scope.query.data,revision:scope.query.data.revision+1,policy:writes.at(-1).body.policy??scope.query.data.policy}}};
   if(name==='../MutationNotifications')return {useMutationNotification:()=>notice=>notices.push(notice),MutationErrorDetails:'MutationErrorDetails'};
   if(name==='./BranchNavigation')return {useBranchDraftGuard:(id,dirty)=>guards.set(id,dirty)};
+  if(name==='./ExecutionControlHelp')return {ExecutionControlHelp:'ExecutionControlHelp'};
   if(name==='./budgetPresentation')return presentation.exports;
   throw Error(name);
  }});
@@ -127,7 +128,7 @@ test('Settings groups existing independent execution owners while preserving por
  client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
  const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(BranchSettings,{branch,definition:{parameters:{note:{type:'text'}}},active:false,executionSettings:React.createElement('p',null,'Portable definition policy editor')}))));
  assert.match(html,/aria-label="Execution Controls" id="branch-execution-controls" tabindex="-1"/);
- const labels=['Execution Controls','Automatic Execution Budget','Advanced local execution limits','Portable definition policy editor','Branch Capabilities','Dependencies','Delete Workflow'];
+ const labels=['Execution Controls','Automatic Execution Budget','Advanced execution settings','Portable definition policy editor','Tool permissions','Dependencies','Delete Workflow'];
  assert.ok(labels.every(label=>html.includes(label)));assert.deepEqual(labels.map(label=>html.indexOf(label)),labels.map(label=>html.indexOf(label)).sort((a,b)=>a-b));
  assert.equal((html.match(/Automatic Execution Budget/g)??[]).length,1);
  assert.equal(client.getQueryCache().find({queryKey:['branch-execution-budget',branch.id]}).options.refetchInterval,false,'Hidden Settings does not keep budget polling active');

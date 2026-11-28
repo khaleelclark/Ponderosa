@@ -6,7 +6,7 @@ import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
-import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,describeBranchDeletionFailure,type BranchInstallationService} from '../branch-installation-service.js';
+import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,describeBranchDeletionFailure,BranchImportFolderError,type BranchInstallationService} from '../branch-installation-service.js';
 import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
@@ -15,7 +15,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { branchDeletionErrorResourceId, readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type CoordinationV3Store, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
-import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type CreateBranchRequest, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {readPublishedBranchResult} from '../branch-result-publication.js';
@@ -147,7 +147,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     const row=store.sqlite.prepare('SELECT configuration_revision revision FROM branches WHERE id=?').get(id) as {revision:number};
     return {...row,configuration,secretStatus:Object.fromEntries(Object.keys(secretBindings??{}).map(key=>[key,'configured']))};
   };
-  function validateLocal(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration){
+  function validateLocal(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration,allowPackagedOnce=false){
     input={...input,definition:validateBranchDefinition(input.definition)};
     input.bindings=validateBranchBindings(input.bindings,input.definition);
     if(input.chatId)throw new Error('Branch ownership is independent of a working Chat');
@@ -176,6 +176,17 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
         const parsed = triggerSourceConfig(input.definition.trigger.kind, resolveBranchParameterReferences(local.sourceConfig,input.definition,configuration));
         const current = input.branchId ? branches.trigger(input.branchId) : undefined;
         const previous = input.branchId ? branches.localConfiguration(input.branchId)?.triggers?.[input.definition.trigger.configRef] : undefined;
+        if(input.definition.trigger.kind==='schedule'&&'scheduleKind'in parsed&&parsed.scheduleKind==='once'){
+          const saved=current?.sourceConfig;
+          if(current?.sourceKind!=='schedule'||!saved||!('scheduleKind'in saved)||saved.scheduleKind!=='once'||Date.parse(saved.at)!==Date.parse(parsed.at)){
+            if(allowPackagedOnce){
+              const normalized=normalizeTriggerSourceConfig('schedule',parsed);
+              return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:true};
+            }
+            throw new BranchValidationError('Choose Start manually or a recurring schedule before publishing.',{section:'settings',field:'trigger'});
+          }
+          return {sourceConfig:saved,nextFireAt:current.nextFireAt,resetSchedule:false,enabledOverride:local.enabled&&current.enabled};
+        }
         const same = current?.sourceKind === input.definition.trigger.kind && previous && stableJson(previous.sourceConfig) === stableJson(local.sourceConfig) && stableJson(current.sourceConfig)===stableJson(parsed);
         const cadence=(value:import('@ponderosa/core').TriggerSourceConfig)=>{const {whenRunning,...timing}=value as import('@ponderosa/core').TriggerSourceConfig & {whenRunning?:string};return timing};
         const sameCadence=current?.sourceKind==='schedule'&&input.definition.trigger.kind==='schedule'&&previous&&
@@ -185,7 +196,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current!.enabled:false}:{})};
   }
   context.installations.setPublisher((input,configuration)=>{
-    const trigger=validateLocal(input,configuration);
+    const trigger=validateLocal(input,configuration,true);
     return branches.deploy(input,new Date().toISOString(),trigger,configuration);
   },()=>sources.refresh());
   // Provision metadata on first server start, even before the Assistant page is opened.
@@ -257,7 +268,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;treeBindings?:Record<string,import('@ponderosa/core').BranchBindings>}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
-    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection,request.body.fileSelections,request.body.treeBindings)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection,request.body.fileSelections,request.body.treeBindings)}catch(error){return reply.code(400).send({error:(error as Error).message,...(error instanceof BranchImportFolderError?{folderIssue:error.issue}:{})})}
   });
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/role-review',async(request,reply)=>{try{return context.installations.reviewPublishedRoles(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}});
   app.post<{Params:{id:string};Body?:{acknowledgeFullImport?:boolean;acknowledgeMemoryUpdate?:boolean;outputRoleReviewId?:string;acknowledgeRuntimeDataSha256?:string;acknowledgeDefinitionTreeSha256?:string}}>('/api/branches/installations/:id/confirm',async(request,reply)=>{
@@ -300,8 +311,23 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     try{return await exportPackage(request.params.id,{mode:request.query.mode,includeValues:request.query.includeValues==='true',fileSelections:request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined},reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}
   });
 
-  app.post<{Body:{name:string;idempotencyKey:string}}>('/api/branches',async(request,reply)=>{
-    try{return branches.create(request.body.name,request.body.idempotencyKey)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+  app.post<{Body:CreateBranchRequest}>('/api/branches',async(request,reply)=>{
+    try {
+      if(request.body.example===undefined)return branches.create(request.body.name,request.body.idempotencyKey);
+      if(request.body.example!=='approval')throw new Error('Choose an available workflow example.');
+      const definition:DeployBranchRequest['definition']={
+        schema:'ponderosa.branch.v1',name:'Approve a sample request',trigger:{kind:'manual'},entry:'approve',
+        steps:[{id:'approve',kind:'human_gate',label:'Review sample request',prompt:'Approve this sample request to finish the workflow.',choices:['Sample request approved'],editable:false}],
+        controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}},
+      };
+      const result=branches.unitTransaction(()=>{
+        const branch=branches.create(definition.name,request.body.idempotencyKey);
+        const input:DeployBranchRequest={branchId:branch.id,chatId:'',expectedVersionId:'',idempotencyKey:`sample-approval:${branch.id}`,definition,bindings:{agents:{},directories:{}}};
+        return branches.deploymentReplay(input)??branches.deploy(input,new Date().toISOString(),validateLocal(input));
+      }).immediate();
+      notify();
+      return result;
+    }catch(error){return reply.code(400).send({error:(error as Error).message})}
   });
   app.post<{Params:{id:string};Body:import('@ponderosa/core').CreateProjectRequest}>('/api/branches/:id/chats',async(request,reply)=>{
     try{
@@ -508,8 +534,16 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   });
   app.post<{ Body: DeployBranchRequest }>('/api/branches/preview', async (request, reply) => {
     try {
-      validateLocal(request.body);
-      return branches.preview(request.body);
+      const input=request.body,projected=validateLocal(input),preview=branches.preview(input);
+      const live=branches.trigger(input.branchId!);
+      const before=live?{sourceKind:live.sourceKind,sourceConfig:live.sourceConfig,enabled:live.enabled}:null;
+      const source=input.definition.trigger;
+      const after=source.kind!=='manual'&&projected?{sourceKind:source.kind,sourceConfig:projected.sourceConfig,enabled:projected.enabledOverride??input.bindings.triggers![source.configRef]!.enabled}:null;
+      if(stableJson(before)!==stableJson(after))return {...preview,triggerChange:{before,after}};
+      if(after?.sourceKind==='schedule'&&'scheduleKind' in after.sourceConfig&&after.sourceConfig.scheduleKind!=='once'){
+        return {...preview,unchangedScheduleEnabled:after.enabled};
+      }
+      return preview;
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview',...(error instanceof BranchValidationError?{issues:[error.issue]}:{})})}
   });
   app.post<{Body:unknown}>('/api/branches/import-preview',{
@@ -549,8 +583,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       return result;
     } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch deployment', ...(error instanceof BranchValidationError?{issues:[error.issue]}:{}) }); }
   });
-  app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string } }>('/api/branches/:id/executions', async (request, reply) => {
-    try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input); notify(); return execution; }
+  app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string; expectedVersionId?: string } }>('/api/branches/:id/executions', async (request, reply) => {
+    try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input, undefined, request.body.expectedVersionId); notify(); return execution; }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch input' }); }
   });
   app.post<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{
@@ -703,12 +737,69 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     try { const result = branches.intervene(request.params.id, request.body); notify(); return result; }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Intervention failed' }); }
   });
+  const savedResultPath='/api/branch-executions/:id/steps/:stepExecutionId/saved-result';
+  app.get<{Params:{id:string;stepExecutionId:string}}>(savedResultPath,(request)=>{
+    const {id,stepExecutionId}=request.params;
+    const saved=branches.savedResultCandidate(id,stepExecutionId);
+    if(!saved)return {available:false};
+    const {sourceRunId,text,outputHash}=saved;
+    return {available:true,sourceRunId,text,outputHash};
+  });
+  app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>(savedResultPath,(request,reply)=>{
+    try{
+      const input=validatedObject(request.body,'Saved result review');
+      exactObjectFields(input,['commandKey','expectedRevision','sourceRunId','outputHash','disposition'],'Saved result review');
+      const {commandKey,expectedRevision,sourceRunId,outputHash,disposition}=input;
+      if(typeof commandKey!=='string'||typeof expectedRevision!=='number'||!Number.isSafeInteger(expectedRevision)||
+        typeof sourceRunId!=='string'||typeof outputHash!=='string'||!/^[0-9a-f]{64}$/.test(outputHash)||
+        (disposition!=='completed'&&disposition!=='blocked'))throw Error('Invalid saved result review');
+      const result=branches.recoverSavedResult(request.params.id,request.params.stepExecutionId,
+        {commandKey,expectedRevision,sourceRunId,outputHash,disposition});
+      notify();
+      return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Could not record the saved result'});}
+  });
+  app.post<{Params:{id:string;stepExecutionId:string};Body:unknown}>('/api/branch-executions/:id/steps/:stepExecutionId/retry-context', (request,reply)=>{
+    try{
+      const input=validatedObject(request.body,'Step recovery');
+      exactObjectFields(input,['requestId','activationId','expectedRevision','commandKey','expectedHold'],'Step recovery');
+      const {requestId,activationId,expectedRevision,commandKey,expectedHold}=input;
+      if(typeof requestId!=='string'||typeof activationId!=='string'||!Number.isSafeInteger(expectedRevision)
+        ||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200
+        ||expectedHold!==undefined&&(typeof expectedHold!=='string'||!expectedHold||expectedHold.length>200))throw Error('Invalid step recovery');
+      const result=store.sqlite.transaction(()=>{
+        const target=store.sqlite.prepare(`SELECT r.project_id,
+          e.revision=? AND e.cancel_requested=0 AND e.state IN ('queued','running','waiting')
+            AND s.state='waiting' AND a.state='waiting' AND a.cancel_requested=0 AND p.step_execution_id=s.id
+            AND NOT EXISTS (SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number) AS eligible
+          FROM branch_step_executions s
+          JOIN branch_executions e ON e.id=s.execution_id
+          JOIN branch_attempts a ON a.step_execution_id=s.id
+          JOIN branch_paths p ON p.id=s.path_id
+          JOIN coordination_requests r ON r.id=a.request_id
+          WHERE s.id=? AND e.id=? AND r.id=?
+            AND NOT EXISTS(SELECT 1 FROM branch_commands cmd WHERE cmd.execution_id=e.id AND cmd.command_key='portable-runtime-data')`)
+          .get(expectedRevision,request.params.stepExecutionId,request.params.id,requestId) as {project_id:string;eligible:number}|undefined;
+        if(!target)throw Error('This step changed. Refresh the run to see the current status.');
+        const recovered=context.coordination.retryHeldSettingsTransitionRequest({
+          projectId:target.project_id,requestId,idempotencyKey:commandKey,expectedActivationId:activationId,
+          expectedHold,allowNew:Boolean(target.eligible),
+        });
+        if(!recovered.accepted)throw Error(target.eligible
+          ? 'This step is still held. Review its current session status before retrying.'
+          : 'This step changed. Refresh the run to see the current status.');
+        return recovered;
+      })();
+      notify();
+      return {accepted:result.accepted};
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Step recovery failed'});}
+  });
   app.delete<{ Params: { id: string } }>('/api/branches/:id', async (request, reply) => {
     try { const result=await context.installations.delete(request.params.id); await sources.refresh();notify();return reply.code(result.pending?202:200).send(result); }
     catch (error) { return reply.code(409).send({ error: describeBranchDeletionFailure(error) }); }
   });
   app.get<{ Params: { id: string; versionId: string } }>('/api/branches/:id/versions/:versionId', async (request, reply) => branches.version(request.params.id, request.params.versionId) ?? reply.code(404).send({ error: 'Branch version not found' }));
-  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string | string[]; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
     try { return branches.listExecutions(request.params.id, request.query.before, request.query.state,request.query.mergeFor); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid history cursor' }); }
   });
@@ -721,7 +812,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   });
   app.get<{ Params: { id: string } }>("/api/branch-executions/:id/operations", async (request, reply) => {
     const execution=branches.execution(request.params.id);
-    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus):reply.code(404).send({error:"Execution not found"});
+    return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus,true,context.coordination,
+      (activationId,projectId,agentId)=>context.workspace?.findNotification(notice=>
+        notice.projectId===projectId&&notice.agentId===agentId&&notice.status==='open'&&!notice.recoveredAt&&
+        ['blocked','contract_evidence_pending'].includes(notice.workContext?.state??'')&&
+        Boolean(notice.workContext?.activationIds?.includes(activationId)),true)?.body
+    ):reply.code(404).send({error:"Execution not found"});
   });
   app.get<{Params:{id:string};Querystring:{cursor?:string}}>('/api/branch-executions/:id/actions',async(request,reply)=>{
     try{const page=branches.currentActions(request.params.id,request.query.cursor,context.workspace);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}

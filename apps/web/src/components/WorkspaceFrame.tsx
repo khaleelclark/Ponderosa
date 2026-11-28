@@ -27,7 +27,7 @@ import { workspaceHeaderSurfaceSx } from "../theme";
 import { MobileNavigationButton } from "./MobileNavigationContext";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
-type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement; disabled?: boolean };
+type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement; disabled?: boolean; description?: string };
 
 const WORKSPACE_HEADER_COLLAPSED_KEY = "ponderosa.workspace-header.collapsed.v1";
 const workspaceHeaderListeners = new Set<() => void>();
@@ -177,6 +177,7 @@ export function WorkspaceTabBar<T extends string>({ value, items, onChange, labe
         iconPosition="start"
         label={compact ? undefined : item.label}
         aria-label={compact ? item.label : undefined}
+        aria-description={item.description}
         sx={{
           minHeight: compact ? 44 : 48,
           minWidth: compact ? 44 : { xs: 88, sm: 112 },
@@ -355,7 +356,7 @@ export function TabbedWorkspaceFrame<T extends string>({
       </IconButton>
     </Tooltip>;
     const retainedActions = collapsedActions !== undefined || compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
-      {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : collapsedActions === undefined ? actions : collapsedActions}
+      {statusBeforePrimaryActions ? null : status}{collapsedActions === undefined ? (actionsInMobileTabs ? null : actions) : collapsedActions}
     </Stack> : null;
     return <CompactWorkspaceHeader icon={icon} title={title} titleControl={titleControl} hideIcon={compact} singleRow={collapsedSingleRow}
       status={statusBeforePrimaryActions ? status : undefined}

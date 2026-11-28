@@ -13,7 +13,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, type ReactNode } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { mergeAgentStatuses } from "../agents";
@@ -26,6 +26,7 @@ import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type Projec
 import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
 import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
 import { ConversationView } from "./ConversationView";
+import type { ConversationHistorySnapshot } from "./useConversationHistory";
 import { useProjectBrowser, type ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import { useReportWorkspaceRead } from "./WorkspaceRefreshContext";
@@ -82,6 +83,8 @@ export function ProjectShell({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
+  // Keep already-loaded pages available while the Agent route replaces the transcript.
+  const historySnapshot = useRef<ConversationHistorySnapshot>();
 
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId);
@@ -158,10 +161,17 @@ export function ProjectShell({
     });
   };
 
+  const chatReturn = route.kind === "agent" ? route.chatReturn : undefined;
+  const getChatReturn = () => {
+    const snapshot = historySnapshot.current;
+    return route.kind === "conversation" && snapshot?.conversationId === route.conversationId
+      ? { conversationId: snapshot.conversationId, view: snapshot.activeView }
+      : chatReturn;
+  };
+
   // Stable handlers let memoized messages survive health/notification refreshes.
-  const openAgent = useEventCallback((agentId: string, view?: "technical" | "settings", technicalFocusId?: string) => view
-    ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
-    : navigate({ kind: "agent", projectId, agentId }));
+  const openAgent = useEventCallback((agentId: string, view?: "technical" | "settings", technicalFocusId?: string) =>
+    navigate({ kind: "agent", projectId, agentId, view, technicalFocusId, chatReturn: getChatReturn() }));
 
   const openAgentReview = useEventCallback((agentId: string, executionId?: string) => {
     navigate({ kind: "review", projectId, agentId, ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) });
@@ -171,19 +181,19 @@ export function ProjectShell({
     if (file.executionId) {
       navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
     } else if (file.artifactId) {
-      navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: file.artifactId } });
+      navigate({ kind: "agent", projectId, agentId, chatReturn: getChatReturn(), focusTelemetry: { stream: "artifacts", id: file.artifactId } });
     } else {
       navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
     }
   });
 
   const openProviderError = useEventCallback((agentId: string, runId: string, activityId?: string) => {
-    if (activityId) navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "activity", id: activityId } });
+    if (activityId) navigate({ kind: "agent", projectId, agentId, chatReturn: getChatReturn(), focusTelemetry: { stream: "activity", id: activityId } });
     else openAgent(agentId, "technical", runId);
   });
 
   const openProjectArtifact = (agentId: string, artifactId: string) => {
-    navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } });
+    navigate({ kind: "agent", projectId, agentId, chatReturn: getChatReturn(), focusTelemetry: { stream: "artifacts", id: artifactId } });
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
@@ -241,8 +251,10 @@ export function ProjectShell({
       <ConversationView
         titleControl={conversationTitleControl}
         key={route.conversationId}
+        historySnapshot={historySnapshot}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
+        initialAction={route.initialAction}
         initialView={route.urlDriven
           ? (route.view ?? route.channel ?? "main")
           : (route.view ?? route.channel)}
@@ -301,9 +313,9 @@ export function ProjectShell({
           focusTelemetry: route.focusTelemetry,
           technicalFocusId: route.technicalFocusId,
           initialView: route.view ?? (route.urlDriven ? "chat" : undefined),
-          onViewChange: (view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true }),
+          onViewChange: (view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view, chatReturn }, { replace: true }),
           onOpenTechnicalDetails: (technicalFocusId) => navigate({
-          kind: "agent", projectId, agentId: route.agentId, view: "technical",
+          kind: "agent", projectId, agentId: route.agentId, view: "technical", chatReturn,
           ...(technicalFocusId ? { technicalFocusId } : {}),
         }),
           engines: projectEngines,
@@ -319,7 +331,7 @@ export function ProjectShell({
           onOpenProject: () => navigate({ kind: "home" }),
           onOpenAgent: openAgent,
           onOpenAgentSettings: (agentId) =>
-          navigate({ kind: "agent", projectId, agentId, view: "settings" }),
+          openAgent(agentId, "settings"),
           onOpenCommunicationSource: (conversationId, communicationEventId, channel) => navigate({
           kind: "conversation",
           projectId,
@@ -328,8 +340,12 @@ export function ProjectShell({
           ...(channel === "collaboration" ? { channel } : {}),
         }),
           onOpenMaster: (conversationId) => {
-          navigate({ kind: "conversation", projectId, conversationId });
-        },
+            if (chatReturn?.conversationId === conversationId) {
+              navigate({ kind: "conversation", projectId, ...chatReturn }, { replace: true });
+            } else {
+              navigate({ kind: "conversation", projectId, conversationId });
+            }
+          },
           onOpenArtifact: (artifactId) => openProjectArtifact(route.agentId, artifactId),
           onOpenReview: (path, executionId) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}), ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) }),
           onOpenBrowser: (runId) => projectBrowser.openAgent?.(route.agentId, runId),

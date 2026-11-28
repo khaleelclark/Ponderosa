@@ -56,7 +56,7 @@ test('additive memory production dialog and real install routes on desktop and e
    const team=checkbox('Team memory: Preserved Chat');assert(await team.isDisabled());
    assert.equal(await checkbox('Private memory: Preserved Chat · Included').count(),0,'Existing Agent private memory cannot be selected');
    await keyboardCheck(checkbox('Private memory: Preserved Chat · Excluded'));assert(await team.isEnabled());await keyboardCheck(team);
-   await page.getByLabel('Default Working Directory',{exact:true}).fill(f.root);
+   await page.getByLabel('Default Working Folder',{exact:true}).fill(f.root);
    await page.getByRole('combobox',{name:'Engine: fixture',exact:true}).click();await page.getByRole('option',{name:'fixture',exact:true}).click();
   };
   const review=async()=>{await activate('Review Changes');await button('Confirm Update').waitFor();};
@@ -68,7 +68,7 @@ test('additive memory production dialog and real install routes on desktop and e
    await activate('Review Changes');await page.getByText('Controlled review service unavailable',{exact:true}).waitFor();assert(await checkbox('Team memory: Preserved Chat').isChecked());await x.unchanged();
    reviewGate=new Promise(resolve=>{releaseReview=resolve;});await activate('Review Changes');
    await page.waitForFunction(()=>[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Select Additive Memory Update'))?.querySelector('input')?.disabled);
-   assert(await checkbox('Select Additive Memory Update').isDisabled());assert(await checkbox('Private memory: Preserved Chat · Excluded').isDisabled());assert(await page.getByLabel('Default Working Directory',{exact:true}).isDisabled());assert(await button('Review Changes').isDisabled());
+   assert(await checkbox('Select Additive Memory Update').isDisabled());assert(await checkbox('Private memory: Preserved Chat · Excluded').isDisabled());assert(await page.getByLabel('Default Working Folder',{exact:true}).isDisabled());assert(await button('Review Changes').isDisabled());
    // Dismiss pending review by keyboard; a late response cannot reopen the dialog or confirm.
    await page.keyboard.press('Escape');await page.getByRole('dialog').waitFor({state:'hidden'});const lateResponse=page.waitForResponse(r=>r.url().endsWith('/install-preview'));releaseReview();reviewGate=undefined;
    await lateResponse;assert.equal(await page.getByRole('dialog').count(),0);assert.equal(requests.filter(r=>r.url.endsWith('/confirm')).length,0);await x.unchanged();

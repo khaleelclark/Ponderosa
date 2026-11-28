@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtempSync,rmSync,readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
 import {AgentStore,CoordinationV3Store,BranchStore,readBranchRunCounts} from '@ponderosa/agents';
+import {CoordinationV3Scheduler} from '../../apps/server/dist/coordination-v3-scheduler.js';
 import {branchOperationalSummary} from '../../apps/server/dist/branch-operations.js';
 import {previewBranchExecutionActions} from '../../apps/server/dist/branch-detail-preview.js';
 import {registerBranchRoutes} from '../../apps/server/dist/routes/branches.js';
@@ -349,3 +351,299 @@ test('a saved document and its reuse share one download while the exact downstre
  assert.equal(failed.items.find(item=>item.kind==='attempt').attempt.error,'Provider retry timed out');
  f.pass();
 });
+
+test('a held overdue retry reports its exact step and resumes the same Request after reopening, once',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const requestId=attempt.requestId;
+ const old=f.coordination.leaseNextRun({workerId:'pre-send'});
+ assert.equal(f.coordination.failRun({...old,workerId:'pre-send',sameRunResumable:false,retryDelayMs:0}),'retry');
+ const activationId=f.store.sqlite.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?").get(requestId).activation_id;
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending',available_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(activationId);
+ f.store.sqlite.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','test-hold')").run(activationId);
+ assert.equal(f.coordination.peekNextRunnable(),undefined);
+ const reopened=new AgentStore(f.root);
+ const coordination=new CoordinationV3Store(reopened.sqlite),branches=new BranchStore(reopened.sqlite,coordination);
+ const current=branches.detail(f.execution.id);
+ assert.equal(current.execution.effectiveStatus,'needs_attention');
+ const app=Fastify();
+ registerBranchRoutes(app,{store:reopened,coordination,branches,installations:{setPublisher(){}},sources:{},notify(){}});
+ try{
+  const summary=(await app.inject('/api/branch-executions/'+f.execution.id+'/operations')).json();
+  assert.equal(summary.state,'blocked');
+  const wait=summary.agentWaits[0];
+  assert.equal(wait.state,'context_blocked');
+  assert.equal(wait.stepExecutionId,attempt.stepExecutionId);
+  assert.equal(wait.nextRetryAt,undefined);
+  assert.equal(wait.contextRetryActivationId,activationId);
+  const url='/api/branch-executions/'+f.execution.id+'/steps/'+attempt.stepExecutionId+'/retry-context';
+  const payload={requestId,activationId,expectedRevision:current.execution.revision,commandKey:'held-step'};
+  assert.equal((await app.inject({method:'POST',url,payload:{...payload,activationId:'stale'}})).statusCode,409);
+  for(let i=0;i<2;i++)assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(coordination.peekNextRunnable().activationId,activationId);
+  const resumed=coordination.leaseNextRun({workerId:'resumed-step'});
+  assert.deepEqual(resumed.activations.map(activation=>activation.id),[activationId]);
+  coordination.markRunStarted(resumed.runId,resumed.fencingToken);
+  coordination.preparePromptInjection({...resumed,prompt:'Run the original step'});
+  coordination.markPromptSubmitted(resumed);
+  coordination.acknowledgePromptInjection(resumed);
+  coordination.updateRequest({requestId,updateId:'verified-result',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Verified saved result'}});
+  coordination.completeRun(resumed.runId,resumed.fencingToken);
+  branches.advance();
+  const completed=branches.detail(f.execution.id);
+  assert.equal(completed.attempts[0].id,attempt.id);
+  assert.equal(completed.steps[0].result.output,'Verified saved result');
+  assert.equal(reopened.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,1);
+ }finally{await app.close();reopened.close()}
+ f.pass();
+});
+
+test('an unacknowledged provider send does not make a held Branch Request retryable',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const lease=f.coordination.leaseNextRun({workerId:'controlled-scheduler'});
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Review this file'});
+ f.coordination.markPromptSubmitted(lease);
+ const activationId=lease.activations[0].id,db=f.store.sqlite,stamp=new Date().toISOString();
+ const scope=db.prepare('SELECT scope_key FROM agent_activations WHERE id=?').get(activationId).scope_key;
+ db.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(activationId);
+ db.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','test-hold')").run(activationId);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+   threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+   source_run_id,source_activation_ids_json,replacement_run_id,scope_key,created_at,updated_at,terminal_at)
+   VALUES('failed-rollover',?,?,'failed','old-session','old-session',100,50,1,'event','[]','[]',?,'[]',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,lease.runId,lease.runId,scope,stamp,stamp,stamp);
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+   VALUES('handoff',?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled','handoff',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,JSON.stringify({settingsTransition:{activationId}}),stamp,stamp,stamp,scope);
+ db.prepare("INSERT INTO activation_sources VALUES('handoff','context_rollover','failed-rollover')").run();
+ const summary=await branchOperationalSummary(db,f.branches.execution(f.execution.id),async()=>healthy,true,f.coordination);
+ assert.equal(summary.state,'needs_reconciliation');
+ assert.equal(summary.agentWaits[0].state,'context_uncertain');
+ assert.equal(summary.agentWaits[0].label,'Step outcome unconfirmed');
+ assert.equal(summary.agentWaits[0].contextRetryActivationId,undefined);
+ assert.equal(f.coordination.retryHeldSettingsTransitionRequest({projectId:f.project.id,requestId:attempt.requestId,idempotencyKey:'ambiguous',expectedActivationId:activationId}).accepted,false);
+ f.pass();
+});
+
+
+test('a leased settings handoff with uncertain submission stays held across reopen and a later Workflow run',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const attempt=f.branches.detail(f.execution.id).attempts[0],db=f.store.sqlite,stamp=new Date().toISOString(),hash='a'.repeat(64);
+ const activation=db.prepare(`SELECT a.id,a.scope_key FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+  WHERE s.source_kind='request' AND s.source_id=?`).get(attempt.requestId);
+ db.prepare('UPDATE agents SET active_session_id=?,active_session_contract_hash=? WHERE id=?').run('old-session',hash,f.agent.id);
+ db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,scope_key,status,lease_owner,lease_expires_at,
+  fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at)
+  VALUES('source-run',?,?,?,'completed','fixture',?,1,'injected','old-session',?,?,?,?)`)
+  .run(f.project.id,f.agent.id,activation.scope_key,stamp,stamp,stamp,stamp,stamp);
+ db.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)').run(f.agent.id);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+   threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+   source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,cycle_number)
+   VALUES('uncertain-settings',?,?,'requested','old-session','old-session',100,50,1,'event','[]','[]','source-run','[]',?,?,?,2)`)
+  .run(f.project.id,f.agent.id,activation.scope_key,stamp,stamp);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+  cycle_number,threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,
+  recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+  SELECT 'settled-preparation',project_id,agent_id,'failed',old_provider_session_id,provider_session_generation,
+    1,threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,
+    recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,created_at
+  FROM context_rollovers WHERE id='uncertain-settings'`).run();
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+   VALUES('exact-handoff',?,?,'context_rollover_handoff',100,'next_run','blocker','pending','exact-handoff',?,?,?,?,?)`)
+  .run(f.project.id,f.agent.id,JSON.stringify({rolloverId:'uncertain-settings',settingsTransition:{
+   activationId:activation.id,oldSessionId:'old-session',oldContractHash:hash}}),stamp,stamp,stamp,activation.scope_key);
+ db.prepare("INSERT INTO activation_sources VALUES('exact-handoff','context_rollover','uncertain-settings')").run();
+ db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,
+   dedupe_key,payload_json,available_at,created_at,updated_at,scope_key,terminal_at)
+   SELECT 'safe-older-handoff',project_id,agent_id,kind,priority,dispatch_policy,prompt_class,'failed',
+    'safe-older-handoff',json_set(payload_json,'$.settingsTransition.activationId','canceled-old-task'),available_at,created_at,updated_at,scope_key,created_at
+   FROM agent_activations WHERE id='exact-handoff'`).run();
+ db.prepare("INSERT INTO activation_sources VALUES('safe-older-handoff','context_rollover','settled-preparation')").run();
+ const lease=f.coordination.leaseNextRun({workerId:'handoff-owner'});
+ assert.deepEqual(lease.activationIds,['exact-handoff']);
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Handoff only'});
+ f.coordination.markPromptSubmitted(lease);
+ assert.equal(f.coordination.failRun({...lease,workerId:'handoff-owner',sameRunResumable:false}),'outcome_unknown');
+
+ const reopened=new AgentStore(f.root);
+ try{
+  const coordination=new CoordinationV3Store(reopened.sqlite),branches=new BranchStore(reopened.sqlite,coordination);
+  const retry=(requestId,activationId)=>coordination.retryHeldSettingsTransitionRequest({projectId:f.project.id,requestId,
+   idempotencyKey:requestId,expectedActivationId:activationId});
+  assert.equal(coordination.contextRecovery.reconstructionPredecessor({agentId:f.agent.id,projectId:f.project.id,
+   scopeKey:activation.scope_key,providerSessionId:'old-session',sourceFence:lease.fencingToken}),
+  'uncertain-settings','safe pre-submission history does not block the existing reconstruction path');
+  assert.equal(retry(attempt.requestId,activation.id).accepted,false);
+  const summary=await branchOperationalSummary(reopened.sqlite,branches.execution(f.execution.id),async()=>healthy,true,coordination);
+  assert.equal(summary.agentWaits[0].state,'context_uncertain');
+  branches.cancel(f.execution.id);
+  assert.equal(branches.execution(f.execution.id).state,'canceled','the original task was never submitted');
+  const later=branches.accept(f.execution.branchId,'new-run','New input');
+  branches.advance();
+  const requestId=branches.detail(later.id).attempts[0].requestId;
+  const laterActivation=db.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?").get(requestId).activation_id;
+  // The admission preflight keeps this new task queued behind prior effects.
+  assert.equal(coordination.holdUncertainSettingsTransitionReservation({projectId:f.project.id,agentId:f.agent.id,
+   activationId:laterActivation,scopeKey:activation.scope_key,fingerprint:'b'.repeat(64)}),true);
+  assert.equal(retry(requestId,laterActivation).accepted,false);
+  assert.equal(coordination.peekNextRunnable(),undefined);
+ }finally{reopened.close();}
+ f.pass();
+});
+
+test('Branch provider admission rechecks after async preflight and leases the same work once',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const original=f.coordination.peekNextRunnable();
+ let ready=true,preflight=0,dispatches=0;
+ const scheduler=new CoordinationV3Scheduler(f.coordination,async lease=>{
+  dispatches++;
+  assert.deepEqual(lease.activations.map(activation=>activation.id),[original.activationId]);
+  f.coordination.markPromptSubmitted(lease);
+  f.coordination.acknowledgePromptInjection(lease);
+  return {accepted:true};
+ },{workerId:'provider-race',
+  blockedAgentIds:()=>ready?[]:[f.agent.id],
+  prepareRunAdmission:async excluded=>{
+   const candidate=f.coordination.peekNextRunnable({excludedAgentIds:excluded});
+   await Promise.resolve();
+   if(++preflight===1)ready=false;
+   return candidate?.activationId??null;
+  },
+  revalidateRunAdmission:()=>ready});
+ await scheduler.drainOnce();
+ assert.equal(dispatches,0);
+ assert.equal(f.coordination.peekNextRunnable().activationId,original.activationId);
+ ready=true;
+ await scheduler.drainOnce();
+ await scheduler.drainOnce();
+ assert.equal(dispatches,1);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,1);
+ f.pass();
+});
+
+function savedResultFixture(t,{shared=false,split=false,receipt=true}={}){
+ const f=fixture(t);
+ f.branches.advance();
+ if(shared)f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,
+  actorScope:'user:local-operator',idempotencyKey:'same-run-peer-work',requests:[
+   {recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'},payload:{text:'Return findings for a different task'}}]});
+ const {requestId,stepExecutionId}=f.branches.detail(f.execution.id).attempts[0];
+ const source=f.coordination.leaseNextRun({workerId:'original'});
+ assert.equal(source.activations.length,shared?2:1);
+ const executionId=source.runId;
+ const firstText='Saved ',lastText='shortlist';
+ const output=firstText+lastText;
+ f.coordination.markRunStarted(source.runId,source.fencingToken);
+ f.coordination.preparePromptInjection({...source,prompt:'Original request'});
+ f.coordination.recordProviderInput({executionId,schedulerRunId:source.runId,fencingToken:source.fencingToken,
+  agentId:f.agent.id,projectId:f.project.id,prompt:'Original request',sourceManifest:{}});
+ f.coordination.markPromptSubmitted(source);
+ f.coordination.acknowledgePromptInjection(source);
+ const first=f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:firstText});
+ if(split)f.store.appendEvent(f.agent.id,{type:'reasoning',executionId,delta:'Starting another response'});
+ const last=f.store.appendEvent(f.agent.id,{type:'text',executionId,delta:lastText});
+ if(receipt)f.store.appendEvent(f.agent.id,{type:'agent_output',executionId,text:output,sourceSeqStart:first.seq,sourceSeqEnd:last.seq});
+ f.coordination.completeRun(source.runId,source.fencingToken);
+ const report=f.coordination.leaseNextRun({workerId:'report-only'});
+ const reportId=report.activations[0].id;
+ f.coordination.markRunStarted(report.runId,report.fencingToken);
+ f.coordination.preparePromptInjection({...report,prompt:'Report only'});
+ f.coordination.recordProviderInput({executionId:'report-provider-execution',schedulerRunId:report.runId,
+  fencingToken:report.fencingToken,agentId:f.agent.id,projectId:f.project.id,prompt:'Report only',sourceManifest:{}});
+ assert.equal(f.coordination.failRun({...report,workerId:'report-only',sameRunResumable:false,retryDelayMs:0}),'retry');
+ f.store.sqlite.prepare("INSERT INTO activation_sources VALUES(?,'settings_transition_reservation_wait','held-report')").run(reportId);
+ const opened=new AgentStore(f.root);
+ const coordination=new CoordinationV3Store(opened.sqlite),branches=new BranchStore(opened.sqlite,coordination);
+ const app=Fastify();
+ registerBranchRoutes(app,{store:opened,coordination,branches,installations:{setPublisher(){}},sources:{},notify(){}});
+ const url='/api/branch-executions/'+f.execution.id+'/steps/'+stepExecutionId+'/saved-result';
+ return {f,opened,coordination,branches,app,url,source,output,report,reportId,requestId,async close(){await app.close();opened.close()}};
+}
+
+test('a held report can record the exact finished Branch result once across restart',async t=>{
+ const {f,opened,coordination,branches,app,url,source,output,requestId,close}=savedResultFixture(t);
+ try{
+  const candidate=(await app.inject(url)).json();
+  assert.deepEqual(candidate,{available:true,sourceRunId:source.runId,text:output,
+   outputHash:createHash('sha256').update(output).digest('hex')});
+  const {sourceRunId,outputHash}=candidate;
+  const payload={commandKey:'recover-shortlist',expectedRevision:branches.execution(f.execution.id).revision,
+   sourceRunId,outputHash,disposition:'completed'};
+  assert.equal((await app.inject({method:'POST',url,payload:{...payload,outputHash:'0'.repeat(64)}})).statusCode,409);
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  const afterCommand=new AgentStore(f.root);
+  try{
+   const restarted=new BranchStore(afterCommand.sqlite,new CoordinationV3Store(afterCommand.sqlite));
+   restarted.advance();
+   assert.equal(restarted.execution(f.execution.id).state,'completed');
+   assert.equal(restarted.detail(f.execution.id).steps[0].result.output,output);
+  }finally{afterCommand.close()}
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE request_id=?').get(requestId).n,1);
+  assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,2);
+  assert.equal(coordination.peekNextRunnable(),undefined);
+ }finally{await close()}
+ f.pass();
+});
+
+test('review can record a proven result as blocked once the reporting Run has drained',async t=>{
+ const {f,opened,branches,app,url,report,reportId,requestId,close}=savedResultFixture(t);
+ try{
+  const {available,sourceRunId,outputHash}=(await app.inject(url)).json();
+  assert.equal(available,true);
+  const payload={commandKey:'record-blocked',expectedRevision:branches.execution(f.execution.id).revision,
+   sourceRunId,outputHash,disposition:'blocked'};
+  const commit=(kind,identity,value)=>{
+   const json=JSON.stringify(value);
+   opened.sqlite.prepare('INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)')
+    .run(kind,identity,json,json,'test');
+  };
+  commit('provider-process-registration','report:registration',
+   {authorityId:'report-process',runId:report.runId,runFence:report.fencingToken,agentId:f.agent.id});
+  assert.deepEqual((await app.inject(url)).json(),{available:false});
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,409);
+  commit('provider-process-exit','report-process',{authorityId:'report-process',result:'observed_exited'});
+  assert.equal((await app.inject({method:'POST',url,payload})).statusCode,200);
+  assert.equal(opened.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state,'blocked');
+  assert.equal(opened.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(reportId).state,'cancelled');
+ }finally{await close()}
+ f.pass();
+});
+
+for(const [label,options] of [
+ ['a shared source Run', {shared:true}],
+ ['split text in a completed Run', {split:true}],
+ ['a Work log segment without a complete output receipt', {receipt:false}],
+ ['evidence that becomes fragmented after preview', {stalePreview:true}],
+]){
+ test(`saved result discovery and recording reject ${label}`,async t=>{
+  const {f,opened,branches,app,url,source,output,reportId,requestId,close}=savedResultFixture(t,options);
+  try{
+   const candidate=(await app.inject(url)).json();
+   if(options.stalePreview){
+    assert.equal(candidate.available,true);
+    // Simulate contradictory evidence arriving without a Branch revision change.
+    f.store.appendEvent(f.agent.id,{type:'reasoning',executionId:source.runId,delta:'Another message'});
+    f.store.appendEvent(f.agent.id,{type:'text',executionId:source.runId,delta:'An additional fragment'});
+   }
+   assert.deepEqual((await app.inject(url)).json(),{available:false});
+   const payload={commandKey:'reject-unproven-result',expectedRevision:branches.execution(f.execution.id).revision,
+    sourceRunId:source.runId,outputHash:candidate.outputHash??createHash('sha256')
+     .update(options.split?'shortlist':output).digest('hex')};
+   for(const disposition of ['completed','blocked']) {
+    assert.equal((await app.inject({method:'POST',url,payload:{...payload,disposition}})).statusCode,409);
+   }
+   assert.equal(opened.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(requestId).state,'open');
+   assert.equal(opened.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(reportId).state,'retry_pending');
+   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE request_id=?').get(requestId).n,0);
+   assert.equal(opened.sqlite.prepare('SELECT count(*) n FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.execution.id,payload.commandKey).n,0);
+  }finally{await close()}
+  f.pass();
+ });
+}

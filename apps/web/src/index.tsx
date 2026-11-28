@@ -20,13 +20,14 @@ const App = lazy(() => {
   }
   return import(/* webpackFetchPriority: "high" */ "./App");
 });
-const BranchesView=lazy(()=>import(/* webpackFetchPriority: "high" */ './components/BranchesView').then(module=>({default:module.BranchesView})));
+const loadBranchesView=()=>import(/* webpackFetchPriority: "high" */ './components/BranchesView').then(module=>({default:module.BranchesView}));
 import { loadProjectShell } from "./projectShellLoader";
 import { parseRoute } from "./routing";
 import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
 import { api } from "./api";
 import { queryKeys } from "./queryKeys";
 import { isProjectRoute } from "./routeRegistry";
+import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
@@ -34,6 +35,14 @@ import { installServiceWorkerReloadGuard } from "./serviceWorkerReload";
 import { queryRetryDelay, shouldRetryQuery } from "./api/queryRetry";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
 import { writeBrowserStorage } from "./browserStorage";
+
+// A pointer can activate an already focused button without sending another focus event.
+document.addEventListener("pointerdown", () => document.documentElement.setAttribute("data-pointer-focus", ""), true);
+document.addEventListener("keydown", event => {
+  if (!["Alt", "Control", "Meta", "Shift"].includes(event.key)) {
+    document.documentElement.removeAttribute("data-pointer-focus");
+  }
+}, true);
 
 installServiceWorkerReloadGuard();
 // A product switch needs its own root and QueryClient, including push clicks.
@@ -89,7 +98,7 @@ function Root(): JSX.Element {
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
             <Suspense fallback={<div role="status" style={{padding:24}}>Loading Ponderosa…</div>}>
-            {isOutputAppPath(window.location.pathname)?<OutputAgentApp colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
+            {isOutputAppPath(window.location.pathname)?<OutputAgentApp colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:isBranchesPath(window.location.pathname)?<RecoverableLazyRoute load={loadBranchesView} componentProps={{colorMode,onToggleColorMode:()=>setColorMode(current=>current==='light'?'dark':'light')}}/>:<App
               colorMode={colorMode}
               onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
             />}

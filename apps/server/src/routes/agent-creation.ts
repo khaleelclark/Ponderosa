@@ -1,5 +1,5 @@
 import { chatArchiveBlocksChat } from "@ponderosa/agents";
-import { normalizeAgentRole } from "@ponderosa/core";
+import { AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED, normalizeAgentRole } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentDto,
@@ -190,6 +190,10 @@ export function registerAgentCreationRoutes(
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "Agent creation replay conflict" });
       }
+      if (creationOperation.status === "rolled_back" &&
+          (creationOperation.result as { code?: string } | undefined)?.code === AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED) {
+        return reply.code(400).send(creationOperation.result);
+      }
       if (creationOperation.status === "completed" && creationOperation.result) {
         return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
       }
@@ -233,9 +237,15 @@ export function registerAgentCreationRoutes(
           agentIds: creationOperation.agentIds,
         });
       }
-      const abandonMutationFreeOperation = (statusCode: number, error: string) => {
+      if (activeCreationOperations.has(creationOperation.id)) {
+        return reply.code(409).send({
+          error: "Agent creation is still in progress; retry with the same idempotency key",
+          operationId: creationOperation.id,
+        });
+      }
+      const abandonMutationFreeOperation = (statusCode: number, error: string, code?: string) => {
         const current = store.getAgentCreationOperation(creationOperation.id);
-        if (!current || current.agentIds.length > 0) {
+        if (!current || current.status !== "preparing" || current.communicationEventId || current.agentIds.length > 0) {
           return reply.code(409).send({
             error: "Agent creation is still being recovered; retry with the same idempotency key",
             operationId: creationOperation.id,
@@ -245,8 +255,9 @@ export function registerAgentCreationRoutes(
         store.updateAgentCreationOperation(current.id, {
           status: "rolled_back",
           lastError: error,
+          ...(code ? { result: { error, code } } : {}),
         });
-        return reply.code(statusCode).send({ error });
+        return reply.code(statusCode).send({ error, ...(code ? { code } : {}) });
       };
       type PlannedHumanCreation = {
         phase: "planned_human_creation";
@@ -358,12 +369,6 @@ export function registerAgentCreationRoutes(
           return { ...legacyExisting, replayed: true };
         }
       }
-      if (activeCreationOperations.has(creationOperation.id)) {
-        return reply.code(409).send({
-          error: "Agent creation is still in progress; retry with the same idempotency key",
-          operationId: creationOperation.id,
-        });
-      }
       const executableOpening = Boolean(initialMessage || draftAttachmentIds.length);
       const assertOpeningAdmission = () => {
         if (executableOpening && workspace.getPreferences().providerAvailability[request.body.engine] === false) {
@@ -392,7 +397,8 @@ export function registerAgentCreationRoutes(
           ))
         : [];
       if (draftAttachments.some((attachment) => !attachment)) {
-        return abandonMutationFreeOperation(400, "draft attachment is missing or belongs to another conversation");
+        // Fence the old payload before a client can retry with replacement attachments.
+        return abandonMutationFreeOperation(400, "A staged attachment is unavailable.", AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED);
       }
       const hasInitialTurn = Boolean(initialMessage || draftAttachments.length);
       assertOpeningAdmission();

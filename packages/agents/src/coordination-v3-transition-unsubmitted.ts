@@ -1,3 +1,11 @@
+function runUnsubmittedSql(run:string):string {
+  return `(${run}.prompt_injection_state='not_injected' AND ${run}.started_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM provider_inputs input WHERE input.scheduler_run_id=${run}.id OR input.execution_id=${run}.id)
+    AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=${run}.id
+      AND (injection.state NOT IN ('pending','cancelled') OR injection.submitted_at IS NOT NULL
+        OR injection.acknowledged_at IS NOT NULL OR injection.provider_turn_id IS NOT NULL)))`;
+}
+
 /** Exact queued work can be resumed after pre-injection failures only if
  * every historical attachment belongs to a terminal unstarted Run. This
  * contains the scheduler's canRetryUninjectedRun checks and additionally
@@ -15,11 +23,7 @@ export function transitionUnsubmittedActivationSql(activation:string):string {
           run.id IS NULL OR run.project_id<>${activation}.project_id OR run.agent_id<>${activation}.agent_id
           OR run.scope_key<>${activation}.scope_key OR run.status NOT IN ('failed','cancelled')
           OR run.terminal_at IS NULL OR attached.consumed_at IS NOT NULL
-          OR run.prompt_injection_state<>'not_injected' OR run.started_at IS NOT NULL
-          OR EXISTS(SELECT 1 FROM provider_inputs input WHERE input.scheduler_run_id=run.id OR input.execution_id=run.id)
-          OR EXISTS(SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=run.id
-            AND (injection.state NOT IN ('pending','cancelled') OR injection.submitted_at IS NOT NULL
-              OR injection.acknowledged_at IS NOT NULL OR injection.provider_turn_id IS NOT NULL))
+          OR NOT ${runUnsubmittedSql('run')}
         )
       ))
     OR (CASE WHEN ${activation}.state='retry_pending'
@@ -74,4 +78,47 @@ export function transitionUnsubmittedActivationSql(activation:string):string {
           )
       )
       ELSE 0 END))`;
+}
+
+/** True when nothing yet proves the exact Run's provider processes exited: an
+ * unexited registration, a live authority, an unsettled or unknown start, or no
+ * registration at all. A never-injected Run with no durable start admission is
+ * proven never started, because every provider spawn requires one. */
+export function runExitUnprovenSql(run:string,injection:string):string {
+  return `(EXISTS(SELECT 1 FROM provider_process_authority live WHERE live.run_id=${run})
+    OR EXISTS(SELECT 1 FROM host_lifecycle_commits registration WHERE registration.kind='provider-process-registration'
+      AND json_extract(registration.receipt_json,'$.runId')=${run} AND NOT EXISTS(SELECT 1 FROM host_lifecycle_commits exited
+        WHERE exited.kind='provider-process-exit' AND exited.identity=json_extract(registration.receipt_json,'$.authorityId')
+          AND json_extract(exited.receipt_json,'$.result')='observed_exited'))
+    OR EXISTS(SELECT 1 FROM host_lifecycle_commits claim WHERE claim.kind='provider-start-admission'
+      AND json_extract(claim.receipt_json,'$.runId')=${run} AND (EXISTS(SELECT 1 FROM host_lifecycle_commits unknown
+        WHERE unknown.kind='provider-start-unknown' AND unknown.identity=claim.identity) OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits settled
+        WHERE settled.kind='provider-start-settlement' AND settled.identity=claim.identity)))
+    OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.runId')=${run})
+      AND (${injection}<>'not_injected' OR EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=${run})))`;
+}
+
+/** Every handoff Run must be terminal, unsubmitted and drained. Keep all
+ * failed Runs and receipts as history when a new rollover is later reserved. */
+export function failedSettingsHandoffUnsubmittedSql(rollover:string):string {
+  return `(${rollover}.state='failed' AND ${rollover}.terminal_at IS NOT NULL
+    AND ${rollover}.handoff_event_id IS NULL AND ${rollover}.replacement_run_id IS NULL
+    AND ${rollover}.continuation_activation_id IS NULL AND ${rollover}.replacement_session_id IS NULL
+    AND NOT EXISTS(
+      SELECT 1 FROM activation_sources source
+      JOIN agent_activations handoff ON handoff.id=source.activation_id
+      LEFT JOIN scheduler_run_activations attached ON attached.activation_id=handoff.id
+      LEFT JOIN scheduler_runs run ON run.id=attached.run_id
+      WHERE source.source_kind='context_rollover' AND source.source_id=${rollover}.id
+        AND (handoff.kind<>'context_rollover_handoff' OR handoff.project_id<>${rollover}.project_id
+          OR handoff.agent_id<>${rollover}.agent_id OR handoff.scope_key<>${rollover}.scope_key
+          OR handoff.state NOT IN ('failed','cancelled') OR handoff.terminal_at IS NULL
+          OR attached.run_id IS NOT NULL AND (
+            run.id IS NULL OR run.project_id<>handoff.project_id OR run.agent_id<>handoff.agent_id
+            OR run.scope_key<>handoff.scope_key OR run.status NOT IN ('failed','cancelled')
+            OR run.terminal_at IS NULL OR attached.consumed_at IS NOT NULL OR NOT ${runUnsubmittedSql('run')}
+            OR ${runExitUnprovenSql('run.id','run.prompt_injection_state')}
+            OR EXISTS(SELECT 1 FROM provider_operation_outbox operation WHERE operation.run_id=run.id AND operation.state<>'completed')
+          ))
+    ))`;
 }

@@ -39,7 +39,7 @@ const turn=()=>new Promise(setImmediate);
 function shell(f,route){
  const result=key=>new QueryObserver(f.client,{queryKey:key,enabled:false}).getCurrentResult();
  const imports={
-  react:{useCallback:fn=>fn,useMemo:fn=>fn()},
+  react:{useCallback:fn=>fn,useMemo:fn=>fn(),useRef:current=>({current})},
   '@mui/material':{Alert:'Alert',Box:'Box',Button:'Button',LinearProgress:'LinearProgress',useMediaQuery:()=>false},
   '@mui/material/styles':{useTheme:()=>({breakpoints:{down:()=>''}})},
   '@mui/material/utils':{useEventCallback:fn=>fn},
@@ -135,7 +135,7 @@ function openingFixture(options={}){
  const f=fixture(),requests=[],pending=[],errors=[],state={draft:{},baseline:0},route={branchId:'branch-a',tab:'chats',chatId:'chat-a',...options.route};
  const requestJson=realRequestTransport((path,init)=>{requests.push(path);return new Promise((resolve,reject)=>{const row={path,signal:init?.signal,respond:resolve,resolve:value=>resolve(new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}})),reject};pending.push(row);init?.signal?.addEventListener('abort',()=>{row.aborted=true;reject(init.signal.reason);},{once:true});});});
  const env={QueryObserver,route,draft:state.draft,selection:{current:0},routeOwner:{current:route},client:f.client,realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,requestJson,
-  navigate(next){env.routeOwner.current=next;},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},setError:message=>errors.push(message),setWorkflowReadError:value=>errors.push(value.error.message),setInput(){},setRunOpen(){},run:{reset(){}},setOccurrenceKey(){},createClientId:()=> 'synthetic-id',currentDraft:{current:{}},draftRevision:{current:''},pendingAdvanced:{current:false},
+  navigate(next){env.routeOwner.current=next;},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},setError:message=>errors.push(message),setWorkflowReadError:value=>errors.push(value.error.message),setInput(){},setRunOpen(){},setRerunVersion(){},run:{reset(){}},setOccurrenceKey(){},createClientId:()=> 'synthetic-id',currentDraft:{current:{}},draftRevision:{current:''},pendingAdvanced:{current:false},
   resetWorkflowBaseline(next){state.draft=next;state.baseline++;},newDefinition:()=>({steps:[]}),markWorkspaceResourceUsed(){},encodeURIComponent};
  if(options.cache)f.client.setQueryData(['branch-chat-owner','chat-a'],options.cache);
  const code=ts.transpileModule(declaration('readWorkflowDraft')+'\n'+declaration('select')+'\nconst cleanup=('+openingEffect+')();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;

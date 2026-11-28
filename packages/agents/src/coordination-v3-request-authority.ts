@@ -168,7 +168,18 @@ export class CoordinationV3RequestAuthority {
     })();
   }
 
+  recordReviewedBranchResult(input: {requestId:string;updateId:string;kind:"completed"|"blocked";text:string;
+    sourceRunId:string;outputSeq:number;outputHash:string;now:string}): RequestUpdateV3Result {
+    const {requestId,updateId,kind,text,sourceRunId,outputSeq,outputHash,now}=input;
+    return this.applyUpdate({requestId,updateId,kind,actor:{kind:"system",id:"branch-result-recovery"},
+      payload:{text,recovery:{sourceRunId,outputSeq,outputHash,reviewedBy:"local-operator"}},now},true);
+  }
+
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
+    return this.applyUpdate(input,false);
+  }
+
+  private applyUpdate(input: UpdateRequestV3Input, reviewedBranchResult:boolean): RequestUpdateV3Result {
     if(input.replyStream&&(!isReplyStreamCorrelation(input.replyStream)||!['completed','blocked','failed'].includes(input.kind)||input.replyStream.steeringInjectionId!==input.steeringInjectionId||input.replyStream.sourceId!==input.requestId||input.actor.kind!=='agent'||
        !input.runAuthorization||input.runAuthorization.agentId!==input.actor.id||input.runAuthorization.runId!==input.replyStream.runId||input.runAuthorization.fencingToken!==input.replyStream.fence))throw Error('Invalid host Request stream correlation');
     const now = input.now ?? new Date().toISOString();
@@ -363,7 +374,7 @@ export class CoordinationV3RequestAuthority {
         artifacts,
         "request update",
       );
-      this.support.authorizeUpdate(request, input.kind, input.actor);
+      if (!reviewedBranchResult) this.support.authorizeUpdate(request, input.kind, input.actor);
       const ownsUnresolvedJoin = Boolean(this.sqlite.prepare(`
         SELECT 1 FROM coordination_joins
         WHERE state = 'open'

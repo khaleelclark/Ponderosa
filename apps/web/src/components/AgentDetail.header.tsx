@@ -40,14 +40,14 @@ export const AGENT_DETAIL_TABS: Array<{
   label: string;
   icon: JSX.Element;
 }> = [
-  { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon /> },
+  { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon fontSize="small" /> },
+  { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon fontSize="small" /> },
   {
     value: "artifacts",
     label: "Files & Results",
-    icon: <Inventory2OutlinedIcon />,
+    icon: <Inventory2OutlinedIcon fontSize="small" />,
   },
-  { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
+  { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon fontSize="small" /> },
 ];
 
 function AgentRunState({
@@ -211,6 +211,7 @@ export function AgentDetailHeader({
   </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
   return (
     <TabbedWorkspaceFrame
+      collapsedIconTabs
       compactMobile
       actionsInMobileTabs
       icon={<SmartToyOutlinedIcon />}
@@ -220,7 +221,7 @@ export function AgentDetailHeader({
           direction="row"
           spacing={0.5}
           useFlexGap
-          sx={{ alignItems: "center", minWidth: 0, overflow: "hidden" }}
+          sx={{ alignItems: "center", minWidth: 0 }}
         >
           <AgentHeaderRelationships
             projectLabel={projectLabel}
@@ -237,7 +238,7 @@ export function AgentDetailHeader({
               >
                 ·
               </Typography>
-              <Typography variant="caption" color="text.secondary" noWrap>
+              <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
                 {lineageLabel}{" "}
                 {lineageAgent ? (
                   <Link

@@ -25,14 +25,15 @@ async function fixture(){
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
  function render(){rendering=true;do{again=false;slot=0;tree=module.exports.BranchNavigation({children:value=>{router=value;return 'content'}});while(effects.length)effects.shift()()}while(again);rendering=false}
  render();
- const providers=()=>({dirty:tree.props.value,workflow:tree.props.children.props.value,guard:tree.props.children.props.children.props.value,prompt:tree.props.children.props.children.props.children[1]});
+ const providers=()=>({dirty:tree.props.value,workflow:tree.props.children.props.value,guard:tree.props.children.props.children.props.value,prompt:router.leaveConfirmation??{props:{open:false,onConfirm(){}}}});
  const actions={branchId:'a',pending:false,canSave:true,canDiscard:true,save(){},discard(){}};const get=()=>actions;providers().workflow(get);
  return {router:()=>router,actions,mark:(key,value=true)=>providers().dirty(key,value),prompt:()=>providers().prompt,guard:(action,abandon)=>providers().guard(action,abandon),refresh:()=>providers().workflow(get,true),replaceOwner:branchId=>{actions.branchId=branchId;providers().workflow(get,true)},settings:value=>{settingsAllowed=value},other:value=>{otherAllowed=value},counts:()=>({settingsPrompts,otherPrompts}),location,history,entries,listeners,flushOne(){const traversal=historyEvents.shift();if(!traversal)return;const next=cursor+traversal.delta;if(next<0||next>=entries.length)return;cursor=next;updateLocation();listeners.get('popstate')?.({state:entries[cursor].state})},flushHistory(){let limit=100;while(historyEvents.length){if(!--limit)throw Error('History traversal did not settle');this.flushOne()}},historyPosition:()=>cursor};
 }
 
-test('Save And Leave waits for its exact successful workflow settlement and repeats no submission',async()=>{
- const f=await fixture();f.mark('workflow');let done,calls=0;f.actions.save=complete=>{calls++;done=complete};assert.equal(f.router().navigate({branchId:'b',tab:'workflow'}),false);assert.equal(f.router().route.branchId,'a');assert.equal(f.prompt().props.title,'Unsaved Changes');
- f.prompt().props.onConfirm();assert.equal(f.prompt().props.open,false);f.prompt().props.onConfirm();assert.equal(calls,1);assert.equal(f.router().route.branchId,'a');done(true);assert.equal(f.router().route.branchId,'b');done(true);assert.equal(f.entries.length,2,'A late duplicate callback cannot navigate twice');
+test('Save and switch waits for its exact successful workflow settlement and repeats no submission',async()=>{
+ const f=await fixture();f.mark('workflow');let done,calls=0;f.actions.save=complete=>{calls++;done=complete};assert.equal(f.router().navigate({branchId:'b',tab:'workflow'}),false);assert.equal(f.router().route.branchId,'a');assert.equal(f.prompt().props.title,'Unsaved changes');
+ const submit=f.prompt().props.onConfirm;
+ submit();assert.equal(f.prompt().props.open,false);submit();f.prompt().props.onCancel();assert.equal(calls,1);assert.equal(f.router().route.branchId,'a');done(true);assert.equal(f.router().route.branchId,'b');done(true);assert.equal(f.entries.length,2,'A late duplicate callback cannot navigate twice');
 });
 
 test('accepted callbacks retain post-navigation actions across save and never run for canceled or failed leaves',async()=>{
@@ -42,14 +43,18 @@ test('accepted callbacks retain post-navigation actions across save and never ru
  const same=await fixture();let accepted=0;assert.equal(same.router().navigate({branchId:'a',tab:'workflow'},false,()=>accepted++),true);assert.equal(accepted,1);assert.equal(same.entries.length,1);
 });
 
-test('Back To Editing, failed save, and stale-owner callbacks retain the accepted route',async()=>{
+test('Stay here, failed save, and stale-owner callbacks retain the accepted route',async()=>{
  for(const outcome of ['cancel','failure','owner']){const f=await fixture();f.mark('workflow');let complete;f.actions.save=done=>{complete=done};f.router().navigate({branchId:'b',tab:'workflow'});if(outcome==='cancel')f.prompt().props.onCancel();else{f.prompt().props.onConfirm();if(outcome==='owner')f.replaceOwner('new-owner');complete(outcome==='owner')}
   assert.equal(f.router().route.branchId,'a',outcome);assert.equal(f.entries.length,1,outcome);
  }
 });
 
-test('Discard And Leave uses the existing owner callback and preserves independent settings guards',async()=>{
- const f=await fixture();f.mark('workflow-editor');f.mark('branch-capabilities:a');let complete;f.actions.discard=done=>{complete=done};f.other(false);f.router().navigate({branchId:'b',tab:'workflow'});f.prompt().props.secondaryAction.onClick();complete(true);assert.equal(f.router().route.branchId,'a');assert.equal(f.counts().otherPrompts,1);assert.equal(f.prompt().props.open,false,'A canceled independent guard retires the old destination');
+test('Discard changes and switch uses the existing owner callback and preserves independent settings guards',async()=>{
+ const f=await fixture();f.mark('workflow-editor');f.mark('branch-capabilities:a');let complete,calls=0;f.actions.discard=done=>{calls++;complete=done};f.other(false);f.router().navigate({branchId:'b',tab:'workflow'});
+ const discard=f.prompt().props.secondaryAction.onClick;discard();discard();
+ assert.equal(calls,1);assert.equal(f.prompt().props.open,true);assert.equal(f.prompt().props.pending,true);
+ f.prompt().props.onCancel();assert.equal(f.prompt().props.open,true);
+ complete(true);assert.equal(f.router().route.branchId,'a');assert.equal(f.counts().otherPrompts,1);assert.equal(f.prompt().props.open,false,'A canceled independent guard retires the old destination');
  f.other(true);f.mark('workflow-editor',false);f.router().navigate({branchId:'c',tab:'workflow'});assert.equal(f.router().route.branchId,'c');
 });
 
@@ -59,7 +64,7 @@ test('same-Branch tabs and non-abandoning nested guards retain workflow edits wi
 });
 
 test('pending and unavailable owner controls remain current without replacing the queued destination',async()=>{
- const f=await fixture();f.mark('workflow');f.router().navigate({branchId:'b',tab:'workflow'});f.actions.pending=true;f.actions.canDiscard=false;f.refresh();assert.equal(f.prompt().props.pending,true);assert.equal(f.prompt().props.secondaryAction.disabled,true);f.actions.pending=false;f.actions.canSave=false;f.refresh();assert.equal(f.prompt().props.confirmDisabled,true);f.actions.canSave=true;f.refresh();let complete;f.actions.save=done=>{complete=done};f.prompt().props.onConfirm();complete(true);assert.equal(f.router().route.branchId,'b');
+ const f=await fixture();f.mark('workflow');f.router().navigate({branchId:'b',tab:'workflow'});f.actions.pending=true;f.actions.canDiscard=false;f.refresh();assert.equal(f.prompt().props.pending,false,'Stay remains available during a separately started operation');assert.equal(f.prompt().props.confirmDisabled,true);assert.equal(f.prompt().props.secondaryAction.disabled,true);f.actions.pending=false;f.actions.canSave=false;f.refresh();assert.equal(f.prompt().props.confirmDisabled,true);f.actions.canSave=true;f.refresh();let complete;f.actions.save=done=>{complete=done};f.prompt().props.onConfirm();complete(true);assert.equal(f.router().route.branchId,'b');
 });
 
 test('browser Back restores the accepted URL before review and replays the exact destination once',async()=>{
@@ -77,6 +82,29 @@ test('save settlement during a Back restoration waits for the accepted entry bef
  const f=await fixture();for(const branchId of ['b','c'])f.router().navigate({branchId,tab:'workflow'});f.actions.branchId='c';f.refresh();f.mark('workflow');let complete;f.actions.save=done=>{complete=done};f.router().navigate({branchId:'d',tab:'workflow'});f.prompt().props.onConfirm();f.history.go(-1);f.flushOne();assert.equal(f.location.search,'?branch=b');f.mark('workflow',false);complete(true);assert.equal(f.router().route.branchId,'c','Save must not commit into a still-restoring browser entry');f.flushHistory();assert.equal(f.router().route.branchId,'d');assert.equal(f.location.search,'?branch=d');assert.equal(f.historyPosition(),3);
 });
 
+test('selected destination and callbacks stay fixed through rapid navigation and dirty Forward',async()=>{
+ const f=await fixture();f.actions.destinationName=route=>`Workflow ${route.branchId}`;
+ f.router().navigate({branchId:'b',tab:'workflow'});f.history.go(-1);f.flushHistory();f.mark('workflow');
+ f.history.go(1);f.flushHistory();
+ assert.equal(f.location.search,'?branch=a');assert.equal(f.prompt().props.focusCancel,true);
+ const intent=f.prompt();let accepted=0,complete;
+ assert.equal(f.router().navigate({branchId:'a',tab:'workflow'},false,()=>accepted++),false);
+ assert.equal(f.router().navigate({branchId:'c',tab:'workflow'},false,()=>accepted++),false);
+ assert.equal(f.prompt(),intent);assert.equal(accepted,0);
+ f.actions.discard=done=>{complete=done};f.prompt().props.secondaryAction.onClick();
+ f.mark('workflow',false);complete(true);f.flushHistory();complete(true);
+ assert.equal(f.router().route.branchId,'b');assert.equal(f.location.search,'?branch=b');assert.equal(f.historyPosition(),1);assert.equal(f.entries.length,2);
+});
+
+test('actions from a retired dialog cannot settle its replacement',async()=>{
+ const f=await fixture();f.mark('workflow');let calls=0;
+ f.actions.save=()=>calls++;f.actions.discard=()=>calls++;
+ f.router().navigate({branchId:'b',tab:'workflow'});const retired=f.prompt().props;retired.onCancel();
+ f.router().navigate({branchId:'c',tab:'workflow'});
+ retired.onCancel();retired.onConfirm();retired.secondaryAction.onClick();
+ assert.equal(f.prompt().props.open,true);assert.equal(calls,0);assert.equal(f.router().route.branchId,'a');
+});
+
 test('clean browser Back accepts its destination directly without adding history entries',async()=>{
  const f=await fixture();f.router().navigate({branchId:'b',tab:'workflow'});f.actions.branchId='b';f.refresh();f.history.go(-1);f.flushHistory();assert.equal(f.router().route.branchId,'a');assert.equal(f.location.search,'?branch=a');assert.equal(f.entries.length,2);assert.equal(f.prompt().props.open,false);
 });
@@ -88,7 +116,10 @@ test('reload retains the native unsaved-changes warning without treating present
 test('shared confirmation shell disables all actions and dismissal while pending',async()=>{
  const source=await readFile(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),module={exports:{}};const scope={module,exports:module.exports,require:name=>name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='react'?{useRef:()=>({current:false})}:new Proxy({},{get:(_target,key)=>String(key)})};
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
- for(const pending of [true,false]){let closed=0;const props={open:true,title:'Unsaved Changes',children:'Keep edits',pending,confirmLabel:'Save And Leave',cancelLabel:'Back To Editing',onCancel(){closed++},onConfirm(){},secondaryAction:{label:'Discard And Leave',onClick(){}}};const outer=module.exports.ConfirmDialog(props),shell=outer.type(outer.props),buttons=shell.props.children[2].props.children;
-  assert.equal(buttons.length,3);assert.equal(buttons[0].props.children,'Back To Editing');assert.equal(buttons[1].props.children,'Discard And Leave');assert.equal(buttons[2].props.children,pending?'Save And Leave…':'Save And Leave');assert.ok(buttons.every(button=>Boolean(button.props.disabled)===pending));shell.props.onClose();assert.equal(closed,pending?0:1);
+ for(const pending of [true,false]){let closed=0;const props={open:true,title:'Unsaved changes',children:'Keep edits',pending,confirmLabel:'Save and switch',cancelLabel:'Stay here',focusCancel:true,disableBackdropClose:true,onCancel(){closed++},onConfirm(){},secondaryAction:{label:'Discard changes and switch',onClick(){}}};const outer=module.exports.ConfirmDialog(props),shell=outer.type(outer.props),buttons=shell.props.children[2].props.children;
+  assert.equal(buttons.length,3);assert.equal(buttons[0].props.children,'Stay here');assert.equal(buttons[1].props.children,'Discard changes and switch');assert.equal(buttons[2].props.children,pending?'Save and switch…':'Save and switch');assert.ok(buttons.every(button=>Boolean(button.props.disabled)===pending));
+  assert.ok(buttons[0].props.autoFocus);assert.equal(buttons[2].props.autoFocus,false);
+  shell.props.onClose({},'backdropClick');assert.equal(closed,0);
+  shell.props.onClose({},'escapeKeyDown');assert.equal(closed,pending?0:1);
  }
 });

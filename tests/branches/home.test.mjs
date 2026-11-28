@@ -164,6 +164,32 @@ test('Branch Trigger Events retain replaced sources and unlinked events after ch
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);f.pass();
 });
 
+test('Run History OR filters effective activity and finished outcomes before stable cursor pagination',async t=>{
+ const f=await fixture(t),branch=f.deploy('Filtered history');
+ const setState=f.store.sqlite.prepare('UPDATE branch_executions SET state=? WHERE id=?');
+ const seeded=f.store.sqlite.transaction(()=>Array.from({length:162},(_,i)=>{
+  const state=['running','failed','completed'][i%3],run=f.branches.accept(branch.id,'history-'+i,'');
+  setState.run(state,run.id);
+  return {id:run.id,status:state==='running'?'waiting':state};
+ }))().reverse();
+ const base=`/api/branches/${branch.id}/executions`;
+ const list=async query=>{
+  const response=await f.app.inject({url:base+query});assert.equal(response.statusCode,200,response.body);return response.json();
+ };
+ const filter='?state=waiting&state=failed&state=waiting';
+ const first=await list(filter),second=await list(filter+'&before='+first.at(-1).id);
+ assert.equal(first.length,100);assert.equal(second.length,8);
+ const observed=[...first,...second].map(run=>({id:run.id,status:run.effectiveStatus??run.state}));
+ assert.deepEqual(observed,seeded.filter(run=>run.status!=='completed'));
+ assert.equal(new Set(observed.map(run=>run.id)).size,108);
+ assert.ok(first.some(run=>run.state==='running'&&run.effectiveStatus==='waiting'));
+ assert.deepEqual((await list('?state=failed')).map(run=>run.id),seeded.filter(run=>run.status==='failed').map(run=>run.id));
+ assert.deepEqual((await list('?state=failed&state=completed')).map(run=>run.id),seeded.filter(run=>run.status!=='waiting').slice(0,100).map(run=>run.id));
+ assert.deepEqual(await list('?state=running'),[]);
+ assert.equal((await f.app.inject({url:base+'?state=failed&state=invalid'})).statusCode,400);
+ f.pass();
+});
+
 test('merge target reads page all permitted outcomes independently of visible history and reject another Branch source',async t=>{
  const f=await fixture(t),branch=f.deploy('Merge targets'),ids=[];
  f.store.sqlite.transaction(()=>{for(let i=0;i<125;i++){const execution=f.branches.accept(branch.id,`target_${i}`,'');ids.push(execution.id);f.store.sqlite.prepare("UPDATE branch_executions SET state='completed' WHERE id=?").run(execution.id)}})();

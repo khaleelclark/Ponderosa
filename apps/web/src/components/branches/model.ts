@@ -8,7 +8,7 @@ export function makeTemplate(organization:boolean):AgentPortablePackageDto{
  const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow Team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team Lead':'Agent',engine:'default',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
 }
-export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
+export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled Workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
 export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'parallel'|'for_each',after?:string):{definition:BranchDefinition;selected:string}{
  const d=structuredClone(definition),id='step_'+createClientId(),previous=after?[...d.steps,...d.controls].find(n=>n.id===after):undefined;
  if(!d.steps.length&&!d.controls.length)d.entry=id;
@@ -54,15 +54,15 @@ export function routeBefore(definition:BranchDefinition,nodeId:string):{definiti
 }
 
 export type WorkflowNodeRemoval =
- | {ok:true;definition:BranchDefinition;nextSelected:string}
+ | {ok:true;definition:BranchDefinition;nextSelected?:string}
  | {ok:false;reason:string};
 
-/** Remove a Step while preserving the graph invariants required by deployment. */
+/** Remove a Step while preserving the draft graph and its required paths. */
 export function removeWorkflowNode(definition:BranchDefinition,nodeId:string):WorkflowNodeRemoval{
  const nodes=[...definition.steps,...definition.controls],node=nodes.find(item=>item.id===nodeId);
  if(!node)return {ok:false,reason:'This Step no longer exists.'};
  if(node.kind==='fork'||node.kind==='join'||node.kind==='map'||definition.controls.some(c=>c.kind==='map'&&c.workerId===nodeId))return {ok:false,reason:'Edit the complete parallel or For Each group in the advanced definition before removing one of its required parts.'};
- if(nodes.length<=1)return {ok:false,reason:'Every workflow needs at least one Step. Add another Step before removing this one.'};
+ if(nodes.length===1)return {ok:true,definition:{...definition,entry:'',steps:[],controls:[],edges:[]}};
  const successorEdge=definition.edges.find(edge=>edge.from===nodeId&&(edge.on==='success'||edge.on==='approved'));
  const successor=successorEdge?.to!==nodeId&&nodes.some(item=>item.id===successorEdge?.to)?successorEdge?.to:undefined;
  const fallbackOwners=definition.controls.filter(control=>(control.kind==='condition'||control.kind==='route')&&control.otherwise===nodeId);
@@ -147,6 +147,10 @@ export function effectiveStepFailure(definition:BranchDefinition,node:BranchStep
 export function setStepFailure(definition:BranchDefinition,nodeId:string,failure:BranchStep['failure']):BranchDefinition {
  return {...definition,steps:definition.steps.map(step=>step.id===nodeId?{...step,failure}:step),edges:definition.edges.filter(edge=>edge.from!==nodeId||edge.on!=='failure')};
 }
+export function conditionOutcomeLabel(node:Extract<WorkflowNode,{kind:'condition'}>,outcome:BranchDefinition['edges'][number]['on']):string|undefined {
+ return (outcome==='selected'?node.matchLabel:node.otherwiseLabel)?.trim()||undefined;
+}
+
 export function workflowIncoming(definition:BranchDefinition,nodeId:string):Array<{id:string;label:string;custom:boolean}> {
  const nodes=[...definition.steps,...definition.controls];
  return [...(definition.entry===nodeId?[{id:'workflow-input',label:'Workflow Input',custom:false}]:[]),...definition.edges.filter(edge=>edge.to===nodeId).map(edge=>({id:edge.id,label:nodeName(nodes.find(node=>node.id===edge.from)??{id:edge.from} as WorkflowNode),custom:edge.input?.kind==='literal'}))];

@@ -86,6 +86,7 @@ export function ChatMessageFrame({
     <article
       ref={articleRef}
       id={message.id}
+      data-history-order-key={message.historyOrderKey}
       className={`MuiBox-root chat-message chat-message-frame${assistantMessages ? " chat-message-assistant" : ""}${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
       aria-label={message.ariaLabel ?? `${senderName} Message`}
       onClick={selectable

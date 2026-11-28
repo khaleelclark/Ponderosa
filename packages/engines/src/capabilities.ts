@@ -336,16 +336,23 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     const status = record(candidate);
     const name = string(status?.name);
     if (!name) continue;
+    const runtimeStatus=string(status?.runtimeStatus);
+    const authenticationRequired=status?.authStatus==="notLoggedIn"||runtimeStatus==="authenticationRequired";
+    const unavailable=authenticationRequired||runtimeStatus==="failed"||runtimeStatus==="cancelled"||runtimeStatus==="disabled";
+    const toolsFailed=Boolean(string(status?.toolsError));
+    const available=!unavailable&&(!toolsFailed||runtimeStatus==="connected");
+    const detail=authenticationRequired?"Sign in to this service in the provider.":unavailable?"The provider reported that this service is unavailable.":toolsFailed&&!available?mcpByName.get(name)?.detail:undefined;
     const inventory=Object.entries(record(status?.tools)??{}),toolCount=inventory.length;
     const tools = toolDetails(inventory.map(([name,tool])=>({name,...(string(record(tool)?.description)?{description:string(record(tool)?.description)!}:{})})),toolBudget);
     mcpByName.set(name, {
       name,
       configured: true,
-      initialization: "initialized",
-      usable: true,
-      toolsDiscovered: true,
+      initialization: available?"initialized":unavailable?"failed":"not_initialized",
+      usable: available,
+      toolsDiscovered: !toolsFailed,
       toolCount, tools,
       health: "unknown",
+      ...(detail?{detail}:{}),
     });
   }
   for (const [name, startup] of input.mcpStartup ?? []) {

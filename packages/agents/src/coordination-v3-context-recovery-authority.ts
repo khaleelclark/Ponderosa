@@ -1,3 +1,6 @@
+import { failedSettingsHandoffUnsubmittedSql } from "./coordination-v3-transition-unsubmitted.js";
+import { heldTaskDecisionRepairs } from "./coordination-v3-task-decision-repair-hold.js";
+import { heldHumanRollover } from "./coordination-v3-rollover-held-task.js";
 import { chatArchiveActivationSql } from "./chat-archive.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -42,6 +45,10 @@ interface Row {
   provider_session_id: string; tool_contract_hash: string; source_fence: number;
   progress_json: string | null; state: ProviderContextRecoveryRequest["state"]; created_at: string; dismissed_at: string | null;
 }
+function frozenDismissedDelivery(recovery:ProviderContextRecoveryRequest|undefined) {
+  return recovery?.state==='dismissed' && recovery.progress?.phase==='held' &&
+    recovery.progress.reconstructionRolloverId ? recovery : undefined;
+}
 function project(row: Row): ProviderContextRecoveryRequest {
   return { id: row.id, agentId: row.agent_id, projectId: row.project_id, sourceRunId: row.source_run_id,
     scopeKey: row.scope_key, providerSessionId: row.provider_session_id, toolContractHash: row.tool_contract_hash,
@@ -70,6 +77,120 @@ export class CoordinationV3ContextRecoveryAuthority {
           WHERE s.activation_id=a.id AND s.source_kind='communication' AND c.project_id=a.project_id
             AND json_extract(c.sender_json,'$.kind')='user' AND json_extract(c.sender_json,'$.userId')='local-operator')
       LIMIT 1`).get(boundary.agentId,boundary.projectId,boundary.scopeKey,boundary.sourceRunId));
+  }
+  /** An interrupted settings handoff has its own Run. Recover only the exact
+   * saved message that never entered it, and preserve the old Run as history. */
+  interruptedSettingsHandoff(boundary: Pick<ProviderContextRecoveryRequest,"agentId"|"projectId"|"scopeKey"|"sourceRunId"|"sourceFence"|"providerSessionId"|"toolContractHash">, activationId:string) {
+    if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(boundary.projectId,boundary.agentId,boundary.scopeKey) ||
+       heldTaskDecisionRepairs(this.sqlite,boundary.projectId,[{activationId}]).has(activationId) ||
+       heldHumanRollover(this.sqlite,boundary.projectId,activationId))return undefined;
+    return this.sqlite.prepare(`SELECT c.id,c.source_run_id AS sourceRunId,
+      json_extract(handoff.payload_json,'$.settingsTransition.authorizationOriginRunId') AS authorizationOriginRunId,
+      json_extract(handoff.payload_json,'$.settingsTransition.authorizationSignatureHash') AS authorizationSignatureHash
+      FROM context_rollovers c
+      JOIN scheduler_runs prior ON prior.id=c.source_run_id
+      JOIN activation_sources link ON link.source_kind='context_rollover' AND link.source_id=c.id
+      JOIN agent_activations handoff ON handoff.id=link.activation_id AND handoff.kind='context_rollover_handoff'
+      JOIN scheduler_run_activations attached ON attached.activation_id=handoff.id
+      JOIN scheduler_runs r ON r.id=attached.run_id
+      JOIN agents owner ON owner.id=r.agent_id AND owner.project_id=r.project_id AND owner.deleted_at IS NULL
+      JOIN agent_activations a ON a.id=json_extract(handoff.payload_json,'$.settingsTransition.activationId')
+      WHERE r.id=? AND r.fencing_token=? AND r.status='outcome_unknown' AND r.terminal_at IS NOT NULL
+        AND r.agent_id=? AND r.project_id=? AND r.scope_key=? AND r.provider_session_id=?
+        AND handoff.agent_id=r.agent_id AND handoff.project_id=r.project_id AND handoff.scope_key=r.scope_key
+        AND json_extract(handoff.payload_json,'$.settingsTransition.oldContractHash')=?
+        AND json_extract(handoff.payload_json,'$.settingsTransition.engineId')=owner.active_engine
+        AND json_extract(handoff.payload_json,'$.settingsTransition.oldSessionId')=r.provider_session_id
+        AND c.agent_id=r.agent_id AND c.project_id=r.project_id AND c.scope_key=r.scope_key
+        AND c.old_provider_session_id=r.provider_session_id AND c.provider_session_generation=r.provider_session_id
+        AND c.state IN ('failed','outcome_unknown') AND c.terminal_at IS NOT NULL
+        AND c.handoff_event_id IS NULL AND c.replacement_run_id IS NULL AND c.replacement_session_id IS NULL
+        AND c.replacement_session_at IS NULL AND c.replacement_verified_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM continuation_handoffs h WHERE h.agent_id=r.agent_id AND h.source_execution_id=r.id)
+        AND prior.agent_id=r.agent_id AND prior.project_id=r.project_id AND prior.scope_key=r.scope_key
+        AND prior.provider_session_id=r.provider_session_id AND prior.status='completed'
+        AND prior.prompt_injection_state='injected' AND prior.fencing_token<r.fencing_token
+        AND a.id=? AND a.agent_id=r.agent_id AND a.project_id=r.project_id AND a.scope_key=r.scope_key
+        AND a.kind='human_message' AND a.prompt_class='human' AND a.state IN ('pending','retry_pending')
+        AND NOT ${chatArchiveActivationSql('a')} AND ${transitionUnsubmittedActivationSql('a')}
+        AND EXISTS(SELECT 1 FROM activation_sources source JOIN runtime_communications m ON m.id=source.source_id
+          WHERE source.activation_id=a.id AND source.source_kind='communication' AND m.project_id=a.project_id
+            AND json_extract(m.sender_json,'$.kind')='user' AND json_extract(m.sender_json,'$.userId')='local-operator')
+        AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations other WHERE other.run_id=r.id AND other.activation_id<>handoff.id)
+        AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.kind<>'turn')
+        AND NOT EXISTS(SELECT 1 FROM events e LEFT JOIN activity_projection p ON p.agent_id=e.agent_id AND p.seq=e.seq
+          WHERE e.agent_id=r.agent_id AND (p.execution_id=r.id OR json_extract(e.payload_json,'$.executionId')=r.id)
+            AND e.type IN ('work_start','tool_call','tool_result','command','file_change'))
+        AND NOT EXISTS(SELECT 1 FROM provider_operation_outbox o WHERE o.run_id=r.id AND o.state<>'completed')
+        AND NOT EXISTS(SELECT 1 FROM memory_exposure_runs e WHERE e.run_id=r.id
+          AND (e.attempted<>0 OR e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0))
+        AND NOT EXISTS(SELECT 1 FROM memory_exposure_sources e WHERE e.run_id=r.id)
+      LIMIT 1`).get(boundary.sourceRunId,boundary.sourceFence,boundary.agentId,boundary.projectId,boundary.scopeKey,
+        boundary.providerSessionId,boundary.toolContractHash,activationId) as {
+          id:string; sourceRunId:string; authorizationOriginRunId:string|null; authorizationSignatureHash:string|null;
+        }|undefined;
+  }
+
+  deliveryRetryObservation(agentId:string,activationId:string):ProviderContextRecoveryRequest|undefined {
+    const active=this.active(agentId);
+    if(active)return active;
+    const row=this.sqlite.prepare(`SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND state='dismissed'
+      AND json_extract(progress_json,'$.deliveryRetryActivationId')=? ORDER BY rowid DESC LIMIT 1`).get(agentId,activationId) as Row|undefined;
+    return row&&project(row);
+  }
+
+  dismissedDeliveryReconstruction(agentId:string,activationId:string) {
+    return frozenDismissedDelivery(this.deliveryRetryObservation(agentId,activationId));
+  }
+
+  requestDeliveryRetry(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">, activationId:string,
+    observed?:ProviderContextRecoveryRequest):string {
+    return this.sqlite.transaction(()=>{
+      if(!this.interruptedSettingsHandoff(boundary,activationId))
+        throw new ContextRecoveryConflictError('The interrupted handoff or saved message changed');
+      const latest=this.deliveryRetryObservation(boundary.agentId,activationId);
+      if(latest?.id!==observed?.id || latest?.state!==observed?.state || latest?.progress?.phase!==observed?.progress?.phase ||
+         latest?.progress?.deliveryRetryAttemptId!==observed?.progress?.deliveryRetryAttemptId)
+        throw new ContextRecoveryConflictError('Delivery recovery changed. Reload the conversation and try again.');
+      const current=latest?.state==='unsupported_fenced'?latest:undefined;
+      const previous=frozenDismissedDelivery(latest);
+      const bound=current??previous;
+      if(bound&&(bound.progress?.deliveryRetryActivationId!==activationId||bound.projectId!==boundary.projectId||
+          bound.scopeKey!==boundary.scopeKey||bound.sourceRunId!==boundary.sourceRunId||bound.sourceFence!==boundary.sourceFence||
+          bound.providerSessionId!==boundary.providerSessionId||bound.toolContractHash!==boundary.toolContractHash))
+        throw new ContextRecoveryConflictError('The saved message no longer owns this recovery');
+      if(bound?.progress?.reconstructionRolloverId)this.deliveryRetryRetirementReset(bound);
+      else if(current)this.assertReconstruction(current.agentId,current.id,undefined,true);
+      if(previous&&this.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1').get(boundary.agentId))
+        throw new ContextRecoveryConflictError('Old provider generation has not drained');
+      const currentProgress=current?.progress;
+      const attemptId=currentProgress?.phase==='reserved'&&(currentProgress.maintenanceAttempts??0)<3&&currentProgress.deliveryRetryAttemptId
+        ?currentProgress.deliveryRetryAttemptId:randomUUID();
+      // Carry the frozen boundary into a new reservation and leave the old receipt terminal.
+      const input={...boundary,idempotencyKey:`delivery-recovery:${attemptId}`};
+      const recoveryId=current?.id ?? (previous?this.insertRequest(input):this.request(input).request.id);
+      const progress:ProviderContextRecoveryProgress={...currentProgress,
+        reconstructionRolloverId:bound?.progress?.reconstructionRolloverId,
+        reconstructionPredecessorRolloverId:bound?.progress?.reconstructionPredecessorRolloverId,
+        phase:'reserved',updatedAt:new Date().toISOString(),
+        sourceWork:'held_unknown',deliveryRetryActivationId:activationId,deliveryRetryAttemptId:attemptId,
+        maintenanceAttempts:0,nextMaintenanceAt:undefined,message:undefined};
+      this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?')
+        .run(JSON.stringify(progress),recoveryId);
+      return attemptId;
+    })();
+  }
+
+  stopDeliveryRetry(agentId:string,id:string):void {
+    this.sqlite.transaction(()=>{
+      const recovery=this.active(agentId),progress=recovery?.progress;
+      if(recovery?.id!==id||!progress?.deliveryRetryActivationId||!['reserved','held'].includes(progress.phase))
+        throw new ContextRecoveryConflictError('Exact active delivery recovery changed');
+      this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?').run(JSON.stringify({
+        ...progress,phase:'held',deliveryRetryAttemptId:randomUUID(),updatedAt:new Date().toISOString(),
+        message:'Delivery recovery stopped. Retry the saved message to resume.',
+      }),id);
+    })();
   }
   requestMaintenance(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">) {
     if (!this.hasPendingMaintenanceInput(boundary)) throw new ContextRecoveryConflictError("No eligible pending input requires maintenance");
@@ -123,19 +244,23 @@ export class CoordinationV3ContextRecoveryAuthority {
         UNION ALL SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready') LIMIT 1`).get(input.agentId,input.agentId,input.agentId)) {
         throw new ContextRecoveryConflictError("Recovery conflicts with a live Run, pause or context transition");
       }
-      const id=randomUUID(),now=new Date().toISOString();
-      this.sqlite.prepare(`INSERT INTO provider_context_recovery_requests
-        (id,agent_id,project_id,source_run_id,scope_key,provider_session_id,tool_contract_hash,source_fence,idempotency_key,state,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,'unsupported_fenced',?)`).run(id,input.agentId,input.projectId,input.sourceRunId,input.scopeKey,input.providerSessionId,input.toolContractHash,input.sourceFence,input.idempotencyKey,now);
+      this.insertRequest(input);
       return { request: this.active(input.agentId)!, replayed: false };
     })();
+  }
+  private insertRequest(input: Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0]):string {
+    const id=randomUUID();
+    this.sqlite.prepare(`INSERT INTO provider_context_recovery_requests
+      (id,agent_id,project_id,source_run_id,scope_key,provider_session_id,tool_contract_hash,source_fence,idempotency_key,state,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'unsupported_fenced',?)`).run(id,input.agentId,input.projectId,input.sourceRunId,input.scopeKey,input.providerSessionId,input.toolContractHash,input.sourceFence,input.idempotencyKey,new Date().toISOString());
+    return id;
   }
   /** A committed reservation is never replayed, including after daemon restart. */
   reserveOperation(agentId: string, id: string, resumeUninvoked = false): boolean {
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id, agentId) as Row | undefined;
       const previous=row?.progress_json?JSON.parse(row.progress_json) as ProviderContextRecoveryProgress:undefined;
-      if (!row || previous && !(resumeUninvoked && !previous.nativeInvoked && ["reserved","drained","held"].includes(previous.phase))) return false;
+      if (!row || previous?.deliveryRetryActivationId || previous && !(resumeUninvoked && !previous.nativeInvoked && ["reserved","drained","held"].includes(previous.phase))) return false;
       this.assertSource(row);
       if (this.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests WHERE agent_id=? AND provider_session_id=?
         AND json_extract(progress_json,'$.nativeInvoked')=1 AND json_extract(progress_json,'$.phase')<>'context_accepted' LIMIT 1`)
@@ -218,13 +343,43 @@ export class CoordinationV3ContextRecoveryAuthority {
   }
   /** Only the existing invoked operation can reserve a replacement generation.
    * Its source work stays fenced, including after this hold becomes terminal. */
-  assertReconstruction(agentId:string,id:string,rolloverId?:string):ProviderContextRecoveryRequest {
+  assertReconstruction(agentId:string,id:string,rolloverId?:string,allowHeldDeliveryRetry=false):ProviderContextRecoveryRequest {
     const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=? AND state='unsupported_fenced'").get(agentId,id) as Row|undefined;
+    return this.assertReconstructionRow(row,rolloverId,allowHeldDeliveryRetry);
+  }
+
+  deliveryRetryRetirementReset(recovery:ProviderContextRecoveryRequest):number|undefined {
+    const rolloverId=recovery.progress?.reconstructionRolloverId;
+    if(!rolloverId)return undefined;
+    const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=? AND state=?")
+      .get(recovery.agentId,recovery.id,recovery.state) as Row|undefined;
+    const exact=this.assertReconstructionRow(row,rolloverId,true);
+    if(!exact.progress?.deliveryRetryActivationId || exact.state==='dismissed' && exact.progress.phase!=='held')
+      throw new ContextRecoveryConflictError('The saved message no longer owns this recovery');
+    if(this.sqlite.prepare('SELECT 1 FROM agents WHERE id=? AND active_session_id IS NOT NULL').get(exact.agentId))return undefined;
+    // Only the reset of this frozen generation may be excluded from memory authorization.
+    const resets=this.sqlite.prepare(`SELECT e.seq,json_extract(e.payload_json,'$.reason') AS reason,
+      (SELECT json_extract(prior.payload_json,'$.sessionId') FROM events prior
+        WHERE prior.agent_id=e.agent_id AND prior.seq<e.seq
+          AND prior.type IN ('session','session_snapshot','context_rollover_session_accepted')
+        ORDER BY prior.seq DESC LIMIT 1) AS session_id
+      FROM events e JOIN context_rollovers c ON c.id=? AND c.agent_id=e.agent_id
+      WHERE e.type='session_reset' AND e.created_at>=c.created_at
+      ORDER BY e.seq DESC LIMIT 2`).all(rolloverId) as {seq:number;reason:string;session_id:string|null}[];
+    const reset=resets[0];
+    if(resets.length!==1||reset?.reason!=='request_context_rollover'||reset.session_id!==exact.providerSessionId)
+      throw new ContextRecoveryConflictError('Canonical reconstruction retirement changed');
+    return reset.seq;
+  }
+
+  private assertReconstructionRow(row:Row|undefined,rolloverId:string|undefined,allowHeldDeliveryRetry:boolean):ProviderContextRecoveryRequest {
     const recovery=row&&project(row),progress=recovery?.progress;
-    if(!row||!recovery||!progress?.nativeInvoked||!['held','native_started'].includes(progress.phase)||
+    const deliveryRetry=progress?.deliveryRetryActivationId;
+    if(!row||!recovery||!progress||!(deliveryRetry ? progress.phase==='reserved'||allowHeldDeliveryRetry&&progress.phase==='held' : progress.nativeInvoked&&['held','native_started'].includes(progress.phase))||
         progress.usedTokens!==undefined||progress.contextUsageEventSequence!==undefined||
         (progress.reconstructionRolloverId??null)!==(rolloverId??null))
-      throw new ContextRecoveryConflictError('Canonical reconstruction requires its exact unmeasured invoked recovery');
+      throw new ContextRecoveryConflictError('Canonical reconstruction requires its exact reserved recovery');
+    const {agent_id:agentId,id}=row;
     if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(row.project_id,agentId,row.scope_key))
       throw new ContextRecoveryConflictError('Recovery scope access changed');
     if(!rolloverId)this.assertSource(row);
@@ -264,11 +419,23 @@ export class CoordinationV3ContextRecoveryAuthority {
    * that whole attempt, including prepared-but-unaccepted replacement input.
    * ponytail: one historical predecessor; multiple transfers need an audited lineage. */
   reconstructionPredecessor(recovery:ProviderContextRecoveryRequest,excludeRolloverId?:string):string|undefined {
-    const rows=this.sqlite.prepare(`SELECT id FROM context_rollovers WHERE agent_id=? AND provider_session_generation=? AND id<>coalesce(?,'')`)
+    const rows=this.sqlite.prepare(`SELECT prior.id FROM context_rollovers prior
+      WHERE prior.agent_id=? AND prior.provider_session_generation=? AND prior.id<>coalesce(?,'')
+        AND NOT (${failedSettingsHandoffUnsubmittedSql('prior')} AND EXISTS(
+          SELECT 1 FROM activation_sources source
+          JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+          WHERE source.source_kind='context_rollover' AND source.source_id=prior.id
+            AND json_type(handoff.payload_json,'$.settingsTransition')='object'))`)
       .all(recovery.agentId,recovery.providerSessionId,excludeRolloverId??null) as {id:string}[];
-    if(!rows.length)return undefined;
+    const deliveryRetry=recovery.progress?.deliveryRetryActivationId;
+    if(!rows.length && !deliveryRetry)return undefined;
     if(rows.length!==1)throw new ContextRecoveryConflictError('Historical context transfer ownership is ambiguous');
     const id=rows[0]!.id;
+    if(deliveryRetry){
+      if(this.interruptedSettingsHandoff(recovery,deliveryRetry)?.id!==id)
+        throw new ContextRecoveryConflictError('Interrupted settings handoff changed before delivery recovery');
+      return id;
+    }
     const safe=this.sqlite.prepare(`SELECT 1 FROM context_rollovers c JOIN scheduler_runs source ON source.id=c.source_run_id
       WHERE c.id=? AND c.agent_id=? AND c.project_id=? AND c.scope_key=? AND c.old_provider_session_id=?
         AND c.state IN ('failed','outcome_unknown') AND c.terminal_at IS NOT NULL
@@ -310,6 +477,13 @@ export class CoordinationV3ContextRecoveryAuthority {
         UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1`).get(agentId,agentId))
         throw new ContextRecoveryConflictError('Old provider generation has not drained');
       const now=new Date().toISOString();
+      const deliveryRetry=recovery.progress?.deliveryRetryActivationId;
+      if(deliveryRetry){
+        this.sqlite.prepare(`INSERT INTO activation_sources(activation_id,source_kind,source_id)
+          VALUES(?,'settings_transition_release',?)`).run(deliveryRetry,recovery.progress!.reconstructionPredecessorRolloverId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind IN ('settings_transition_reservation_wait','interrupted_provider_switch')")
+          .run(deliveryRetry);
+      }
       this.sqlite.prepare("UPDATE provider_context_recovery_requests SET state='dismissed',dismissed_at=?,progress_json=? WHERE id=? AND state='unsupported_fenced'")
         .run(now,JSON.stringify({...recovery.progress,phase:'canonical_reconstructed',updatedAt:now,nextMaintenanceAt:undefined}),id);
     })();
@@ -327,6 +501,7 @@ export class CoordinationV3ContextRecoveryAuthority {
     return this.sqlite.transaction(() => {
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=?").get(agentId,id) as Row | undefined;
       if (!row) throw new ContextRecoveryConflictError("Recovery request not found");
+      if(row.state==='dismissed')return project(row);
       const progress = row.progress_json ? JSON.parse(row.progress_json) as ProviderContextRecoveryProgress : undefined;
       if (progress && !["held", "context_accepted"].includes(progress.phase)) {
         throw new ContextRecoveryConflictError("Recovery operation must settle or be reconciled before dismissal");

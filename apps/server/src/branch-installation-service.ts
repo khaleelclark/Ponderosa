@@ -1,3 +1,4 @@
+import {requiredWorkflowImportDirectories,type BranchImportFolderIssue,type BranchDefinition,type BranchConfiguration} from '@ponderosa/core';
 import {mergeChatTitleHistory} from "./portable-chat-title-history.js";
 import {portableChatTitleHistoryError,AGENT_PACKAGE_MAX_BYTES} from "@ponderosa/core";
 import {MEMORY_CLEANUP_HOLD_REASONS,isMemoryCleanupHold} from './local-memory-authority.js';
@@ -55,6 +56,10 @@ type TreePlan={runtime?:import('@ponderosa/core').BranchRuntimeTreePlan;reviewSh
 type PendingWorkingRoot={chatRef:string;agentRef:string;chatId:string;sharedRoot:string};
 type PendingAccess={chatRef:string;agentRef:string;chatId:string;review:AccessReview;agentRefs?:string[]};
 /** Coordinates existing Chat/Agent lifecycle operations. It never creates provider Runs. */
+export class BranchImportFolderError extends Error {
+ constructor(readonly issue:BranchImportFolderIssue){super(issue.message)}
+}
+
 export class BranchInstallationService {
  private engine?:BranchPackageEngine;
  private outputApps?:OutputAgentApps;
@@ -487,6 +492,19 @@ export class BranchInstallationService {
   return snapshots;
  }
  private async checkMemory(plan:Row){const update=this.rolePlan(plan).memoryUpdate;if(update&&createHash('sha256').update(stableJson(await this.memoryInventory(plan.branch_id))).digest('hex')!==update.hash)throw new InstallationConflictError('Destination memory changed; review a new additive preview');}
+ private validateImportFolders(definition:BranchDefinition,bindings:BranchBindings,configuration:BranchConfiguration,hasChats:boolean,sourceBranchId?:string){
+  const directories=bindings?.directories??{};
+  if(typeof directories!=='object'||Array.isArray(directories))throw new Error('Choose working folder paths.');
+  const issue=(ref:string,message:string)=>new BranchImportFolderError({ref,sourceBranchId,message});
+  for(const ref of requiredWorkflowImportDirectories(definition,hasChats)){
+   if(!Object.hasOwn(directories,ref)||typeof directories[ref]!=='string'||!directories[ref].trim())throw issue(ref,'Choose a working folder on this host.');
+  }
+  for(const [ref,directory] of Object.entries(directories)){
+   if(typeof directory!=='string'||!directory.trim()||directory.length>4096)throw issue(ref,'Enter a working folder path of at most 4096 characters.');
+   try{if(!statSync(realpathSync(interpolateBranchText(directory,definition,configuration))).isDirectory())throw new Error()}
+   catch{throw issue(ref,'Choose an existing, accessible working folder on this host. Check the path and permissions.')}
+  }
+ }
  async preview(value:unknown,bindings:BranchBindings,branchId?:string,memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto,fileSelections:import('@ponderosa/core').BranchImportFileSelections={},treeBindings?:Record<string,BranchBindings>):Promise<BranchInstallationPreviewDto>{
   this.maintainPlans();
   if(!this.engine)throw new Error('Package Engine unavailable');
@@ -500,13 +518,10 @@ export class BranchInstallationService {
    for(const n of inventory.nodes){const destination=treeBindings[n.sourceBranchId]!;
     if(Object.keys(destination.agents??{}).length||Object.keys(destination.branches??{}).length)throw new Error('Tree Agent and dependency bindings come from the exact manifest');
     if(n.definition.trigger.kind!=='manual'&&!destination.triggers?.[n.definition.trigger.configRef])throw new Error('Review current trigger configuration for each automatic Branch');
+    this.validateImportFolders(n.definition,destination,validateBranchConfiguration(n.configuration,n.definition),n.chatRefs.length>0,n.sourceBranchId);
     const logical=Object.fromEntries(Object.keys(n.agentBindings).map(ref=>[ref,'pending-'+ref]));
     reviewed[n.sourceBranchId]=validateBranchBindings({...destination,agents:logical,branches:n.dependencies},n.definition);
     reviewed[n.sourceBranchId]!.agents={};
-    const config=validateBranchConfiguration(n.configuration,n.definition);
-    for(const step of n.definition.steps)if(step.kind==='script'&&!destination.directories[step.cwdRef])throw new Error('Choose every Branch Script directory');
-    for(const path of Object.values(destination.directories))if(!statSync(realpathSync(interpolateBranchText(path,n.definition,config))).isDirectory())throw new Error('Every Branch directory must exist');
-    if(n.chatRefs.length&&!destination.directories.workspace)throw new Error('Choose each Branch Chat working directory');
     for(const c of pkg.chats.filter(c=>n.chatRefs.includes(c.ref)))for(const a of c.agents)this.engine.validateAgent(a.definition,destination.engines??n.engines??{});
    }
    tree={...(pkg.executionTree?{runtime:planBranchExecutionTree(pkg.executionTree,pkg.definitionTree!,this.store.sqlite)}:{}),reviewSha256:createHash('sha256').update(stableJson({manifestSha256:inventory.sha256,bindings:reviewed})).digest('hex'),bindings:reviewed,branchMap:Object.fromEntries(inventory.nodes.map(n=>[n.sourceBranchId,randomUUID()])),chatOwners:Object.fromEntries(inventory.nodes.flatMap(n=>n.chatRefs.map(ref=>[ref,n.sourceBranchId])))};
@@ -549,8 +564,7 @@ export class BranchInstallationService {
   if(branchId&&memorySelection===undefined&&pkg.chats.some(c=>c.agents.some(a=>a.definition.memory?.some(m=>m.snapshot.chunks.length||m.snapshot.conflicts.length))))throw new Error('Memory-bearing workflow packages require fresh installation or explicit additive memory selections');
   if(memorySelection!==undefined&&(!branchId||pkg.mode!=='full'))throw new Error('Additive memory selection requires an existing workflow and full package');
   if(branchId&&this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId))throw new Error('Another update is still applying');
-  for(const directory of Object.values(tree?{}:bindings.directories))if(!statSync(realpathSync(interpolateBranchText(directory,pkg.definition,this.configurationFor(pkg,branchId)))).isDirectory())throw new Error('Working directories must exist');
-  if(!tree&&pkg.chats.length&&!bindings.directories.workspace)throw new Error('Choose a default working directory for imported Chats');
+  if(!tree)this.validateImportFolders(pkg.definition,bindings,this.configurationFor(pkg,branchId),pkg.chats.length>0);
   for(const chat of (tree?[]:pkg.chats))for(const agent of chat.agents)this.engine.validateAgent(agent.definition,bindings.engines??pkg.engines??{});
   for(const chat of pkg.chats)if(chat.agents.length>1&&chat.agents.some(a=>fileSelections[JSON.stringify([chat.ref,a.ref])]?.newManagedChatFolderName))this.engine.validateAgent(await composeBranchChat(chat,this.engine!),tree?tree.bindings[tree.chatOwners[chat.ref]!]!.engines??pkg.definitionTree!.nodes.find(n=>n.sourceBranchId===tree.chatOwners[chat.ref])!.engines??{}:bindings.engines??pkg.engines??{});
   if(branchId&&branch){for(const c of this.rows("SELECT id,project_id FROM conversations WHERE branch_id=? AND branch_execution_id IS NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=conversations.id AND r.state!='active')",branchId)){this.identity(branchId,c.id);for(const a of this.store.listAgents(c.project_id))if(a.conversationId===c.id)this.identity(branchId,c.id,a.id);}}

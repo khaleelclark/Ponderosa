@@ -75,7 +75,7 @@ export type BranchStep =
   | (StepBase & { kind: "human_gate"; prompt: string; editable: boolean; choices?: string[] })
   | (StepBase & { kind: "action"; action: string; configRefs: string[] });
 export type BranchControl =
-  | { id: string; label?: string; kind: "condition"; predicate: { source: string; equals: string }; otherwise: string }
+  | { id: string; label?: string; kind: "condition"; predicate: { source: string; equals: string }; otherwise: string; matchLabel?: string; otherwiseLabel?: string }
   | { id: string; label?: string; kind: "route"; otherwise: string }
   | { id: string; label?: string; kind: "fork"; joinId: string }
   | { id: string; label?: string; kind: "map"; joinId: string; workerId: string; source: "interpret" | "list" | "lines"; maxItems: number; maxConcurrentItems: number }
@@ -102,19 +102,23 @@ export interface BranchBindings {
   engines?: Record<string, string>;
   triggers?: Record<string, { sourceConfig: TriggerSourceConfig; enabled: boolean }>;
 }
-export type BranchExecutionState = "queued" | "running" | "waiting" | "completed" | "failed" | "canceled" | "skipped" | "merged";
+export const BRANCH_FINISHED_STATES = ['completed','failed','canceled','skipped','merged'] as const;
+export type BranchExecutionState = 'queued' | 'running' | 'waiting' | typeof BRANCH_FINISHED_STATES[number];
 export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" | "completed" | "failed" | "canceled" | "outcome_unknown";
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
 /** Mutually exclusive current activity of all nonterminal workflow Runs. */
 /** Effective projection of a nonterminal Run; stored execution states are unchanged. */
-export type BranchEffectiveStatus='queued'|'running'|'waiting'|'retrying'|'stopping'|'needs_attention';
+export const BRANCH_EFFECTIVE_STATUSES = ['queued','running','waiting','retrying','stopping','needs_attention'] as const;
+export type BranchEffectiveStatus = typeof BRANCH_EFFECTIVE_STATUSES[number];
+export const BRANCH_RUN_STATUSES = [...BRANCH_EFFECTIVE_STATUSES,...BRANCH_FINISHED_STATES] as const;
+export type BranchRunStatus = typeof BRANCH_RUN_STATUSES[number];
 export interface BranchRunCountsDto {running:number;waiting:number;queued:number;retrying:number;stopping:number;needsAttention:number}
 export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */
   lastUsedAt?: string;
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
- triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
+ triggerId?: string; triggerEnabled?: boolean; triggerKind?: TriggerSourceKind; nextFireAt?: string; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
 }
 export interface BranchCheckpointInvocationDto {
   id:string; mode:BranchCheckpointMode; state:'active'|'interrupting'|'interrupted'|'terminal';
@@ -144,6 +148,10 @@ export interface BranchStepExecutionDto {
   state: BranchAttemptState; input: string; result?: BranchResult; sealedResultId?: string;
   publishedResult?: BranchPublishedResultDto;
   resultFiles?: BranchResultFileDto[];
+  /** Presentation of complete stored output before history text is shortened. */
+  resultInRun?: boolean;
+  resultOutputTechnical?: boolean;
+  resultOutputTruncated?: boolean;
 }
 export interface BranchPublishedResultDto {
   label: string; sha256: string; reused: boolean;
@@ -175,7 +183,8 @@ export interface BranchExecutionDetailDto {
   decisions?: BranchDecisionDto[];
   /** Large evidence is previewed here; inspect one Step to load its complete text. */
   largeEvidenceOmitted?: boolean;
-  executionOutputTruncated?: boolean; executionInputTruncated?: boolean;
+  executionOutputTruncated?: boolean;
+  executionOutputTechnical?: boolean; executionInputTruncated?: boolean;
   /** Opaque cursor for older audit rows. Each collection is independently bounded. */
   nextCursor?: string;
 }
@@ -215,7 +224,7 @@ export interface BranchOperationalSummaryDto {
   state: "queued" | "running" | "waiting_agent" | "waiting_human" | "retrying" | "provider_unavailable" | "provider_attention" | "needs_reconciliation" | "blocked" | "completed" | "failed" | "canceled" | "skipped" | "merged";
   label: string; observedAt: string;
   counts: { completed:number; running:number; retrying:number; failed:number; waitingAgent:number; waitingHuman:number; needsReconciliation:number; mapItems:number; mapSettled:number };
-  agentWaits: Array<{requestId:string;stepId:string;stepExecutionId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation";label:string;since:string;reason?:string;nextRetryAt?:string}>;
+  agentWaits: Array<{requestId:string;stepId:string;stepExecutionId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention"|"needs_reconciliation"|"context_blocked"|"context_recovering"|"context_uncertain";label:string;since:string;reason?:string;nextRetryAt?:string;contextRetryActivationId?:string;contextRetryKey?:string}>;
   additionalAgentWaits: number;
 }
 /** Bounded Home metadata; full inputs, outputs and audit history stay in execution inspection. */
@@ -233,6 +242,9 @@ export interface BranchHomeDto {
   branchNames: Record<string, string>;
 }
 export interface BranchDecisionDto { id:string; kind:string; nodeId?:string; failed?:boolean; message:string; at:string }
+export type CreateBranchRequest =
+  | {name:string;idempotencyKey:string;example?:never}
+  | {example:'approval';idempotencyKey:string};
 export interface DeployBranchRequest {
   chatId: string; branchId?: string; expectedVersionId?: string;
   idempotencyKey: string; definition: BranchDefinition; bindings: BranchBindings;
@@ -264,6 +276,11 @@ export interface BranchPackageDto { schema: "ponderosa.branch-package.v1"; expor
 export interface BranchDeploymentPreviewDto {
   definitionHash: string; requirements: BranchRequirementsDto;
   operations: Array<{ kind: "create" | "update" | "detach" | "unchanged"; resource: string; ref: string; before?: string; after?: string }>;
+  unchangedScheduleEnabled?: boolean;
+  triggerChange?: {
+    before: Pick<import('./dto/branch-triggers.js').TriggerDefinitionDto,'sourceKind'|'sourceConfig'|'enabled'> | null;
+    after: Pick<import('./dto/branch-triggers.js').TriggerDefinitionDto,'sourceKind'|'sourceConfig'|'enabled'> | null;
+  };
   notes: string[];
 }
 export interface BranchResourceDto { stepExecutionId: string; templateRef: string; state: string; rootAgentId?: string; agentIds: string[]; error?: string }
@@ -334,6 +351,11 @@ export interface BranchFullImportAgentReviewDto {
 }
 export interface BranchMemoryUpdateSelectionDto {newAgents:Array<{chatRef:string;agentRef:string}>;teamChats:string[]}
 export interface BranchMemoryUpdateReviewDto {selection:BranchMemoryUpdateSelectionDto;incoming:Array<{chatRef:string;agentRef:string;snapshot:import('./dto/agents.js').PortableChatMemorySnapshotDto}>;destination:import('./dto/agents.js').PortableChatMemorySnapshotDto[];excludedRows:number}
+export interface BranchImportFolderIssue {ref:string;sourceBranchId?:string;message:string}
+export function requiredWorkflowImportDirectories(definition:BranchDefinition,hasChats:boolean):string[]{
+  const scripts=definition.steps.flatMap(step=>step.kind==='script'?[step.cwdRef]:[]);
+  return [...new Set(hasChats?['workspace',...scripts]:scripts)];
+}
 export interface BranchInstallationPreviewDto {id:string;definitionTreeReview?:{manifestSha256:string;reviewSha256:string;branches:number;bindings:Record<string,BranchBindings>};memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];runtimeDataReview?:{manifestSha256:string;owners:number;facts:number;disposition:'held';currentAuthority:false};fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */

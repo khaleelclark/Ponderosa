@@ -9,6 +9,7 @@ import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js
 // joins, activations, Runs, leases, fences, injections, and idempotency records
 // are authoritative SQLite state. Exposes NO HTTP (SPEC §7).
 
+import { AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -1153,7 +1154,8 @@ export class AgentStore extends AgentEventSessionFacade {
       if (!sameOwner(existing)) {
         throw new Error("Agent creation idempotency key was reused with different input");
       }
-      if (existing.status === "rolled_back") {
+      if (existing.status === "rolled_back" &&
+          (existing.result as { code?: string } | undefined)?.code !== AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED) {
         this.client.transaction(() => {
           this.client.prepare("DELETE FROM agent_creation_operation_members WHERE operation_id = ?").run(id);
           this.client.prepare(`

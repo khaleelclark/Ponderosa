@@ -101,7 +101,8 @@ export default defineConfig({
             urlPattern: /\/static\/js\//u,
             handler: "CacheFirst",
             options: {
-              cacheName: "ponderosa-javascript",
+              cacheName: "ponderosa-javascript-v2",
+              cacheableResponse: { statuses: [200], headers: { "Content-Type": "text/javascript; charset=utf-8" } },
               expiration: { maxEntries: 80, maxAgeSeconds: 30 * 24 * 60 * 60 },
             },
           }],

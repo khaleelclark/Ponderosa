@@ -6,11 +6,13 @@ import vm from 'node:vm';
 import '../shared/web-typescript-loader.mjs';
 const require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
 const ts=require('typescript'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
-const {branchScriptFailureSummary}=require('@ponderosa/core');
+const {branchScriptFailureSummary,notificationPreviewText}=require('@ponderosa/core');
 const {createHash}=require('node:crypto');
 const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
 const {ChatMessageBody}=await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const presentation=await import('../../apps/web/src/components/branches/executionPresentation.ts');
+const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
+const stepEvidence=await import('../../apps/web/src/components/branches/BranchStepEvidence.tsx');
 const {previewBranchExecutionActions,previewBranchExecutionDetail}=await import('../../apps/server/dist/branch-detail-preview.js');
 const source=await readFile(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8');
 
@@ -24,13 +26,14 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  let slot=0,transport=async()=>({}),queryPatch={};
  const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn,deps){const index=slot++,previous=slots[index];if(!previous||!deps||deps.some((value,i)=>value!==previous[i])){slots[index]=deps;effects.push(fn)}},useLayoutEffect(){}};
  const primitive=name=>props=>{
-  if(name==='Button')buttons.push(props);
+  if(name==='Button'||name==='ButtonBase'||name==='MenuItem')buttons.push(props);
   if(name==='TextField')fields.push(props);
   if(name==='Box'&&props.component==='details')disclosures.push(props);
-  const tag=props.component??(name==='Button'?'button':name==='Typography'?'span':'div');
+  if((name==='Menu'||name==='Dialog')&&!props.open)return null;
+ const tag=props.component??(['Button','ButtonBase'].includes(name)?'button':name==='Typography'?'span':'div');
   return React.createElement(tag,{...(props.id?{id:props.id}:{}),...(props.href?{href:props.href}:{}),...(props.label?{'data-label':props.label}:{}),...(props.role?{role:props.role}:{}),...(props['aria-label']?{'aria-label':props['aria-label']}:{}),...(tag==='details'?{open:props.open}:{}),...(props.disabled?{disabled:true}:{})},props.children,name==='Alert'?props.action:null);
  };
- const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Button','Chip','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,primitive(name)]));
+ const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Button','ButtonBase','Chip','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','Menu','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,primitive(name)]));
  const query=options=>{
   const key=options.queryKey[0];queries.set(key,options);
   let data=key==='branch-execution-operations'?operations:key==='branch-execution-actions'?{pages:[actionPage],pageParams:[undefined]}:undefined;
@@ -40,9 +43,11 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  const scope={exports:{},console,Date,JSON,Map,Set,Error,navigator:{clipboard:{writeText:async()=>{}}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){},document:{getElementById:id=>({scrollIntoView(){focused.push(id)},focus(){focused.push('focus:'+id)}})},require:name=>{
   if(name==='react')return hooks;
   if(name==='@tanstack/react-query')return {useQuery:query,useInfiniteQuery:query,useQueryClient:()=>queryClient,useMutation:options=>{const mutation={isPending:false,error:null,reset(){},mutate:input=>mutation.mutateAsync(input),async mutateAsync(input){requests.push({mutation:options,input});return options.mutationFn(input)}};mutations.push(mutation);return mutation;}};
-  if(name==='@ponderosa/core')return {branchScriptFailureSummary};
+  if(name==='@ponderosa/core')return {branchScriptFailureSummary,notificationPreviewText};
   if(name==='@mui/material')return mui;
   if(name.startsWith('@mui/icons-material/'))return {default:()=>null};
+  if(name==='../../clipboard')return {copyText:async()=>{}};
+  if(name==='./BranchStepEvidence')return stepEvidence;
   if(name==='../../clientId')return {createClientId:()=> 'same-command'};
   if(name==='../../branchesRouting')return {branchRoutePath:route=>'/branches?'+new URLSearchParams(Object.entries(route))};
   if(name==='../../api/productScope')return {productApiPath:path=>path};
@@ -63,7 +68,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  }};
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{...scope,require:name=>name==='react/jsx-runtime'?require('react/jsx-runtime'):scope.require(name)});
  const props={detail,definition:{name:'Published workflow',entry:'review',steps:[{id:'review',label:'Review Document',kind:'agent'},{id:'older',label:'Earlier Important Step',kind:'script'}],controls:[],edges:[],trigger:{kind:'manual'}},executions:[execution],viewStates,evidenceControls:React.createElement('div',null,'Load Older Evidence'),onBudgetSettings:id=>focused.push('budget:'+id)};
- const render=()=>{slot=0;buttons.length=0;disclosures.length=0;fields.length=0;reviewChildren.length=0;queries.clear();effects.length=0;return renderToStaticMarkup(React.createElement(scope.exports.ExecutionPanel,props));};
+ const render=()=>{slot=0;buttons.length=0;disclosures.length=0;fields.length=0;reviewChildren.length=0;queries.clear();effects.length=0;return renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(scope.exports.ExecutionPanel,props)));};
  return {execution,detail,operations,actionPage,queries,buttons,disclosures,fields,requests,focused,refetches,invalidations,reviewChildren,render,props,flushEffects:()=>effects.splice(0).forEach(fn=>fn()),setTransport:fn=>transport=fn,setQuery:(key,value)=>queryPatch[key]=value,button:label=>buttons.find(button=>button.children===label)};
 }
 function olderAttempt({unknown=false,current=true,blocked=false}={}){
@@ -75,14 +80,28 @@ test('selected run keeps canonical status, results and all focused decisions out
  const old=olderAttempt({unknown:true}),gate={kind:'gate',step:old.step,gate:{id:'gate-a',stepExecutionId:old.step.id,revision:4,state:'waiting',purpose:'approval',prompt:'Approve the original result?',proposal:'Exact proposed result',editable:false}};
  const f=fixture({actions:[gate,old]});
  const html=f.render();
- assert.equal(f.disclosures.length,1);assert.equal(f.disclosures[0].open,false);assert.match(html,/Needs Your Review/);assert.match(html,/Approve the original result/);assert.match(html,/Exact proposed result/);assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
- assert.ok(html.indexOf('Exact proposed result')<html.indexOf('<details'));assert.ok(html.indexOf('Original failure summary')<html.indexOf('<details'));assert.ok(html.indexOf('Result with the complete original wording')<html.indexOf('<details'));
+ const summary=details=>React.Children.toArray(details.children)[0]?.props.children;
+ const technical=f.disclosures.filter(details=>React.Children.toArray(summary(details)).includes('Technical Details'));
+ assert.equal(technical.length,1);
+ assert.equal(technical[0].open,false);
+ assert.match(html,/<div role="region" aria-label="Review prompt">[^]*?Approve the original result\?/);
+ assert.match(html,/<details><summary>If approved<\/summary>[^]*?Exact proposed result[^]*?<\/details>/);
+ assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
+ assert.ok(html.indexOf('Exact proposed result')<html.indexOf('Result with the complete original wording'));
+ const technicalHeading=html.indexOf('<summary>Technical Details');
+ assert.ok(technicalHeading>=0);
+ for(const content of ['Approve the original result','Exact proposed result','Original failure summary','Result with the complete original wording']){
+  const position=html.indexOf(content);
+  assert.ok(position>=0&&position<technicalHeading,`${content} belongs outside Technical Details`);
+ }
  assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each Items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
  assert.ok(f.queries.get('branch-execution-actions'));assert.ok(f.queries.get('branch-execution-operations'));
  assert.deepEqual(f.reviewChildren,[],'UI032: advanced review launchers stay unmounted until Technical Details opens');
  assert.ok(f.button('Retry Anyway'));assert.ok(f.button('Mark Observed Result'));
- f.disclosures[0].onToggle({currentTarget:{open:true}});f.render();
+ technical[0].onToggle({currentTarget:{open:true}});f.render();
+ assert.deepEqual(f.reviewChildren,[]);
+ f.button('Recovery options').onClick();f.render();
  assert.deepEqual(f.reviewChildren.map(child=>child.name),['BranchHistoryReview','BranchGroupReview','BranchDisclosureReview']);
  assert.ok(f.reviewChildren.every(child=>child.props.enabled===true),'Fresh live Run passes authority to each review surface');
 });
@@ -98,15 +117,14 @@ test('UI030: an accepted Skip shows one Stopping status, no Cancel or step decis
  }
 });
 const buttonOrUndefined=(f,label)=>{try{return f.button(label)}catch{return undefined}};
-test('Inspect Details opens and focuses the exact older invocation and enables its existing evidence query',()=>{
+test('Inspect Details loads evidence for the exact older invocation without opening run Technical Details',()=>{
  const f=fixture({actions:[olderAttempt({unknown:true})]});f.render();f.button('Inspect Details').onClick({currentTarget:{focus(){}}});
- const panel=f.render();
- assert.match(panel,/aria-label="Step details"/);assert.equal(f.disclosures[0].open,false);
- f.button('Inspect Technical Details').onClick();const html=f.render();
- assert.equal(f.disclosures[0].open,true);assert.match(html,/Pinned Run Graph And Accessible Outline/);assert.match(html,/Load Older Evidence/);assert.match(html,/Run ID: run-a/);assert.match(html,/branch-step-older-step/);
- assert.equal(f.queries.get('branch-step-evidence').enabled,true);assert.deepEqual(Array.from(f.queries.get('branch-step-evidence').queryKey),['branch-step-evidence','run-a','older-step']);
- assert.deepEqual(f.focused,['branch-summary-step','focus:branch-summary-step','branch-step-older-step','focus:branch-step-older-step']);
- f.disclosures[0].onToggle({currentTarget:{open:false}});f.render();assert.equal(f.queries.get('branch-step-evidence').enabled,false);
+ const html=f.render();
+ assert.match(html,/aria-label="Step details"/);assert.equal(f.disclosures[0].open,false);
+ assert.equal(f.queries.get('branch-step-evidence').enabled,true);
+ assert.deepEqual(Array.from(f.queries.get('branch-step-evidence').queryKey),['branch-step-evidence','run-a','older-step',7]);
+ f.buttons.find(button=>button.children?.[0]?.props?.children==='Back to Steps').onClick();
+ f.render();assert.equal(f.queries.get('branch-step-evidence').enabled,false);
 });
 
 test('a blocked historical failure remains evidence without becoming another action or changing run state',()=>{
@@ -165,16 +183,18 @@ test('a Run advancing during result fetch refreshes the existing query without d
  f.setQuery('branch-execution-output',{data:newest,isPending:false});assert.match(f.render(),/Newest complete result/);f.flushEffects();assert.equal(invalidations().length,1);
 });
 
-test('exceptionally large joined results reuse shared progressive expansion while normal results remain readable',()=>{
+test('large joined results render in full while ordinary Chat still collapses long messages',()=>{
  const f=fixture({output:'branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222'});f.execution.id='11111111-1111-1111-1111-111111111111';
  const content='Readable joined report.\n'.repeat(1000)+'COMPLETE LAST FACT';f.setQuery('branch-result-bundle',{data:{content,contentHash:'original'},isPending:false});
- const html=f.render();assert.match(html,/Show Full Message/);assert.doesNotMatch(html,/COMPLETE LAST FACT/);assert.equal(f.queries.get('branch-result-bundle').enabled,true);
+ const html=f.render();assert.doesNotMatch(html,/Show Full Message/);assert.match(html,/COMPLETE LAST FACT/);assert.equal(f.queries.get('branch-result-bundle').enabled,true);
+ const chat=renderToStaticMarkup(React.createElement(ChatMessageBody,{text:content}));assert.match(chat,/Show Full Message/);assert.doesNotMatch(chat,/COMPLETE LAST FACT/);
 });
 
 test('opening diagnostics preserves raw Script evidence, receipts, resolved decisions and existing full evidence route',()=>{
- const action=olderAttempt({unknown:true}),f=fixture({actions:[action]});f.detail.resources=[{stepExecutionId:'older-step',agentIds:['agent-a'],state:'cleanup_pending',error:'Cleanup must finish'}];f.detail.gates=[{id:'resolved',state:'resolved',prompt:'Recorded approval',resolution:{decision:'approve',output:'Accepted exact result'}}];
- f.render();f.button('Inspect Details').onClick({currentTarget:{focus(){}}});f.render();f.button('Inspect Technical Details').onClick();f.setQuery('branch-step-evidence',{data:{stepExecutionId:'older-step',input:'Exact input Ω',attempts:[{...action.attempt,scriptEvidence:{runtime:'Node.js',code:7,stderr:'Exact stderr Ω',stdout:'Exact stdout 🙂',cwd:'/owned-fixture',finishedAt:f.execution.updatedAt}}],sealedResult:{id:'seal',terminalAttemptId:'old-attempt',contentHash:'sealed-hash'}},isPending:false});
- const html=f.render();for(const value of ['Exact input Ω','Exact stderr Ω','Exact stdout 🙂','Exit code: 7','Accepted exact result','Cleanup must finish','Published version: saved-version'])assert.ok(html.includes(value),value);
+ const action=olderAttempt({unknown:true}),f=fixture({actions:[action]});f.detail.resources=[{stepExecutionId:'older-step',agentIds:['agent-a'],state:'cleanup_pending',error:'Cleanup must finish'}];f.detail.gates=[{id:'resolved',stepExecutionId:'older-step',state:'resolved',prompt:'Recorded approval',resolution:{decision:'approve',output:'Accepted exact result'}}];
+ f.render();f.button('Inspect Details').onClick({currentTarget:{focus(){}}});f.setQuery('branch-step-evidence',{data:{stepExecutionId:'older-step',input:'Exact input Ω',attempts:[{...action.attempt,scriptEvidence:{runtime:'Node.js',code:7,stderr:'Exact stderr Ω',stdout:'Exact stdout 🙂',cwd:'/owned-fixture',finishedAt:f.execution.updatedAt}}],sealedResult:{id:'seal',terminalAttemptId:'old-attempt',contentHash:'sealed-hash',result:{failed:true}}},isPending:false});
+ f.render();f.disclosures[0].onToggle({currentTarget:{open:true}});
+ const html=f.render();for(const value of ['Step Input','Stderr','Stdout','Exit code: 7','Recorded approval','Cleanup must finish'])assert.ok(html.includes(value),value);
  const resourceReview=f.reviewChildren.find(child=>child.name==='BranchResourceReview');
  assert.ok(resourceReview);assert.equal(resourceReview.props.branchId,'branch-a');assert.equal(resourceReview.props.executionId,'run-a');assert.equal(resourceReview.props.stepId,'older-step');assert.equal(resourceReview.props.enabled,true);
  f.props.authorityFresh=false;f.render();assert.equal(f.reviewChildren.find(child=>child.name==='BranchResourceReview').props.enabled,false,'Stale run data cannot authorize resource review');
@@ -182,7 +202,7 @@ test('opening diagnostics preserves raw Script evidence, receipts, resolved deci
 });
 
 test('a saved open technical view restores only its own selection and does not activate work',()=>{
- const saved={selected:'review',selectedInvocation:'recent-step',itemSearch:'late fact',itemFilter:'all',itemSort:'index',itemLimit:100,callsExpanded:false,showBundle:false,showFullOutput:false,technicalOpen:true};
+ const saved={selected:'review',summaryStepId:'recent-step',itemSearch:'late fact',itemFilter:'all',itemSort:'index',itemLimit:100,callsExpanded:false,showBundle:false,showFullOutput:false,technicalOpen:true};
  const f=fixture({savedView:saved});f.render();assert.equal(f.disclosures[0].open,true);assert.equal(f.queries.get('branch-step-evidence').enabled,true);assert.equal(f.queries.get('branch-map-item-search').enabled,true);assert.equal(f.requests.length,0);
  const other=fixture();other.render();assert.equal(other.disclosures[0].open,false);assert.equal(other.queries.get('branch-step-evidence').enabled,false);
 });
@@ -199,13 +219,13 @@ test('a changed Run revision refetches its stable actions owner without clearing
 });
 
 test('Merge discovers paged canonical candidates only on demand, independently of the visible history filter',async()=>{
- const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
+ const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);f.button('Run actions').onClick({currentTarget:{}});f.render();assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
  f.button('Merge Into Another Run').onClick();let html=f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,true);assert.match(html,/Loading eligible runs/);
  const completed={...f.execution,id:'completed-target',state:'completed',createdAt:'2026-10-25T01:00:00Z'};f.setQuery('branch-merge-targets',{data:{pages:[[completed]],pageParams:[undefined]},isPending:false,hasNextPage:true});html=f.render();assert.match(html,/completed/);assert.ok(f.button('Load Older Runs'));
  const field=f.fields.find(field=>field.label==='Keep This Execution');field.onChange({target:{value:'completed-target'}});f.render();assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target');
  const query=f.queries.get('branch-merge-targets');f.setTransport(async path=>{assert.equal(path,'/api/branches/branch-a/executions?mergeFor=run-a&before=older-cursor');return [completed]});assert.equal((await query.queryFn({pageParam:'older-cursor'}))[0].id,'completed-target');assert.equal(query.getNextPageParam(Array.from({length:100},(_,i)=>({...completed,id:'candidate-'+i}))),'candidate-99');assert.equal(query.getNextPageParam([completed]),undefined);
  f.setQuery('branch-merge-targets',{data:{pages:[[completed]]},error:Error('Candidate list unavailable'),isPending:false});html=f.render();assert.match(html,/Eligible runs could not be loaded/);assert.match(html,/Candidate list unavailable/);assert.ok(f.button('Retry Eligible Runs'));assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target','A failed refresh cannot silently erase a selected or uncertain intervention target');
- const empty=fixture();empty.render();empty.button('Merge Into Another Run').onClick();empty.setQuery('branch-merge-targets',{data:{pages:[[]]},isPending:false});assert.match(empty.render(),/No eligible runs are currently available/);
+ const empty=fixture();empty.render();empty.button('Run actions').onClick({currentTarget:{}});empty.render();empty.button('Merge Into Another Run').onClick();empty.setQuery('branch-merge-targets',{data:{pages:[[]]},isPending:false});assert.match(empty.render(),/No eligible runs are currently available/);
 });
 
 test('Script failure summaries keep the existing exit-code interpretation ahead of stdout and supplied Run links remain main',()=>{
@@ -250,7 +270,7 @@ async function interventionIntentFixture(t,action,{failure=new Error('Response l
  const {QueryClient,MutationObserver}=require('@tanstack/react-query');
  const ast=ts.createSourceFile('ExecutionPanel.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),declarations=new Map();let dialog;
  function visit(node){if(ts.isVariableDeclaration(node))declarations.set(node.name.getText(ast),node);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,visit)}visit(ast);assert.ok(dialog);
- const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{}),...(action==='resolve_schedule_update'?{occurrenceId:'exact-occurrence'}:{}),...(action==='resolve_guidance'?{attemptId:'exact-attempt',injectionId:'exact-injection'}:{})},updateApplied:'not_applied',reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
+ const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{}),...(action==='resolve_schedule_update'?{occurrenceId:'exact-occurrence'}:{}),...(action==='resolve_guidance'?{attemptId:'exact-attempt',injectionId:'exact-injection'}:{})},updateApplied:'not_applied',reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],openStep(){},stepOpener:{},refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
  for(const name of ['intervention','updateApplied','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{setters.push(name);scope[name]=value;};
  for(const name of ['ConfirmDialog','Stack','Alert','Typography','Button','TextField','MenuItem','FormControlLabel','Switch'])scope[name]=name;
  let release;
@@ -466,10 +486,22 @@ test('results show one stable publication, report reuse, and keep earlier output
   assert.equal(html.includes('data-label="Reused"'),saved==='reused');
   assert.match(html,/Review Document · Checking provider sign-in/);
   assert.match(html,/Retry eligible/);assert.match(html,/No action needed\./);
-  assert.match(html,/Earlier Important Step<\/span><span data-status="completed">Completed/);
+  assert.match(html,/Earlier Important Step<\/span><\/div><span data-status="completed">Completed/);
   assert.doesNotMatch(html,/signed out|Provider Settings|Private request/);
   assert.equal(f.disclosures[0].open,false);
  }
+});
+
+test('a context hold combines the blocked step, reason and retry above any output',()=>{
+ const f=fixture({output:''});
+ Object.assign(f.operations,{state:'blocked',counts:{},agentWaits:[{requestId:'held-request',stepId:'review',stepExecutionId:'recent-step',
+  state:'context_blocked',label:'Blocked',reason:'The saved session needs to be restored.',contextRetryActivationId:'held-activation'}]});
+ const html=f.render();
+ assert.match(html,/Blocked · Review Document/);
+ assert.match(html,/The saved session needs to be restored/);
+ assert.match(html,/No output yet/);
+ assert.doesNotMatch(html,/aria-label="Results"|0 Steps completed/);
+ assert.ok(f.button('Retry step'));
 });
 
 test('only a current confirmed provider hold needs attention, and terminal failure replaces the wait',()=>{
@@ -481,7 +513,7 @@ test('only a current confirmed provider hold needs attention, and terminal failu
  f.operations.agentWaits=[{requestId:'retry',stepId:'review',stepExecutionId:'recent-step',state:'provider_attention',label:f.operations.label,reason:'Sign in from Provider Settings. The step can resume when sign-in is verified.'}];
  let html=f.render();
  assert.match(html,/data-status="needs_attention">Needs Attention/);
- assert.match(html,/No output produced yet/);
+ assert.doesNotMatch(html,/aria-label="Results"/);
  assert.match(html,/sign-in is verified/);assert.ok(f.button('Open Provider Settings'));
  assert.doesNotMatch(html,/No action needed/);
 
@@ -507,4 +539,58 @@ test('late same-revision evidence cannot replace a completed step or its output'
  assert.equal(scope.merge([old,fresh]).steps[0].result.output,'Saved result');
  assert.equal(presentation.isOlderExecutionObservation(fresh,old),true);
  assert.equal(presentation.isOlderExecutionObservation(fresh,{...old,execution:{...old.execution,revision:8}}),false);
+});
+
+test('preview keeps stored output classifications and compares complete text before truncation',()=>{
+ const f=fixture({state:'completed',output:'a'.repeat(200)+' final'});
+ const step=f.detail.steps[0];
+ f.detail.steps=[
+  {...step,result:{output:f.execution.output,failed:false}},
+  {...step,id:'distinct',result:{output:'a'.repeat(200)+' distinct',failed:false}},
+  {...step,id:'technical',resultOutputTechnical:true,result:{output:JSON.stringify({text:'a'.repeat(200)}),failed:false}},
+  {...step,id:'authored',result:{output:JSON.stringify({text:'b'.repeat(200)}),failed:false}},
+ ];
+ const preview=previewBranchExecutionDetail(f.detail);
+ assert.equal(preview.steps[0].result.output,preview.steps[1].result.output);
+ assert.equal(preview.steps[0].resultInRun,true);
+ assert.equal(preview.steps[1].resultInRun,undefined);
+ assert.equal(preview.steps[1].resultOutputTruncated,true);
+ assert.equal(preview.steps[2].resultOutputTechnical,true);
+ assert.equal(preview.steps[3].resultOutputTechnical,undefined);
+ assert.equal(previewBranchExecutionDetail({...f.detail,execution:{...f.execution,output:'[Read the report](https://example.org)'}}).executionOutputTechnical,undefined);
+});
+
+test('step shortcuts skip the main output and match only complete or canonically equivalent results',()=>{
+ const f=fixture({state:'completed',output:'a'.repeat(200)+' final'});
+ const step=f.detail.steps[0];
+ f.detail.steps=[
+  {...step,result:{output:f.execution.output,failed:false}},
+  {...step,id:'distinct',stepId:'older',result:{output:'a'.repeat(200)+' distinct',failed:false}},
+  {...step,id:'technical',stepId:'technical',resultOutputTechnical:true,result:{output:'{"raw":true}',failed:false}},
+ ];
+ f.props.detail=previewBranchExecutionDetail(f.detail);
+ let html=f.render();
+ assert.doesNotMatch(html,/View result for Review Document|View result for technical|id="branch-result-recent-step"/);
+ assert.match(html,/View result for Earlier Important Step/);
+ assert.match(html,/id="branch-result-distinct"/);
+ f.buttons.find(button=>button['aria-label']==='Details for Review Document').onClick({currentTarget:{}});
+ f.render();
+ assert.ok(f.button('Back to Results'));
+
+ f.execution.output='short exact result';
+ step.result={output:f.execution.output,failed:false};
+ f.props.detail={...f.detail,steps:[step]};
+ html=f.render();
+ assert.doesNotMatch(html,/View result for Review Document|id="branch-result-recent-step"/);
+ assert.ok(f.button('Back to Results'));
+});
+
+test('a recorded cancellation reason is visible beside the canceled run action',()=>{
+ const f=fixture({state:'canceled',output:undefined});
+ f.execution.output=undefined;
+ f.execution.waitReason='Canceled while waiting for the review.';
+ f.props.onRerun=()=>{};
+ const html=f.render();
+ assert.ok(html.indexOf(f.execution.waitReason)<html.indexOf('<details'));
+ assert.ok(f.button('Run again with edited input'));
 });

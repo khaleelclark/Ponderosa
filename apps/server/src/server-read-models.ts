@@ -126,11 +126,22 @@ export function createServerReadModels(context: ReadModelContext) {
       const agent=store.getAgent(receipt.targetAgentId);
       if(agent?.projectId!==projectId) continue;
       if(!recoveryBoundaries.has(agent.id)) recoveryBoundaries.set(agent.id,store.uncertainProviderContextRecoveryBoundary(agent.id));
-      const recovery=coordinationV3.contextRecovery.active(agent.id),boundary=recovery??recoveryBoundaries.get(agent.id);
+      const recovery=coordinationV3.contextRecovery.active(agent.id);
+      const boundary=recovery ?? (receipt.settingsTransitionHold==='review_required'
+        ? coordinationV3.contextRecovery.dismissedDeliveryReconstruction(agent.id,receipt.activationId) : undefined) ??
+        recoveryBoundaries.get(agent.id);
       const activation=coordinationV3.activation(receipt.activationId,projectId);
       const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(receipt.activationId,agent.id,projectId) as {scope_key:string}|undefined;
       if(!boundary || activation?.agentId!==agent.id || scope?.scope_key!==boundary.scopeKey ||
           !["pending","retry_pending"].includes(activation.state)) continue;
+      const idleDeliveryRetry = !recovery || recovery.progress?.deliveryRetryActivationId === receipt.activationId &&
+        context.contextRecoveryActivity?.(agent.id) === 'idle';
+      if(idleDeliveryRetry && receipt.settingsTransitionHold==='review_required' && !receipt.taskDecisionRepairHold &&
+         !receipt.contextRolloverHold && coordinationV3.contextRecovery.interruptedSettingsHandoff(boundary,receipt.activationId)){
+        receipt.settingsTransitionHold='retry_available';
+        receipt.canRetry=true;
+        continue;
+      }
       if(!recovery && independentProviderSwitchInput(store,agent,receipt.activationId) &&
          interruptedProviderSwitch({store,coordinationV3,workspace},agent,boundary.scopeKey)) continue;
       receipt.contextRecoveryRequired={sourceRunId:boundary.sourceRunId,...(recovery?{recoveryId:recovery.id}:{})};

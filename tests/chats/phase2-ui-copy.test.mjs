@@ -8,7 +8,7 @@ test('short copy retains consequential warnings beside exact evidence',()=>{
  for(const text of ['Siblings · settled','pinned limit preserved','without replaying old effects or failed Requests','no POST retry']){
   assert.ok(generation.includes(text),text);
  }
- for(const text of ['Shared existing Project directory','no separate workspace or working copy','original Project audit access','fresh acceptance budget','unknown effects remain held','previously disclosed facts remain'])assert.ok(group.includes(text),text);
+ for(const text of ['shares the existing Project directory','no separate workspace or working copy','original Project audit access','fresh acceptance budget','unknown effects remain held','previously disclosed facts remain'])assert.ok(group.includes(text),text);
  const audit=read('branches/GroupJournalAudit.tsx');
  for(const text of ['Historical: true','currentAuthority: false','actionEligible: false','held: true','Private payloads suppressed','unknown imports held'])assert.ok(audit.includes(text),text);
  const lifecycle=read('lifecycle/LifecycleReview.tsx');

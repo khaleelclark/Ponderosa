@@ -1,8 +1,8 @@
-import type {BranchEffectiveStatus,BranchExecutionDto,BranchRunCountsDto} from '@ponderosa/core';
+import type {BranchRunStatus,BranchExecutionDto,BranchRunCountsDto} from '@ponderosa/core';
 import {semanticAgentStatus,type SemanticStatusKind} from '../SemanticStatus';
 
 /** Labels and filter order for the server's single effective-status projection. */
-export const BRANCH_STATUS_FILTERS:ReadonlyArray<{value:BranchEffectiveStatus|BranchExecutionDto['state'];label:string}>=[
+export const BRANCH_STATUS_FILTERS:ReadonlyArray<{value:BranchRunStatus;label:string}>=[
  {value:'queued',label:'Queued'},{value:'running',label:'Running'},{value:'waiting',label:'Waiting'},{value:'retrying',label:'Retrying'},
  {value:'stopping',label:'Stopping'},{value:'needs_attention',label:'Needs Attention'},{value:'completed',label:'Completed'},
  {value:'failed',label:'Failed'},{value:'canceled',label:'Canceled'},{value:'skipped',label:'Skipped'},{value:'merged',label:'Merged'}];
@@ -10,8 +10,12 @@ const label=new Map(BRANCH_STATUS_FILTERS.map(item=>[item.value,item.label]));
 const countKeys=[['running','Running'],['queued','Queued'],['waiting','Waiting'],['retrying','Retrying'],['stopping','Stopping'],['needsAttention','Needs Attention']] as const;
 
 /** A Run's displayed status: the server classification while active, its stored outcome once terminal. */
+export function branchExecutionStatusValue(run:BranchExecutionDto):BranchRunStatus {
+ return ['queued','running','waiting'].includes(run.state)?run.effectiveStatus??run.state:run.state;
+}
+
 export function branchExecutionStatus(run:BranchExecutionDto):{status:SemanticStatusKind;label:string} {
- const value=['queued','running','waiting'].includes(run.state)?run.effectiveStatus??run.state:run.state;
+ const value=branchExecutionStatusValue(run);
  return {status:value==='needs_attention'?'needs_attention':value==='running'?'running':['queued','waiting','retrying','stopping'].includes(value)?'waiting':semanticAgentStatus(value),label:label.get(value)??value};
 }
 

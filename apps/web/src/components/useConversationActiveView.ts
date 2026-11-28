@@ -2,6 +2,7 @@ import type { ConversationDetailView } from "../routing";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type Dispatch,
   type MutableRefObject,
@@ -91,7 +92,10 @@ export function useConversationResetEffect({
   setOlderCollaboration(value: undefined): void;
   setOlderMain(value: undefined): void;
 }): void {
+  const previousConversationId = useRef(conversationId);
   useEffect(() => {
+    if (previousConversationId.current === conversationId) return;
+    previousConversationId.current = conversationId;
     collaborationVisited.current = false;
     setOlderMain(undefined);
     setOlderCollaboration(undefined);

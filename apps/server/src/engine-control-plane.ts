@@ -47,6 +47,7 @@ import type {
 } from "./app-contracts.js";
 
 interface EngineControlPlaneContext {
+  runningAuthRefreshes?: ReadonlyMap<string, string>;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmission;
   engines: ReadonlyMap<string, EngineRegistration>;
   store: AgentStore;
@@ -148,7 +149,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   };
   const diagnosticCleanupPending = (id: string): boolean =>
     ["authentication", "availability"].some((kind) =>
-      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }) > 0);
+      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }, kind === "authentication" ? context.runningAuthRefreshes?.get(id) : undefined) > 0);
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
@@ -194,6 +195,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
+      if (id === "codex" && registration.authStatus && providerEnabled(id) && resources?.state !== "held") {
+        engineAuthStatuses.refreshBeforeExpiry(id, () => registration.authStatus!({ proactiveAuthRefresh: true }));
+      }
       auth = registration.authStatus
         ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && resources?.state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
@@ -495,6 +499,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     adapter: Adapter,
     model: string | undefined,
     forceRefresh: boolean,
+    waitForRefresh = false,
   ): Promise<EngineCapabilities> => {
     if (isClosed() || deletingProjectIds.has(projectId)) {
       return Promise.reject(new Error("Project capability discovery is unavailable during deletion or shutdown"));
@@ -517,9 +522,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     // A cache invalidation may make this result ineligible for storage, but it
     // must not create a second provider process beside discovery already in
     // progress. Ordinary readers keep receiving the last successful value;
-    // only an explicit refresh waits for the discovery already in flight.
+    // the Connected tools disclosure and explicit refresh can await settlement.
     if (running) {
-      if (!forceRefresh && cached) return Promise.resolve(cached.value);
+      if (!forceRefresh && !waitForRefresh && cached) return Promise.resolve(cached.value);
       // This keyed registry contains catalog discovery; the shared lifecycle
       // authority also tracks command operations that do not return a catalog.
       return running.operation as Promise<EngineCapabilities>;
@@ -591,7 +596,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       });
     authority.operation = promise;
     engineCapabilityDiscoveries.set(key, authority);
-    if (!forceRefresh && cached) {
+    if (!forceRefresh && !waitForRefresh && cached) {
       void promise.catch((error) => {
         app.log.warn({
           providerError: restrictedProviderExceptionLogDetail(error),

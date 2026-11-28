@@ -79,7 +79,9 @@ export function branchStepStatus(
     case 'canceled': return {status:'idle', label:'Canceled'};
     case 'outcome_unknown': return {status:'needs_attention', label:'Needs Attention'};
   }
-  if (needsAttention || wait?.state==='provider_attention' || wait?.state==='waiting_human' || wait?.state==='needs_reconciliation')
+  if (wait?.state==='context_blocked') return {status:'needs_attention',label:'Blocked'};
+  if (wait?.state==='context_recovering') return {status:'waiting',label:'Waiting'};
+  if (needsAttention || wait?.state==='provider_attention' || wait?.state==='waiting_human' || wait?.state==='needs_reconciliation' || wait?.state==='context_uncertain')
     return {status:'needs_attention', label:'Needs Attention'};
   if (step.state==='running' || wait?.state==='agent_running') return {status:'running', label:'Running'};
   if (waiting || step.state==='waiting') return {status:'waiting', label:'Waiting'};

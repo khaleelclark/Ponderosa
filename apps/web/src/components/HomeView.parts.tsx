@@ -162,12 +162,12 @@ export const homeSummaryGridSx = {
   "@container (min-width: 760px)": { gridTemplateColumns: "repeat(3, minmax(0, 1fr))" },
 } as const;
 
-export function HomeLayout({ context, loading, status, children, fill = false }: {
-  context: string; loading: boolean; status: string; children: ReactNode; fill?: boolean;
+export function HomeLayout({ title = "Home", context, loading, status, children, fill = false }: {
+  title?: string; context: string; loading: boolean; status: string; children: ReactNode; fill?: boolean;
 }): JSX.Element {
   return <Box className="ponderosa-scroll" aria-busy={loading} sx={{ minHeight: 0, overflowY: "auto", ...(fill ? { height: "100%" } : {}) }}>
     <Box component="span" role="status" sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}>{status}</Box>
-    <CompactWorkspaceHeader icon={<HomeOutlinedIcon />} title="Home" context={context} />
+    <CompactWorkspaceHeader icon={<HomeOutlinedIcon />} title={title} context={context} />
     <Box sx={{ p: { xs: 1.5, sm: 3, lg: 4 }, containerType: "inline-size" }}>
       <Stack spacing={{ xs: 2, sm: 3 }} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>{children}</Stack>
     </Box>

@@ -586,13 +586,7 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.retryHeldSettingsTransitionRequest(input);
   }
 
-  retryMessageDelivery(input: {
-    projectId: string;
-    activationId: string;
-    idempotencyKey: string;
-    expectedRolloverAttemptId?: string;
-    now?: string;
-  }): RetryMessageDeliveryResponse {
+  retryMessageDelivery(input: Parameters<CoordinationV3ActivationCommandAuthority["retryMessageDelivery"]>[0]): RetryMessageDeliveryResponse {
     return this.activationCommandAuthority.retryMessageDelivery(input);
   }
 
@@ -1054,6 +1048,10 @@ export class CoordinationV3Store {
 
   agentSnapshot(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto {
     return this.schedulerStatusReadModel.agentSnapshot(agentId);
+  }
+
+  recordReviewedBranchResult(input: Parameters<CoordinationV3RequestAuthority["recordReviewedBranchResult"]>[0]): RequestUpdateV3Result {
+    return this.requestAuthority.recordReviewedBranchResult(input);
   }
 
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {

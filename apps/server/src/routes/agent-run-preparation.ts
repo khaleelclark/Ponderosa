@@ -60,6 +60,7 @@ import {
   communicationV3Prompt,
   providerDynamicTools,
   retainedRuntimeTools,
+  settingsHandoffContractHash,
   providerSessionContractHash,
   providerRuntimeSessionContractHash,
   providerToolContractHash,
@@ -446,7 +447,8 @@ export async function prepareAgentRun(
   const targetCapabilityPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
   const targetCapabilityRestrictions=runtimeRestrictions(targetCapabilityPolicy,runtimeEngineId);
   const acceptedHandoffPacket=transitionActivation?.kind==='context_rollover_handoff'?store.acceptedProviderSessionInput(agent.id):undefined;
-  const acceptedHandoffRestrictions=acceptedHandoffPacket?.sourceManifest.schemaVersion===3?acceptedHandoffPacket.sourceManifest.normalRuntimeContract?.capabilityRestrictions:undefined;
+  const acceptedHandoffContract=acceptedHandoffPacket?.sourceManifest.schemaVersion===3?acceptedHandoffPacket.sourceManifest.normalRuntimeContract:undefined;
+  const acceptedHandoffRestrictions=acceptedHandoffContract?.capabilityRestrictions;
   const grantOnlyHandoff=Boolean(settingsTransition&&isGrantOnlyRestrictionsChange(acceptedHandoffRestrictions,targetCapabilityRestrictions));
   const capabilityPolicy=grantOnlyHandoff?{...targetCapabilityPolicy,restrictedCapabilityIds:acceptedHandoffRestrictions!.restrictedCapabilityIds}:targetCapabilityPolicy;
   const capabilityRestrictions=runtimeRestrictions(capabilityPolicy,runtimeEngineId);
@@ -498,24 +500,27 @@ export async function prepareAgentRun(
   const currentSystemPrompt = runtimeSystemPrompt(agent, managedRules);
   if(settingsTransition?.targetSystemPromptHash && createHash('sha256').update(currentSystemPrompt).digest('hex')!==settingsTransition.targetSystemPromptHash)
     throw new Error('The target instructions changed during context transition; the original work remains queued.');
-  const priorTransitionPacket = transitionActivation?.kind === 'context_rollover_handoff'
-    ? store.acceptedProviderSessionInput(agent.id) : undefined;
   const systemPrompt = folderTransition?.handoff ? folderTransition.sourceSystemPrompt
     : transitionActivation?.kind === 'context_rollover_handoff'
-    ? priorTransitionPacket?.exactSystemPrompt : currentSystemPrompt;
+    ? acceptedHandoffPacket?.exactSystemPrompt : currentSystemPrompt;
   if(systemPrompt===undefined)throw new Error('The accepted handoff instructions are unavailable; original context remains retained.');
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
   const schedulerRunScopeKey = v3SchedulerRunId
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
   const runtimeAuthentication = runContext.engineAuthStatuses.snapshot(runtimeEngineId);
   const authenticationUnchanged = runContext.engineAuthStatuses.captureAuthentication(runtimeEngineId);
-  const effectiveRuntimeSessionContractHash = providerRuntimeSessionContractHash({
-    runtimeSessionContractHash,
-    speed: effectiveSpeed,
-    ...(runtimeAuthentication.billingMode ? { billingMode: runtimeAuthentication.billingMode } : {}),
-    systemPromptHash,
-    scopeKey: schedulerRunScopeKey,
-  }, pauseRecovery ? undefined : preflightResumeSessionState?.toolContractHash);
+  const effectiveRuntimeSessionContractHash = acceptedHandoffContract
+    ? settingsHandoffContractHash({
+        engineId: runtimeEngineId, workingCopyId: workingCopy.id, model: effectiveModel, effort: effectiveEffort,
+        speed: acceptedHandoffContract.speed, observedBillingMode: runtimeAuthentication.billingMode,
+      }, providerToolHash, systemPromptHash, schedulerRunScopeKey, preflightResumeSessionState?.toolContractHash)
+    : providerRuntimeSessionContractHash({
+        runtimeSessionContractHash,
+        speed: effectiveSpeed,
+        ...(runtimeAuthentication.billingMode ? { billingMode: runtimeAuthentication.billingMode } : {}),
+        systemPromptHash,
+        scopeKey: schedulerRunScopeKey,
+      }, pauseRecovery ? undefined : preflightResumeSessionState?.toolContractHash);
   const ownsFrozenHandoff = preflightActiveRollover?.state === "requested" &&
     manifestActivationPayloads.some((activation) => activation.kind === "context_rollover_handoff" &&
       activation.payload && typeof activation.payload === "object" &&
@@ -854,7 +859,12 @@ export async function prepareAgentRun(
     ).get(settingsTransition.activationId,agent.id,project.id) as {scope_key:string;payload_json:string}|undefined;
     const source=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(settingsTransition.sourceRunId,agent.id) as {fencing_token:number}|undefined;
     const origin=store.providerSessionOriginRunId(agent.id,settingsTransition.oldSessionId);
-    const lineageStart=origin&&memoryLineageStart(store,agent.id,agent.conversationId,origin);
+    // Verified replacements carry memory authorization ancestry only when
+    // Local Memory is configured. Use the exact current generation otherwise.
+    const originRun=origin&&!opts.localMemory?store.sqlite.prepare(
+      'SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=? AND scope_key=?'
+    ).get(origin,agent.id,schedulerRunScopeKey) as {fencing_token:number}|undefined:undefined;
+    const lineageStart=origin&&(opts.localMemory?memoryLineageStart(store,agent.id,agent.conversationId,origin):originRun?.fencing_token);
     const uncertain=lineageStart!==undefined&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.id<>? AND
       (r.status IN ('leased','running') OR (r.scope_key=? AND r.fencing_token>=? AND
         (r.status='outcome_unknown' OR r.prompt_injection_state='injecting'
@@ -1733,7 +1743,7 @@ export async function prepareAgentRun(
           !runtimeAuthentication.diagnosticFailure && runtimeAuthentication.billingMode
         ? { observedBillingMode: runtimeAuthentication.billingMode } : {}),
       engineId: runtimeEngineId, workingCopyId: workingCopy.id, cwd: workingCopy.rootPath,
-      model: effectiveModel, effort: effectiveEffort, speed: effectiveSpeed,
+      model: effectiveModel, effort: effectiveEffort, speed: acceptedHandoffContract ? acceptedHandoffContract.speed : effectiveSpeed,
       dynamicTools: availableRuntimeTools, capabilityRestrictions,
     };
   }

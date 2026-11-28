@@ -105,9 +105,9 @@ test('schedule admission retains its actionable cause in stored Trigger Events w
    throw Error('Unexpected UI dependency '+name);
   };
   vm.runInNewContext(source,{exports,require:dependency});
-  const html=renderToStaticMarkup(React.createElement(exports.BranchTriggerAudit,{branchId:branch.id,diagnostics:lifecycle.sourceDiagnostics,onNavigate(){throw Error('Rendering cannot navigate')}}));
+  const html=renderToStaticMarkup(React.createElement(exports.BranchTriggerAudit,{branchId:branch.id,hasAutomaticTrigger:true,diagnostics:lifecycle.sourceDiagnostics,onViewRun(){throw Error('Rendering cannot navigate')}}));
   assert.ok(html.includes(cause),'Trigger Events exposes the same actionable cause');
-  assert.match(html,/Schedule Check Delayed/);assert.match(html,/No trigger events yet/);
+  assert.match(html,/Schedule Check Delayed/);assert.match(html,/No automatic trigger events recorded yet/);
   for(const value of [secret,labeled])assert.ok(!html.includes(value),'Rendered Trigger Events never recovers redacted values');
   await f.close();originalOpen=false;
   const store=new AgentStore(path.join(f.root,'data')),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));

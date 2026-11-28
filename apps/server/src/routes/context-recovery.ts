@@ -2,7 +2,7 @@ import { RetainedNativeAuthenticationError } from "../runtime-selection.js";
 import { ContextRecoveryConflictError } from "@ponderosa/agents";
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
 import type { FastifyInstance } from "fastify";
-import { ProviderContextRecoveryUnavailableError, UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY, type ProviderContextRecoverySupport } from "@ponderosa/core";
+import { ProviderContextRecoveryUnavailableError, UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY, type ProviderContextRecoveryRequest, type ProviderContextRecoverySupport } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 
 /** Explicit recovery never manufactures a scheduler Run or replays source work. */
@@ -15,7 +15,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
   recover?(request: import("@ponderosa/core").ProviderContextRecoveryRequest, policy?: "automatic"): Promise<void>;
   settle?(request: import("@ponderosa/core").ProviderContextRecoveryRequest): boolean;
   activity?(agentId:string,recoveryId:string): "running" | "cleanup_pending" | "idle";
-  blocker?(agentId:string): import("@ponderosa/core").ProviderContextRecoveryStatus["blocker"];
+  blocker?(agentId:string, reconstruction?:ProviderContextRecoveryRequest): import("@ponderosa/core").ProviderContextRecoveryStatus["blocker"];
   support(engineId: string): Readonly<ProviderContextRecoverySupport> | undefined;
 }) {
   const {store,coordinationV3} = context;
@@ -105,6 +105,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
       const stopRequested=await context.stopRecovery?.(request.params.id,request.params.recoveryId) ?? false;
       return {stopRequested,request:coordinationV3.contextRecovery.active(request.params.id),sourceWork:"held_unknown"};
     }catch(error){
+      if(error instanceof ContextRecoveryConflictError)return reply.code(409).send({error:error.message,retryable:false});
       app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:request.params.id},"Recovery stop cleanup remains pending");
       return reply.code(503).send({error:"Recovery stop requested; process cleanup remains pending. Source work stays held.",retryable:false});
     }
@@ -113,7 +114,11 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
     if(!store.getAgent(request.params.id))return reply.code(404).send({error:"Agent not found"});
     if(request.body?.acknowledgeStillBlocked!==true)return reply.code(400).send({error:"Acknowledge that original uncertain work remains unresolved"});
     try {
-      const wasActive=coordinationV3.contextRecovery.active(request.params.id)?.id===request.params.recoveryId;
+      const active=coordinationV3.contextRecovery.active(request.params.id);
+      const wasActive=active?.id===request.params.recoveryId;
+      if(wasActive&&active?.progress?.deliveryRetryActivationId&&
+        (context.activity?.(request.params.id,active.id)??'idle')!=='idle')
+        throw new ContextRecoveryConflictError('Delivery recovery cleanup must finish before dismissal');
       const recovery=coordinationV3.contextRecovery.dismiss(request.params.id,request.params.recoveryId);
       if(wasActive)context.changed?.(request.params.id);
       context.notifyScheduler();

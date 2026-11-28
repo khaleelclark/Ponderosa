@@ -1,5 +1,10 @@
+import { runExitUnprovenSql } from "./coordination-v3-transition-unsubmitted.js";
+export { runExitUnprovenSql };
+import { BRANCH_FINISHED_STATES } from "@ponderosa/core";
+export { BRANCH_EFFECTIVE_STATUSES } from "@ponderosa/core";
 import type Database from 'better-sqlite3';
-import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
+import type {BranchEffectiveStatus,BranchLiveOutputDto,BranchRunCountsDto,BranchRunStatus} from '@ponderosa/core';
+import {settingsTransitionActivationHoldSql,settingsTransitionRecoveryInProgressSql} from './coordination-v3-settings-transition-hold.js';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
 /** Bound the shared source map by live scheduler authority before mapping
@@ -76,24 +81,6 @@ const workingSteps = `
     ))
   )`;
 
-/** True when nothing yet proves the exact Run's provider processes exited: an
- * unexited registration, a live authority, an unsettled or unknown start, or no
- * registration at all. A never-injected Run with no durable start admission is
- * proven never started, because every provider spawn requires one. */
-export function runExitUnprovenSql(run:string,injection:string):string {
-  return `(EXISTS(SELECT 1 FROM provider_process_authority live WHERE live.run_id=${run})
-    OR EXISTS(SELECT 1 FROM host_lifecycle_commits registration WHERE registration.kind='provider-process-registration'
-      AND json_extract(registration.receipt_json,'$.runId')=${run} AND NOT EXISTS(SELECT 1 FROM host_lifecycle_commits exited
-        WHERE exited.kind='provider-process-exit' AND exited.identity=json_extract(registration.receipt_json,'$.authorityId')
-          AND json_extract(exited.receipt_json,'$.result')='observed_exited'))
-    OR EXISTS(SELECT 1 FROM host_lifecycle_commits claim WHERE claim.kind='provider-start-admission'
-      AND json_extract(claim.receipt_json,'$.runId')=${run} AND (EXISTS(SELECT 1 FROM host_lifecycle_commits unknown
-        WHERE unknown.kind='provider-start-unknown' AND unknown.identity=claim.identity) OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits settled
-        WHERE settled.kind='provider-start-settlement' AND settled.identity=claim.identity)))
-    OR NOT EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.runId')=${run})
-      AND (${injection}<>'not_injected' OR EXISTS(SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=${run})))`;
-}
-
 /** A held Stop/Skip that can no longer finish by itself: a terminal Run whose exit
  * is unproven while no live authority remains to observe it. Settlement uses the
  * same proof (runExitUnprovenSql), so Stopping never waits on something it cannot see. */
@@ -122,7 +109,15 @@ function classifiedBranchRunsCte(scope:string):string {
   ),${workingSteps}, attention_runs AS (
     SELECT DISTINCT current.execution_id FROM current_branch_attempts current
     LEFT JOIN coordination_requests request ON request.id=current.request_id
-    WHERE current.state='outcome_unknown' OR current.state='waiting' AND request.state IN ('outcome_unknown','superseded','recipient_unavailable')
+    WHERE current.state='outcome_unknown' OR current.state='waiting' AND (
+      request.state IN ('outcome_unknown','superseded','recipient_unavailable') OR
+      request.state IN ('open','in_progress') AND EXISTS (
+        SELECT 1 FROM activation_sources source JOIN agent_activations activation ON activation.id=source.activation_id
+        WHERE source.source_kind='request' AND source.source_id=request.id
+          AND activation.agent_id=request.recipient_agent_id AND activation.project_id=request.project_id
+          AND activation.state IN ('pending','retry_pending') AND ${settingsTransitionActivationHoldSql('activation')}
+          AND NOT ${settingsTransitionRecoveryInProgressSql('activation')}
+      ))
   ), retry_runs AS (
     SELECT DISTINCT current.execution_id FROM current_branch_attempts current
     WHERE current.state='prepared' AND current.available_at>:now
@@ -130,7 +125,9 @@ function classifiedBranchRunsCte(scope:string):string {
         JOIN activation_sources source ON source.source_kind='request' AND source.source_id=request.id
         JOIN agent_activations activation ON activation.id=source.activation_id
         WHERE request.id=current.request_id AND request.state IN ('open','in_progress')
-          AND activation.state='retry_pending' AND activation.available_at>:now)
+          AND activation.state='retry_pending' AND activation.available_at>:now
+          AND NOT ${settingsTransitionActivationHoldSql('activation')}
+          AND NOT ${settingsTransitionRecoveryInProgressSql('activation')})
   ), classified AS (
     SELECT run.id,run.branch_id,CASE
       WHEN run.cancel_requested=1 THEN CASE WHEN ${branchStopBlockedSql('run.id')} THEN 'needs_attention' ELSE 'stopping' END
@@ -142,7 +139,6 @@ function classifiedBranchRunsCte(scope:string):string {
   )`;
 }
 
-export const BRANCH_EFFECTIVE_STATUSES=['queued','running','waiting','retrying','stopping','needs_attention'] as const satisfies readonly BranchEffectiveStatus[];
 const emptyCounts=():BranchRunCountsDto=>({running:0,waiting:0,queued:0,retrying:0,stopping:0,needsAttention:0});
 
 /** One bounded aggregate read for a directory page or one lifecycle owner.
@@ -166,10 +162,16 @@ export function readBranchEffectiveStatuses(db:Database.Database,executionIds:re
 }
 
 /** History filter membership uses the exact count predicate across every page. */
-export function branchEffectiveStatusPage(db:Database.Database,branchId:string,status:BranchEffectiveStatus,beforeRowid:number,now=new Date().toISOString()):string[] {
+export function branchStatusPage(db:Database.Database,branchId:string,statuses:readonly BranchRunStatus[],beforeRowid:number,now:string):string[] {
+  const finished=BRANCH_FINISHED_STATES.filter(state=>statuses.includes(state));
   return (db.prepare(`${classifiedBranchRunsCte('branch_id=:branchId AND rowid<:before')}
-    SELECT classified.id FROM classified JOIN branch_executions execution ON execution.id=classified.id
-    WHERE classified.state=:status ORDER BY execution.rowid DESC LIMIT 100`).all({branchId,before:beforeRowid,status,now}) as Array<{id:string}>).map(row=>row.id);
+    SELECT execution.id,execution.rowid position FROM classified
+    JOIN branch_executions execution ON execution.id=classified.id
+    WHERE classified.state IN (SELECT value FROM json_each(:statuses))
+    UNION ALL
+    SELECT id,rowid position FROM branch_executions WHERE branch_id=:branchId AND rowid<:before
+      AND state IN (SELECT value FROM json_each(:finished))
+    ORDER BY position DESC LIMIT 100`).all({branchId,before:beforeRowid,statuses:JSON.stringify(statuses),finished:JSON.stringify(finished),now}) as Array<{id:string}>).map(row=>row.id);
 }
 
 /** Selected-Run diagnostics reuse the exact batch-count proof, not a second

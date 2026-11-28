@@ -7,6 +7,7 @@ interface CachedStatus {
   pending?: Promise<EngineAuthStatus>;
   error?: unknown;
   observedAt?: number;
+  refreshAttempted?: boolean;
   lastKnown?: { authenticated: boolean; observedAt: number };
 }
 
@@ -21,16 +22,35 @@ export class EngineAuthStatusCache {
   constructor(private readonly changed: (id: string) => void = () => {}) {}
 
   get(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
+    return this.load(id, load);
+  }
+
+  refreshBeforeExpiry(id: string, load: () => Promise<EngineAuthStatus>): void {
+    const current = this.entries.get(id);
+    if (!current?.value?.authenticated || current.value.diagnosticFailure || current.refreshAttempted || current.pending) return;
+    const remaining = current.expiresAt - Date.now();
+    if (remaining > 0 && remaining <= 5_000) void this.load(id, load, true).catch(() => undefined);
+  }
+
+  private load(id: string, load: () => Promise<EngineAuthStatus>, proactive = false): Promise<EngineAuthStatus> {
     const current = this.entries.get(id);
     const now = Date.now();
-    if (current?.value && current.expiresAt > now) return Promise.resolve(current.value);
+    if (!proactive && current?.value && current.expiresAt > now) return Promise.resolve(current.value);
     if (current?.pending) return current.pending;
     if (current?.error && current.expiresAt > now) return Promise.reject(current.error);
 
     const lastKnown = current?.lastKnown;
-    const entry: CachedStatus = { expiresAt: now, ...(lastKnown ? { lastKnown } : {}) };
+    const entry: CachedStatus = proactive && current
+      ? { ...current, refreshAttempted: true }
+      : { expiresAt: now, ...(lastKnown ? { lastKnown } : {}) };
     const failed = (error: unknown): never => {
-      if (this.entries.get(id) === entry) { this.entries.set(id, { ...entry, pending: undefined, error, observedAt: Date.now(), expiresAt: Date.now() + 5_000 }); this.changed(id); }
+      if (this.entries.get(id) === entry) {
+        const failedAt = Date.now();
+        this.entries.set(id, entry.value && entry.expiresAt > failedAt
+          ? { ...entry, pending: undefined }
+          : { error, observedAt: failedAt, expiresAt: failedAt + 5_000, lastKnown });
+        this.changed(id);
+      }
       throw error;
     };
     const pending = Promise.resolve().then(load).then(
@@ -42,6 +62,11 @@ export class EngineAuthStatusCache {
           return failed(error);
         }
         if (this.entries.get(id) === entry) {
+          if (value.status === "unknown" && value.reason !== "cleanup_failed" && entry.value && entry.expiresAt > Date.now()) {
+            this.entries.set(id, { ...entry, pending: undefined });
+            this.changed(id);
+            return value;
+          }
           if (value.status !== "unknown") {
             const prior = this.authentication.get(id);
             if (!prior || prior.authenticated !== value.authenticated || prior.billingMode !== value.billingMode) {
@@ -94,10 +119,17 @@ export class EngineAuthStatusCache {
     return () => this.authentication.get(id) === initial;
   }
 
+  refresh(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
+    const current = this.entries.get(id);
+    if (current) current.expiresAt = 0;
+    return this.get(id, load);
+  }
+
   invalidate(id: string): void {
     // Recheck cannot release a diagnostic/cleanup slot that is still owned.
     const current = this.entries.get(id);
-    if (!current?.pending) this.entries.delete(id);
+    if (current?.pending) current.expiresAt = 0;
+    else this.entries.delete(id);
     this.authentication.delete(id);
   }
 }

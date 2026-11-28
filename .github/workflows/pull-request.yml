@@ -44,3 +44,9 @@ jobs:
           node --import ./tests/shared/workspace-resolution.mjs --test tests/chats/creation.test.mjs tests/providers/native-control-routes.test.mjs
           node --import ./tests/shared/workspace-resolution.mjs --test \
             --test-name-pattern='scopes Chat counts and user-published files' tests/branches/product-scope.test.mjs
+
+      - name: Verify Branch waits, recovery, and manual runs
+        run: |
+          node --import ./tests/shared/workspace-resolution.mjs --test \
+            --test-name-pattern='held overdue retry|held report can record|unacknowledged provider send|Codex proactive refresh|Branch provider admission rechecks|schedule/once|new repeating schedules|Run input stays raw' \
+            tests/branches/operations.test.mjs tests/branches/api.test.mjs tests/branches/ui-state.test.mjs tests/providers/provider-access.test.mjs

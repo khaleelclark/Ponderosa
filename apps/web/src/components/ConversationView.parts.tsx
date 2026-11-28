@@ -35,10 +35,8 @@ import {
   useCallback,
   useMemo,
   type ReactNode,
-  type Dispatch,
-  type SetStateAction,
 } from "react";
-import type { ConversationDetailView } from "../routing";
+import type { ConversationDetailView, ConversationHeaderAction } from "../routing";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
@@ -145,6 +143,7 @@ function ConversationMessageComponent({
     <ChatMessageFrame
       message={{
         id: `master-message-${message.id}`,
+        historyOrderKey: message.canonicalOrderKey,
         author: fromManager
           ? message.role === "user"
             ? { kind: "operator", profile: operatorProfile }
@@ -270,98 +269,67 @@ const ConversationMessage = memo(ConversationMessageComponent);
 
 function ConversationHeader({
   titleControl,
-  onChatSettings,
   activeView,
-  agentWorkOpen,
+  agentWorkOpen = false,
   conversation,
   projectLabel,
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
-  onOpenProjectBrowser,
-  setAgentWorkOpen,
-  setRenameValue,
-  setRenameOpen,
-  setAddAgentsOpen,
-  setDeleteOpen,
-  setArchiveOpen,
+  onAction,
+  actionsDisabled,
   setActiveView,
 }: {
   titleControl?: ReactNode;
-  activeView: "main" | "collaboration" | "files" | "agents";
-  onChatSettings(): void;
-  agentWorkOpen: boolean;
-  conversation: ConversationDto;
+  activeView: ConversationDetailView;
+  agentWorkOpen?: boolean;
+  conversation?: Pick<ConversationDto, "title" | "archivedAt" | "archivePending" | "branchId">;
   projectLabel?: string;
   transcriptMarkdown: string | (() => string);
-  transcriptTitle: string;
-  onOpenProject(): void;
-  onOpenProjectBrowser(): void;
-  setAgentWorkOpen: Dispatch<SetStateAction<boolean>>;
-  setRenameValue: Dispatch<SetStateAction<string>>;
-  setRenameOpen: Dispatch<SetStateAction<boolean>>;
-  setAddAgentsOpen: Dispatch<SetStateAction<boolean>>;
-  setDeleteOpen: Dispatch<SetStateAction<boolean>>;
-  setArchiveOpen: Dispatch<SetStateAction<boolean>>;
+  transcriptTitle?: string;
+  onOpenProject?(): void;
+  onAction(action: ConversationHeaderAction): void;
+  actionsDisabled?: boolean;
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
-  const auditOnly=useWorkspaceReadOnly() || Boolean(conversation.archivedAt || conversation.archivePending);
-  const chatActions = useMemo<ChatOverflowAction[]>(()=>[
-    { label: "Chat Settings", onSelect: onChatSettings },
-    {
-      label: "Work",
-      icon: <AccountTreeOutlinedIcon fontSize="small" />,
-      onSelect: () => setAgentWorkOpen(true),
-    },
-    {
-      label: "Rename",
-      icon: <DriveFileRenameOutlineIcon fontSize="small" />,
-      onSelect: () => {
-        setRenameValue(conversation.title);
-        setRenameOpen(true);
-      },
-    },
-    {
-      label: "Add Agents…",
-      icon: <AddIcon fontSize="small" />,
-      onSelect: () => setAddAgentsOpen(true),
-    },
-    ...(!conversation.branchId ? [{ label: "Archive", onSelect: () => setArchiveOpen(true) }] : []),
-    {
-      label: "Delete permanently",
-      icon: <DeleteOutlineIcon fontSize="small" />,
-      destructive: true,
-      onSelect: () => setDeleteOpen(true),
-    },
-  ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,conversation.branchId,setRenameOpen,setAddAgentsOpen,setDeleteOpen,setArchiveOpen]);
+  const title = conversation?.title ?? "New Chat";
+  const auditOnly = useWorkspaceReadOnly() || Boolean(conversation?.archivedAt || conversation?.archivePending);
+  const chatActions: ChatOverflowAction[] = [
+    { label: "Chat Settings", onSelect: () => onAction("settings") },
+    { label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" />, onSelect: () => onAction("work") },
+    { label: "Rename", icon: <DriveFileRenameOutlineIcon fontSize="small" />, onSelect: () => onAction("rename") },
+    { label: "Add Agents…", icon: <AddIcon fontSize="small" />, onSelect: () => onAction("addAgents") },
+    ...(!conversation?.branchId ? [{ label: "Archive", onSelect: () => onAction("archive") }] : []),
+    { label: "Delete permanently", icon: <DeleteOutlineIcon fontSize="small" />, destructive: true, onSelect: () => onAction("delete") },
+  ].map(action => ({...action, disabled: actionsDisabled}));
   const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`;
-  const browserAction = useMemo(() => <Tooltip title="Open Browser">
-    <IconButton aria-label="Open Browser" onClick={onOpenProjectBrowser}><LanguageIcon /></IconButton>
-  </Tooltip>,[onOpenProjectBrowser]);
-  const renderCollapsedMenu = useCallback((openUsage:(anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Stack direction="row" spacing={0.5} sx={{alignItems:"center",flexWrap:"nowrap"}}>
+  const browserAction = <Tooltip title="Open Browser">
+    <span><IconButton aria-label="Open Browser" disabled={actionsDisabled} onClick={() => onAction("browser")}><LanguageIcon /></IconButton></span>
+  </Tooltip>;
+  const renderCollapsedMenu = (openUsage:(anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Stack direction="row" spacing={0.5} sx={{alignItems:"center",flexWrap:"nowrap"}}>
     {fullTrigger}
     {fullTrigger && !auditOnly ? browserAction : null}
     {!auditOnly || !fullTrigger ? <ChatOverflowMenu
       label={menuLabel} transcriptMarkdown={transcriptMarkdown}
-      transcriptFileName={transcriptFileName(transcriptTitle)} showExports={!auditOnly}
+      transcriptFileName={transcriptFileName(transcriptTitle ?? title)} showExports={!auditOnly}
       actions={[
         ...(auditOnly ? [] : chatActions),
         ...(!fullTrigger ? [
           {label:"Provider Usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
-          ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
+          ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,disabled:actionsDisabled,onSelect:()=>onAction("browser")}] : []),
         ] : []),
       ]}
     /> : null}
-  </Stack>,[menuLabel,transcriptMarkdown,transcriptTitle,auditOnly,chatActions,onOpenProjectBrowser,browserAction]);
+  </Stack>;
   return (
     <TabbedWorkspaceFrame
       collapsedIconTabs
       collapsedActions={<PrimaryHeaderActionsOutlet renderTrigger={renderCollapsedMenu}/>}
       compactMobile
       icon={<ChatBubbleOutlineIcon />}
-      title={conversation.title}
+      title={title}
       titleControl={titleControl}
-      context={
+      context={onOpenProject &&
         <ProjectRelationshipLink
           projectLabel={projectLabel}
           onOpenProject={onOpenProject}
@@ -373,7 +341,7 @@ function ConversationHeader({
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`}
             transcriptMarkdown={transcriptMarkdown}
-            transcriptFileName={transcriptFileName(transcriptTitle)}
+            transcriptFileName={transcriptFileName(transcriptTitle ?? title)}
             actions={chatActions}
           />
         </>
@@ -383,10 +351,7 @@ function ConversationHeader({
         activeLabel: agentWorkOpen ? "Work" : undefined,
         label: "Chat Views",
         value: agentWorkOpen ? false : activeView,
-        onChange: next => {
-          setAgentWorkOpen(false);
-          setActiveView(next);
-        },
+        onChange: setActiveView,
         items: [
           {
             value: "main",
@@ -408,10 +373,17 @@ function ConversationHeader({
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
           },
-        ].filter(item=>!auditOnly||item.value!=="agents") as Array<{value:ConversationDetailView;label:string;icon:JSX.Element}>,
+        ].filter(item => !auditOnly || item.value !== "agents")
+          .map(item => ({ ...item, value: item.value as ConversationDetailView, disabled: actionsDisabled && item.value !== "main" })),
       }}
     />
   );
+}
+
+export function EmptyChatMessage(): JSX.Element {
+  return <Typography variant="body2" color="text.secondary">
+    No messages yet. Send a message or mention an Agent to start this Chat.
+  </Typography>;
 }
 
 function MainConversationTimeline({
@@ -458,7 +430,7 @@ function MainConversationTimeline({
   const timeline=[...mainTimeline.flatMap(entry=>entry.kind!=='message'&&visibleIds.has(entry.id)&&!(entry.kind==='decision'&&entry.event.decision.status==='pending')?[entry]:[]),...replyRows.filter(row=>row.provisional||visibleIds.has(`message:${row.message.id}`)).map(row=>({kind:'message' as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback}))].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
-      <OutgoingMessageRow empty={<Typography variant="body2" color="text.secondary">No messages yet · send a message or mention an Agent</Typography>}
+      <OutgoingMessageRow empty={<EmptyChatMessage />}
         entries={timeline.map(entry => ({
         id: entry.id, createdAt: entry.at,
         ...(entry.kind === "message" ? {communicationEventId:entry.message.communicationEventId,creationIdempotencyKey:entry.message.creationIdempotencyKey,projectId} : {}),

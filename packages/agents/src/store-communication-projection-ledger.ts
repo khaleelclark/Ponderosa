@@ -1,6 +1,7 @@
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import { communicationRecipientQuery } from "./communication-recipient-query.js";
 import {
   communicationHasProjectionTarget,
   type AgentDto,
@@ -130,16 +131,10 @@ export class AgentCommunicationProjectionLedger {
       projection.surface === "direct_agent_audit" &&
       Boolean(this.client.prepare(`
         SELECT 1
-        FROM activation_sources source
-        JOIN agent_activations activation ON activation.id = source.activation_id
-        JOIN runtime_communications communication ON communication.id = source.source_id
-        WHERE source.source_kind = 'communication'
-          AND communication.project_id = ?
-          AND activation.project_id = communication.project_id
-          AND activation.agent_id = ?
-          AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
+        ${communicationRecipientQuery}
+        AND activation.agent_id = ?
         LIMIT 1
-      `).get(projectId, projection.projectionKey, event.eventId, event.eventId));
+      `).get(event.eventId, event.eventId, projectId, projection.projectionKey));
     const targetAllowed = runtimeRecipientAllowed ||
       communicationHasProjectionTarget(event, projection.surface, projection.projectionKey);
     if (targetAllowed) {

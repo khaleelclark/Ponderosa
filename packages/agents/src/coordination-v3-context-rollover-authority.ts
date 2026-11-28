@@ -1,6 +1,6 @@
 import type { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
 import { CapabilityPolicyStore } from "./capability-policy-store.js";
-import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
+import { failedSettingsHandoffUnsubmittedSql, transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   publicProviderFailureSummary,
@@ -555,7 +555,14 @@ export class CoordinationV3ContextRolloverAuthority {
       }
       if (existing && input.settingsTransition) {
         const prior=this.settingsTransition(existing.id);
-        if(prior && stableJson(prior)===stableJson(input.settingsTransition)) {
+        const settled=prior&&this.sqlite.prepare(`SELECT 1 FROM context_rollovers prior
+          JOIN agent_activations original ON original.id=? AND original.project_id=prior.project_id
+            AND original.agent_id=prior.agent_id AND original.scope_key=prior.scope_key
+          WHERE prior.id=? AND ${failedSettingsHandoffUnsubmittedSql('prior')}
+            AND (original.state='cancelled' OR EXISTS(SELECT 1 FROM activation_sources released
+              WHERE released.activation_id=original.id AND released.source_kind='settings_transition_release'
+                AND released.source_id=prior.id))`).get(prior.activationId,existing.id);
+        if(!settled && prior && stableJson(prior)===stableJson(input.settingsTransition)) {
           if(existing.project_id!==input.projectId || existing.source_run_id!==input.sourceRunId ||
              existing.scope_key!==input.scopeKey || existing.compaction_cutoff_ordinal!==input.compactionCutoffOrdinal ||
              existing.compaction_cutoff_event_id!==input.compactionCutoffEventId ||
@@ -564,8 +571,8 @@ export class CoordinationV3ContextRolloverAuthority {
             throw new Error("Settings transition replay conflicts with its durable boundary");
           return {rollover:this.view(existing),created:false};
         }
-        if(existing.state!=='completed' || existing.project_id!==input.projectId ||
-           existing.old_provider_session_id!==input.oldProviderSessionId)
+        if((existing.state!=='completed' && !settled) || existing.project_id!==input.projectId ||
+           existing.scope_key!==input.scopeKey || existing.old_provider_session_id!==input.oldProviderSessionId)
           throw new Error("A prior context transition remains active or uncertain");
       }
       if (existing && !input.settingsTransition && !input.recoveryReconstruction) {

@@ -1,12 +1,11 @@
 import {useReportWorkspaceRead} from "../WorkspaceRefreshContext";
 import {WorkspaceQueryError} from "../WorkspaceQueryError";
 import {workspaceRead} from "../../workspaceAvailability";
-import {useState} from 'react';
+import {useRef,useState} from 'react';
 import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,Stack,Typography} from '@mui/material';
 import {useInfiniteQuery} from '@tanstack/react-query';
 import type {BranchLifecycleDto,TriggerOccurrenceDto} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
-import type {BranchRoute} from '../../branchesRouting';
 import {OccurrenceAudit} from '../TriggerOccurrenceAudit';
 
 export function BranchInstallationUpdateStatus({update,onCancelUpdate,canceling=false}:{update:BranchLifecycleDto['updates'][number];onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
@@ -26,19 +25,31 @@ export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}
  </Stack>;
 }
 
-export function BranchTriggerAudit({onNavigate,branchId,diagnostics=[]}:{diagnostics?:BranchLifecycleDto["sourceDiagnostics"];branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
+export function BranchTriggerAudit({onViewRun,onViewRunExited,branchId,hasAutomaticTrigger,diagnostics=[]}:{diagnostics?:BranchLifecycleDto["sourceDiagnostics"];branchId:string;hasAutomaticTrigger?:boolean;onViewRun(executionId:string):boolean;onViewRunExited():void}):JSX.Element {
  const [open,setOpen]=useState(false);
  const pages=useInfiniteQuery({queryKey:['branch-trigger-occurrences',branchId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<TriggerOccurrenceDto[]>(`/api/branches/${branchId}/trigger/occurrences?limit=50${pageParam?'&before='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.length===50?last.at(-1)?.id:undefined,enabled:open,refetchInterval:open?5000:false});
  useReportWorkspaceRead(workspaceRead(`branch:${branchId}`,"Trigger Events",pages));
  const occurrences=pages.data?.pages.flat()??[];
+ const viewedRun=useRef(false);
+ const viewRun=(executionId:string)=>{
+  if(!onViewRun(executionId))return;
+  viewedRun.current=true;
+  setOpen(false);
+ };
+ const finishClose=()=>{
+  if(!viewedRun.current)return;
+  viewedRun.current=false;
+  onViewRunExited();
+ };
+ const emptyMessage=hasAutomaticTrigger===undefined?'No trigger events recorded yet.':hasAutomaticTrigger?'No automatic trigger events recorded yet.':'This workflow runs manually. Your manual runs are in Run History.';
  return <>
-  <Button variant="outlined" sx={{minHeight:44}} onClick={()=>setOpen(true)}>Trigger Events</Button>
-  <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title">
+  <Button size="small" aria-haspopup="dialog" sx={{flexShrink:0,minHeight:44,whiteSpace:'nowrap'}} onClick={()=>setOpen(true)}>Trigger Events</Button>
+  <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title" slotProps={{transition:{onExited:finishClose}}}>
    <DialogTitle id="branch-trigger-events-title">Trigger Events</DialogTitle>
    <DialogContent>
-    <Typography variant="body2" color="text.secondary" sx={{mb:1}}>Activated means accepted, not completed.</Typography>
-    {diagnostics.map(item=><Alert severity="info" key={item.id}>{item.title}: {item.body}</Alert>)}
-    {pages.isPending?<Typography role="status">Loading trigger events…</Typography>:pages.error?<WorkspaceQueryError read={workspaceRead(`branch:${branchId}`,"Trigger Events",pages)}/>:!occurrences.length?<Typography>No trigger events yet.</Typography>:occurrences.map(occurrence=><Stack key={occurrence.id}><OccurrenceAudit occurrence={occurrence} runTerminology/>{occurrence.branchExecutionId&&<Button onClick={()=>{if(onNavigate({branchId,tab:'executions',executionId:occurrence.branchExecutionId}))setOpen(false)}}>View Run</Button>}</Stack>)}
+    <Typography variant="body2" color="text.secondary" sx={{mb:1}}>See when a schedule was due, a webhook arrived, or a watched file changed, and what happened next.</Typography>
+    {diagnostics.map(item=><Alert severity="info" key={item.id} sx={{overflowWrap:"anywhere"}}>{item.title}: {item.body}</Alert>)}
+    {pages.isPending?<Typography role="status">Loading trigger events…</Typography>:pages.error?<WorkspaceQueryError read={workspaceRead(`branch:${branchId}`,"Trigger Events",pages)}/>:!occurrences.length?<Typography>{emptyMessage}</Typography>:occurrences.map(occurrence=><OccurrenceAudit key={occurrence.id} occurrence={occurrence} runTerminology onViewRun={viewRun}/>)}
     {pages.hasNextPage&&<Button disabled={pages.isFetchingNextPage} onClick={()=>void pages.fetchNextPage()}>Load Older Events</Button>}
    </DialogContent>
    <DialogActions><Button onClick={()=>setOpen(false)}>Close</Button></DialogActions>

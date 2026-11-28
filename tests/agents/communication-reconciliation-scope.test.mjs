@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {AgentStore} from '../../packages/agents/dist/index.js';
+import {AgentStore, CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {deriveCommunicationBehavior} from '../../packages/core/dist/index.js';
 import {seedQualificationHistory} from '../shared/ui-load-fixture.mjs';
 
@@ -67,4 +67,70 @@ test('reconciliation reuse preserves private recipients, foreign-room rejection 
  assert.equal(x.store.getCommunicationProjection(project.id,event.eventId,'direct_agent_audit',agent.id),undefined);
  assert.equal(x.store.readCommunicationProjections(project.id).some(row=>row.projectionKey===agent.id),false);
  assert.equal(x.store.getCommunicationProjection(project.id,event.eventId,'conversation',chat.id)?.eventId,event.eventId,'The operator retains its own canonical Chat message');
+}));
+
+test('runtime and authored communication IDs both authorize only their project recipients', async () => withStore(async ({store, hostPath}) => {
+  const project = store.createProject({label: 'Recipient lookup', hostPath, defaultEngine: 'codex'});
+  const foreign = store.createProject({label: 'Foreign project', hostPath, defaultEngine: 'codex'});
+  const chat = store.createConversation(project.id, {title: 'Broadcasts'});
+  const direct = store.createAgent(project.id, {title: 'Runtime recipient', engine: 'codex', conversationId: chat.id});
+  const legacy = store.createAgent(project.id, {title: 'Authored recipient', engine: 'codex', conversationId: chat.id});
+  const unrelated = store.createAgent(project.id, {title: 'Unrelated', engine: 'codex', conversationId: chat.id});
+  const runtime = new CoordinationV3Store(store.sqlite);
+  const now = new Date().toISOString();
+
+  const insertCommunication = store.sqlite.prepare(`
+    INSERT INTO runtime_communications (id, project_id, sender_json, intent, audience_json, payload_json, payload_hash, actionable, created_at)
+    VALUES (?, ?, '{}', 'broadcast', '{}', ?, '', 1, ?)
+  `);
+  const insertActivation = store.sqlite.prepare(`
+    INSERT INTO agent_activations (id, project_id, agent_id, kind, priority, dispatch_policy, prompt_class, state, dedupe_key, payload_json, available_at, created_at, updated_at)
+    VALUES (?, ?, ?, 'message', 0, 'next_run', 'ordinary', 'consumed', ?, '{}', ?, ?, ?)
+  `);
+  const insertSource = store.sqlite.prepare('INSERT INTO activation_sources VALUES (?, ?, ?)');
+  const communication = (id, projectId, eventId) => {
+    insertCommunication.run(id, projectId, JSON.stringify({communication: {eventId}}), now);
+  };
+  const activate = (id, projectId, agentId, sourceKind = 'communication') => {
+    const activationId = randomUUID();
+    insertActivation.run(activationId, projectId, agentId, activationId, now, now, now);
+    insertSource.run(activationId, sourceKind, id);
+  };
+
+  communication('direct', project.id, 'both');
+  communication('both', project.id, 'legacy');
+  communication('duplicate-authored', project.id, 'both');
+  communication('foreign', foreign.id, 'both');
+  activate('direct', project.id, direct.id);
+  activate('both', project.id, legacy.id);
+  activate('duplicate-authored', project.id, direct.id);
+  activate('foreign', foreign.id, unrelated.id);
+  activate('both', foreign.id, unrelated.id);
+  activate('both', project.id, unrelated.id, 'request_update');
+
+  const cases = [
+    ['direct', [direct.id]],
+    ['legacy', [legacy.id]],
+    ['both', [direct.id, legacy.id].sort()],
+    ['foreign', []],
+    ['missing', []],
+  ];
+  for (const [eventId, recipients] of cases) {
+    store.appendCommunicationEvent({
+      schemaVersion: 2, eventId, projectId: project.id, conversationId: chat.id,
+      sender: {kind: 'user', userId: 'local-operator'}, intent: 'broadcast',
+      audience: {kind: 'organization', organizationId: project.id}, text: 'Canonical Broadcast', createdAt: now,
+    });
+    assert.deepEqual(runtime.communicationRecipientAgentIds(project.id, eventId), recipients, eventId);
+    for (const agent of [direct, legacy, unrelated]) {
+      assert.equal(store.canProjectCommunication(project.id, {
+        eventId, surface: 'direct_agent_audit', projectionKey: agent.id,
+      }), recipients.includes(agent.id), `${eventId} for ${agent.title}`);
+    }
+  }
+
+  store.markConversationDeletionPending(chat.id);
+  assert.equal(store.canProjectCommunication(project.id, {
+    eventId: 'both', surface: 'direct_agent_audit', projectionKey: direct.id,
+  }), false);
 }));

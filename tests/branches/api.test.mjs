@@ -2,13 +2,42 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {AgentStore,WorkspaceStore} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store,WorkspaceStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS,AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
+import {AssetStore} from '../../apps/server/dist/assets.js';
 import {withFixture,until} from '../shared/fixture.mjs';
+import {inertCodex} from '../shared/inert-codex.mjs';
 
 const branch=async(f,name)=>f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
 const chat=async(f,owner,key=randomUUID())=>f.ok(await f.api('POST',`/api/branches/${owner.id}/chats`,{label:owner.name,defaultEngine:'codex'},{'idempotency-key':key}));
+
+test('Run once rejects a stale first submission and replays an accepted reviewed version after publication',async t=>{
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'Run version'),schedule={scheduleKind:'interval',everyMs:3600000,startsAt:'2099-01-01T00:00:00.000Z'};
+  const definition={schema:'ponderosa.branch.v1',name:owner.name,trigger:{kind:'schedule',configRef:'timer'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('verified');"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  const bindings={agents:{},directories:{workspace:f.root},triggers:{timer:{sourceConfig:schedule,enabled:true}}};
+  const publish=async(expectedVersionId,name)=>f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId,idempotencyKey:randomUUID(),definition:{...definition,name},bindings}));
+  const url=`/api/branches/${owner.id}/executions`,source=`/api/branches/${owner.id}/trigger`;
+  const reviewed=await publish('',owner.name);
+  const intent={occurrenceKey:randomUUID(),input:'reviewed input',expectedVersionId:reviewed.versionId};
+  const current=await publish(reviewed.versionId,'New publication');
+  const refused=await f.api('POST',url,intent);
+  assert.equal(refused.status,400);
+  assert.match(refused.body.error,/published workflow version changed/);
+  assert.deepEqual(f.ok(await f.api('GET',url)),[]);
+  const fresh={...intent,occurrenceKey:randomUUID(),expectedVersionId:current.versionId};
+  const afterPublish=f.ok(await f.api('GET',source));
+  const accepted=f.ok(await f.api('POST',url,fresh));
+  assert.equal(accepted.versionId,current.versionId);
+  assert.deepEqual(f.ok(await f.api('GET',source)),afterPublish);
+  await publish(current.versionId,'Later publication');
+  const replay=f.ok(await f.api('POST',url,fresh));
+  assert.equal(replay.id,accepted.id);
+  assert.equal(replay.versionId,current.versionId);
+  assert.equal(f.ok(await f.api('GET',url)).length,1);
+ });
+});
 
 test('Branch Chat creation reuses canonical managed folders and idempotency without granting execution ownership or starting a Run',async t=>{
  let store;
@@ -464,7 +493,18 @@ for(const [kind,sourceConfig] of [
   const app=f.ok(await f.api('GET','/api/branches/assistant')).app;
   const {BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
   const definition=branches.version(app.branchId,app.versionId).definition,bindings=branches.localConfiguration(app.branchId);
-  f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:app.branchId,expectedVersionId:app.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{...bindings,directories:{...bindings.directories,workspace:f.root},triggers:sourceConfig?{source:{sourceConfig,enabled:true}}:{}}}));
+  const deploy={chatId:'',branchId:app.branchId,expectedVersionId:app.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{...bindings,directories:{...bindings.directories,workspace:f.root},triggers:sourceConfig?{source:{sourceConfig,enabled:true}}:{}}};
+  if(sourceConfig?.scheduleKind==='once'){
+   assert.match((await f.api('POST','/api/branches/preview',deploy)).body.error,/Start manually or a recurring schedule/);
+   assert.match((await f.api('POST','/api/branches/deploy',deploy)).body.error,/Start manually or a recurring schedule/);
+   const legacy=branches.deploy(deploy,undefined,{sourceConfig,nextFireAt:sourceConfig.at});
+   const original=branches.trigger(app.branchId);
+   const equivalent={...deploy,idempotencyKey:randomUUID(),expectedVersionId:legacy.versionId,
+    bindings:{...deploy.bindings,triggers:{source:{enabled:true,sourceConfig:{...sourceConfig,at:'2098-12-31T19:00:00.000-05:00'}}}}};
+   f.ok(await f.api('POST','/api/branches/deploy',equivalent));
+   assert.equal(branches.trigger(app.branchId).nextFireAt,original.nextFireAt);
+   assert.equal(branches.trigger(app.branchId).id,original.id);
+  }else f.ok(await f.api('POST','/api/branches/deploy',deploy));
   const url=`/api/branches/output-apps/${app.agentId}`,read=async()=>f.ok(await f.api('GET',url));
   const save=async(automatic,extra={})=>{const current=await read();return f.api('PUT',url+'/schedule',{expectedVersionId:current.versionId,expectedSettingsRevision:current.settingsRevision,automatic,...extra});};
   const before=await read(),original=branches.trigger(app.branchId),versionId=before.versionId,bindingRevisionId=before.bindingRevisionId;
@@ -755,6 +795,178 @@ const speakerWorkflow=async(f,pauseOnSpeakerRemoval,automatic=true)=>{
  f.ok(await f.api('PUT',`/api/branches/output-apps/${agent.id}`,{enabled:true}));
  return {owner,owned,agent,definition,trigger:()=>f.api('GET',`/api/branches/${owner.id}/trigger`).then(f.ok)};
 };
+test('Workflow session recovery preserves the same manual Request after an automatic handoff failure and cancellation', {timeout:60000}, async t=>{
+ let store,native,failPreparations=2,holdAdmission=false;
+ const claim=CoordinationV3Store.prototype.leaseNextRun;
+ const peek=CoordinationV3Store.prototype.peekNextRunnable;
+ CoordinationV3Store.prototype.peekNextRunnable=function(options){
+  return holdAdmission?undefined:peek.call(this,options);
+ };
+ CoordinationV3Store.prototype.leaseNextRun=function(options){
+  if(holdAdmission)return undefined;
+  const lease=claim.call(this,options);
+  const handoff=lease?.activations.find(item=>item.kind==='context_rollover_handoff'&&item.payload.settingsTransition);
+  if(handoff&&failPreparations>0){
+   failPreparations--;
+   handoff.payload.dispatch.effort=handoff.payload.settingsTransition.effort?'':'medium';
+  }
+  return lease;
+ };
+ try{
+  await withFixture(t,async f=>{
+   f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+   const {owner,agent,trigger}=await speakerWorkflow(f,undefined);
+   const turns=async()=>(await native.requests()).filter(row=>row.method==='turn/start');
+   const detail=id=>f.api('GET',`/api/branch-executions/${id}`).then(f.ok);
+   const status=id=>f.api('GET',`/api/branch-executions/${id}/operations`).then(f.ok);
+   const failedHandoffs=()=>store.sqlite.prepare(`SELECT rollover.id,rollover.state,r.id run_id,r.started_at,r.prompt_injection_state,r.status,rollover.last_error
+     FROM context_rollovers rollover JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id
+     JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+     JOIN scheduler_runs r ON r.id=attached.run_id WHERE rollover.agent_id=? AND rollover.state='failed'
+     ORDER BY rollover.cycle_number`).all(agent.id);
+   const readSubmitted=activation=>store.sqlite.prepare(`SELECT i.run_id FROM scheduler_prompt_injections i,json_each(i.activation_ids_json) member
+     WHERE member.value=? AND i.submitted_at IS NOT NULL`).all(activation);
+   f.ok(await f.api('POST',`/api/branches/engine/agents/${agent.id}/messages`,{text:'Seed the saved session.',effort:'',idempotencyKey:randomUUID()}));
+   const source=await until(async()=>(await turns())[0],'accepted source turn');
+   assert.equal(source.params.effort,undefined);
+   await native.sendTool('ponderosa_message',{text:'Seed completed.'});
+   await f.settled(agent.id,[],'/api/branches/engine');
+   const accepted=store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract;
+   assert.equal(accepted.effort,undefined);
+   f.ok(await f.api('PATCH',`/api/branches/engine/agents/${agent.id}`,{model:'fixture-next'}));
+
+   const timer=await trigger(),tick=new Date(Date.now()-1000).toISOString();
+   store.sqlite.prepare('UPDATE trigger_definitions SET next_fire_at=? WHERE id=?').run(tick,timer.id);
+   const automatic=await until(()=>store.sqlite.prepare("SELECT id FROM branch_executions WHERE branch_id=? AND admission_source='automatic'").get(owner.id),'automatic execution');
+   await until(()=>failedHandoffs().length===1,'automatic handoff preparation failure');
+   const failure=failedHandoffs()[0];
+   assert.match(failure.last_error,/handoff contract is incompatible/);
+   assert.equal(failure.started_at,null);
+   assert.equal(failure.prompt_injection_state,'not_injected');
+   assert.equal((await turns()).length,1);
+   f.ok(await f.api('POST',`/api/branch-executions/${automatic.id}/cancel`,{}));
+   assert.equal((await detail(automatic.id)).execution.state,'canceled');
+
+   const manual=f.ok(await f.api('POST',`/api/branches/${owner.id}/executions`,{occurrenceKey:'manual-7-06-27',input:'The original 7:06:27 PM manual input'}));
+   const wait=await until(async()=>{
+    const wait=(await status(manual.id)).agentWaits[0];
+    return wait?.state==='context_blocked'&&wait;
+   },'manual recovery action');
+   assert.equal(failedHandoffs().length,2,'the canceled automatic attempt no longer owns admission');
+   assert.equal((await turns()).length,1,'neither task reached the provider');
+   assert.ok(wait.contextRetryActivationId);assert.ok(wait.contextRetryKey);
+   const manualFailure=failedHandoffs().find(row=>row.id===wait.contextRetryKey);
+   const db=store.sqlite,stamp=new Date().toISOString();
+   db.prepare(`INSERT INTO provider_operation_outbox(run_id,operation,idempotency_key,payload_json,state,available_at,created_at,updated_at,dead_lettered_at)
+    VALUES(?,'interrupt','held-fixture-cleanup','{}','failed',?,?,?,?)`).run(manualFailure.run_id,stamp,stamp,stamp,stamp);
+   assert.equal((await status(manual.id)).agentWaits[0].contextRetryActivationId,undefined,'unsettled cleanup hides retry');
+   db.prepare("UPDATE provider_operation_outbox SET state='completed' WHERE idempotency_key='held-fixture-cleanup'").run();
+   assert.equal((await status(manual.id)).agentWaits[0].contextRetryActivationId,wait.contextRetryActivationId);
+   const match={requestId:wait.requestId,activationId:wait.contextRetryActivationId,expectedHold:wait.contextRetryKey};
+   // The Run once route accepts text. Bind a managed attachment through the
+   // scheduler's existing activation contract to exercise exact retry delivery.
+   const asset=f.ok(await f.api('POST',`/api/branches/engine/agents/${agent.id}/attachments`,Buffer.from('Workflow recovery attachment'),{
+    'content-type':'application/octet-stream','x-ponderosa-filename':'recovery.txt','x-ponderosa-media-type':'text/plain',
+   }));
+   const assets=new AssetStore(f.dataDir);
+   try{
+    const file=assets.authoritativeRuntimeAttachment(agent.projectId,agent.id,asset.id);
+    assert.ok(file);
+    store.sqlite.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.dispatch',json(?)) WHERE id=?")
+     .run(JSON.stringify({attachments:[{id:asset.id,name:asset.name,mediaType:asset.mediaType,
+      localPath:file.localPath,size:file.byteLength,sha256:file.contentHash}]}),match.activationId);
+   }finally{assets.close();}
+   const savedInput=()=>store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(match.activationId).payload_json;
+   const originalInput=savedInput();
+   const payload={...match,expectedRevision:(await detail(manual.id)).execution.revision,commandKey:'retry-original-manual'};
+   const retryPath=`/api/branch-executions/${manual.id}/steps/${wait.stepExecutionId}/retry-context`;
+
+   holdAdmission=true;
+   assert.equal((await f.api('POST',retryPath,{...payload,expectedHold:'old-handoff',commandKey:'stale-hold'})).status,409);
+   // Drop the first response at the client, then reopen before delivery.
+   const dropped=await f.app.inject({method:'POST',url:retryPath,payload});
+   assert.equal(dropped.statusCode,200,dropped.body);
+   const checking=await status(manual.id);
+   assert.equal(checking.agentWaits[0].label,'Checking session',JSON.stringify(checking));
+   assert.equal((await f.api('POST',retryPath,{...payload,commandKey:'another-click'})).status,409);
+   await f.reopen();
+   assert.equal((await f.api('POST',retryPath,payload)).status,200);
+   assert.deepEqual(readSubmitted(match.activationId),[]);
+   holdAdmission=false;
+
+   const old=await until(async()=>(await turns())[1],'old-session handoff');
+   assert.equal(old.params.threadId,source.params.threadId);
+   assert.equal(old.params.model,source.params.model);
+   assert.equal(old.params.effort,undefined);
+   assert.doesNotMatch(JSON.stringify(old),/original 7:06:27 PM manual input|recovery\.txt/);
+   assert.equal((await status(manual.id)).agentWaits[0].label,'Restoring session');
+   await native.sendAnswer('Saved session checked. Prior context is ready to transfer.');
+   const confirmation=await until(async()=>(await turns())[2],'replacement confirmation');
+   assert.notEqual(confirmation.params.threadId,source.params.threadId);
+   assert.equal(confirmation.params.model,'fixture-next');
+   assert.doesNotMatch(JSON.stringify(confirmation),/original 7:06:27 PM manual input|recovery\.txt/);
+   await native.sendAnswer('Replacement session confirmed.');
+   const task=await until(async()=>(await turns())[3],'original manual delivery');
+   assert.match(JSON.stringify(task),/original 7:06:27 PM manual input/);
+   await native.sendTool('ponderosa_update_request',{kind:'completed',text:'Manual workflow finished.'});
+   await until(async()=>(await detail(manual.id)).execution.state==='completed','canonical manual result');
+   assert.equal((await f.api('POST',retryPath,payload)).status,200,'lost response replays even after the revision changes');
+   const submitted=readSubmitted(match.activationId);
+   assert.equal(submitted.length,1);
+   assert.equal(savedInput(),originalInput);
+   const manifest=JSON.parse(store.sqlite.prepare('SELECT source_manifest_json FROM provider_inputs WHERE scheduler_run_id=?').get(submitted[0].run_id).source_manifest_json);
+   assert.deepEqual(manifest.inputFiles.map(file=>[file.id,file.source]),[[asset.id,{kind:'activation',id:match.activationId}]]);
+   assert.equal((await detail(manual.id)).attempts[0].requestId,match.requestId);
+   assert.equal((await detail(automatic.id)).execution.state,'canceled');
+   assert.equal(failedHandoffs().length,2,'the earlier failures remain in history');
+   assert.equal((await turns()).length,4);
+
+   failPreparations=1;
+   f.ok(await f.api('PATCH',`/api/branches/engine/agents/${agent.id}`,{model:'fixture'}));
+   const later=f.ok(await f.api('POST',`/api/branches/${owner.id}/executions`,{occurrenceKey:'cancel-racing-recovery',input:'Canceled recovery input'}));
+   const held=await until(async()=>{
+    const wait=(await status(later.id)).agentWaits[0];
+    return wait?.contextRetryActivationId&&wait;
+   },'retryable handoff for cancellation race');
+   const cancelPath=`/api/branch-executions/${later.id}/cancel`;
+   const retryLaterPath=`/api/branch-executions/${later.id}/steps/${held.stepExecutionId}/retry-context`;
+   const retryLater={requestId:held.requestId,activationId:held.contextRetryActivationId,
+    expectedRevision:(await detail(later.id)).execution.revision,expectedHold:held.contextRetryKey,commandKey:'cancel-race'};
+   holdAdmission=true;
+   const [retryResponse,cancelResponse]=await Promise.all([f.api('POST',retryLaterPath,retryLater),f.api('POST',cancelPath,{})]);
+   assert.ok([200,409].includes(retryResponse.status));
+   assert.equal(cancelResponse.status,200);
+   assert.equal((await f.api('POST',retryLaterPath,{...retryLater,commandKey:'post-cancel'})).status,409);
+   const coordination=new CoordinationV3Store(store.sqlite);
+   assert.throws(()=>coordination.updateRequest({requestId:held.requestId,updateId:'late-result',
+    kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'Stale result'}}));
+   assert.equal((await detail(later.id)).execution.state,'canceled');
+   assert.deepEqual(readSubmitted(held.contextRetryActivationId),[]);
+   holdAdmission=false;
+
+   const next=f.ok(await f.api('POST',`/api/branches/${owner.id}/executions`,{occurrenceKey:'after-cancel-race',input:'Fresh manual input'}));
+   const nextHandoff=await until(async()=>(await turns())[4],'later Run once is admitted').catch(async error=>{
+    t.diagnostic(JSON.stringify({status:await status(next.id),failed:failedHandoffs(),
+     rollovers:store.sqlite.prepare('SELECT id,state,last_error,old_provider_session_id FROM context_rollovers').all()}));
+    throw error;
+   });
+   assert.match(JSON.stringify(nextHandoff),/continuation handoff/i);
+   assert.doesNotMatch(JSON.stringify(nextHandoff),/Canceled recovery input|Fresh manual input/);
+   await native.sendAnswer('Context checked after cancellation.');
+   await until(async()=>(await turns())[5],'later replacement confirmation');
+   await native.sendAnswer('Later replacement confirmed.');
+   const freshTask=await until(async()=>(await turns())[6],'later Run once task');
+   assert.match(JSON.stringify(freshTask),/Fresh manual input/);
+   await native.sendTool('ponderosa_update_request',{kind:'completed',text:'Later workflow finished.'});
+   await until(async()=>(await detail(next.id)).execution.state==='completed','later workflow settles');
+   assert.equal((await detail(later.id)).execution.state,'canceled');
+  },{storeFactory:dir=>(store=new AgentStore(dir)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+ }finally{
+  CoordinationV3Store.prototype.leaseNextRun=claim;
+  CoordinationV3Store.prototype.peekNextRunnable=peek;
+ }
+});
+
 for(const coupling of [undefined,false,true])test(`speaker replacement preserves workflow settings unless developer coupling is ${coupling}`,async t=>withFixture(t,async f=>{
  f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
  const previous=await speakerWorkflow(f,coupling),next=await speakerWorkflow(f);

@@ -1,3 +1,6 @@
+import {WorkflowInspector} from './branches/WorkflowInspector';
+import {WorkflowInspectorPage} from './branches/WorkflowInspectorPage';
+import {scheduleOverlapSummary,workflowTriggerSummary} from './branches/trigger-summary';
 import {WorkspaceRefreshProvider} from "./WorkspaceRefreshContext";
 import {WorkspaceQueryError,WorkspaceQueryErrors} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
@@ -18,7 +21,7 @@ import { BranchFolders } from './branches/BranchFolders';
 import { WorkspacePreferencesWriter } from '../workspacePreferencesWriter';
 import { useWorkspacePreferences, useNotificationProjection } from '../hooks/queries';
 import { queryKeys } from '../queryKeys';
-import {normalizeResetPages} from '../collections';
+import {normalizeResetPages,uniqueBy} from '../collections';
 import {markWorkspaceResourceUsed} from '../workspaceRecency';
 import { starredWorkspaceResources, toggleWorkspaceResourceStar, changedWorkspaceDirectoryKinds } from '../resourcePreferences';
 import {createClientId} from '../clientId';
@@ -39,14 +42,14 @@ import FileUploadOutlinedIcon from '@mui/icons-material/FileUploadOutlined';
 import AddIcon from '@mui/icons-material/Add';
 import {BranchPackageDialog} from './branches/BranchPackageDialog';
 import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_LIMIT_LABEL,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,type InstalledBranchPackage} from '@ponderosa/core';
-import {BranchSettings,BranchAvailability} from './branches/BranchSettings';
+import {BranchSettings,BranchAvailability,useBranchAvailability} from './branches/BranchSettings';
 import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
-import {useCallback,useEffect,useRef,useState,type ComponentProps} from 'react';
+import {useCallback,useEffect,useLayoutEffect,useRef,useState,type ComponentProps,type ReactNode} from 'react';
 import {QueryObserver,replaceEqualDeep,type InfiniteData,useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
-import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Dialog,DialogActions,DialogContent,DialogTitle,Paper,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
-import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
+import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Paper,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
+import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,BranchValidationIssue,CreateBranchRequest,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
 import {ApiRequestError} from '../api/types';
 import {realApi,requestJson,requestCollectionPage} from '../api/real';
 import type {WorkflowEditor,WorkflowExecutionSettings} from './branches/WorkflowEditor';
@@ -65,7 +68,7 @@ type Context=BranchContextDto;
 type Draft={definition:BranchDefinition;bindings:BranchBindings;chatId:string;branchId?:string;expectedVersionId?:string};
 type DeploymentReview={draftRevision:string;input:DeployBranchRequest;result:BranchDeploymentPreviewDto};
 type DiscardIntent={branchId:string;selection:number;revision:string;edits:number};
-type RunIntent={branchId:string;selection:number;route:BranchRoute;input:string;occurrenceKey:string};
+type RunIntent={branchId:string;selection:number;route:BranchRoute;input:string;occurrenceKey:string;expectedVersionId:string};
 async function readWorkflowDraft(branch:BranchDto):Promise<Draft>{
  const [version,bindings]=await Promise.all([branch.versionId?requestJson<BranchVersionDto>(`/api/branches/${branch.id}/versions/${branch.versionId}`,{cache:'no-store'}):Promise.resolve({definition:{...newDefinition(),name:branch.name}}),requestJson<BranchBindings>(`/api/branches/${branch.id}/configuration${branch.bindingRevisionId?'?revisionId='+encodeURIComponent(branch.bindingRevisionId):''}`,{cache:'no-store'})]);
  return {branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition:version.definition,bindings};
@@ -117,7 +120,7 @@ function RetainedBranchSettings(props:ComponentProps<typeof BranchSettings>):JSX
 /** Branches has its own workflow-centered authoring and operations shell. */
 type Appearance={colorMode:ColorMode;onToggleColorMode():void};
 export function BranchesView(props:Appearance):JSX.Element{return <BranchNavigation>{router=><BranchesWorkspace {...router} {...props}/>}</BranchNavigation>}
-function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearance&{route:BranchRoute;navigate(route:BranchRoute,replace?:boolean,onAccepted?:()=>void):boolean}):JSX.Element{
+function BranchesWorkspace({route,navigate,leaveConfirmation,leaveConfirmationOpen,colorMode,onToggleColorMode}:Appearance&{route:BranchRoute;leaveConfirmation:ReactNode;leaveConfirmationOpen:boolean;navigate(route:BranchRoute,replace?:boolean,onAccepted?:()=>void):boolean}):JSX.Element{
  const guard=useBranchNavigationGuard(),notify=useMutationNotification();
  const tab=route.tab,executionId=route.executionId??'';
  useAppViewport();
@@ -140,15 +143,21 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const [desktopNavigationMounted,setDesktopNavigationMounted]=useState(!mobileWorkspace),[mobileNavigationMounted,setMobileNavigationMounted]=useState(false);
  useEffect(()=>{if(!mobileWorkspace)setDesktopNavigationMounted(true)},[mobileWorkspace]);
  useEffect(()=>{if(mobileNavOpen)setMobileNavigationMounted(true)},[mobileNavOpen]);
+ useLayoutEffect(()=>{if(leaveConfirmationOpen)setMobileNavOpen(false)},[leaveConfirmationOpen]);
  const sharedNavigationButton=useRef<HTMLButtonElement>(null),workflowImportInput=useRef<HTMLInputElement>(null),packageUpdateInput=useRef<HTMLInputElement>(null),packageUpdateSelection=useRef(0);
  const [sidebarPresentation,setSidebarPresentation]=useState(()=>{try{return restoreWorkspaceSidebarState(localStorage.getItem(BRANCHES_SIDEBAR_STORAGE_KEY))}catch{return restoreWorkspaceSidebarState(null)}});
  const feedback=useRef<HTMLDivElement>(null);
- const [runOpen,setRunOpen]=useState(false);
+ const [runOpen,setRunOpen]=useState(false),[runVersion,setRunVersion]=useState<string>(),runButton=useRef<HTMLButtonElement>(null);
+ const [firstStepRequest,setFirstStepRequest]=useState({selection:0,count:0}),[providerReturn,setProviderReturn]=useState<string>();
+ const [importProblem,setImportProblem]=useState<{name:string;message:string;update:boolean;owner:BranchRoute}>(),importAttempt=useRef(0);
+ const [rerunVersion,setRerunVersion]=useState<string>();
+ const rememberedRuns=useRef(new Map<string,string>());
  const [renameId,setRenameId]=useState<string>();
  const [fullExport,setFullExport]=useState<{branchId:string;name:string}>(),[exportPending,setExportPending]=useState(false),[exportError,setExportError]=useState<string>();
  const [openingAttempt,setOpeningAttempt]=useState(0);
  const [openingLink,setOpeningLink]=useState(()=>{const params=new URLSearchParams(window.location.search);return Boolean(params.get('branch')||params.get('execution'))});
- const creation=useRef<string>(),actionLocks=useRef(new Set<string>()),[creating,setCreating]=useState(false);
+ const creation=useRef<Partial<Record<'blank'|'approval',string>>>({}),actionLocks=useRef(new Set<string>()),[creating,setCreating]=useState(false);
+ const [creationFailure,setCreationFailure]=useState<{kind:'blank'|'approval';message:string;owner:BranchRoute}>();
  const executionViewStates=useRef(new Map<string,ExecutionPanelViewState>());
  const once=<T,>(key:string,action:()=>T):T|undefined=>{if(actionLocks.current.has(key))return;actionLocks.current.add(key);return action()};
  const [advancedDirty,setAdvancedDirty]=useState(false);
@@ -159,11 +168,11 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const [workflowReadError,setWorkflowReadError]=useState<{owner:string;error:unknown}>();
  const routeOwner=useRef(route);routeOwner.current=route;
  const selection=useRef(0),savedDraft=useRef<string>(),versionRequest=useRef(0),[draft,updateDraft]=useState<Draft>(emptyDraft),[editorKey,setEditorKey]=useState(0),[error,setError]=useState(''),[loading,setLoading]=useState(false),[search,setSearch]=useState(''),[input,setInput]=useState(''),[occurrenceKey,setOccurrenceKey]=useState(()=>createClientId());
- // Only the active review authorizes Publish; retained data renders the closing Dialog.
- const [reviewDialog,setReviewDialog]=useState<{active?:DeploymentReview;retained:DeploymentReview}>();
- const preview=reviewDialog?.active,reviewPresentation=preview??reviewDialog?.retained;
- const setPreview=(active:DeploymentReview|undefined)=>setReviewDialog(current=>active?{active,retained:active}:current?{retained:current.retained}:current);
- const clearReviewPresentation=()=>setReviewDialog(current=>current?.active?current:undefined);
+ const [preview,setPreview]=useState<DeploymentReview>();
+ const [inspectorPane,setInspectorPane]=useState<'trigger'|'step'|'json'|'variables'>();
+ const [inspectorTarget,setInspectorTarget]=useState<HTMLDivElement|null>(null);
+ const [disableId,setDisableId]=useState<string>(),[deletionOpen,setDeletionOpen]=useState(false);
+ const [deletionTarget,setDeletionTarget]=useState<HTMLDivElement|null>(null);
  const currentDraft=useRef(draft);currentDraft.current=draft;
  const workflowLeave=useRef<{kind:'save'|'discard';branchId:string;draft:Draft;revision:string;complete(success:boolean):void;attempt?:NonNullable<typeof preview>;discard?:DiscardIntent}>();
  const finishWorkflowLeave=(success=false,intent=workflowLeave.current)=>{if(!intent||workflowLeave.current!==intent)return;workflowLeave.current=undefined;intent.complete(success&&routeOwner.current.branchId===intent.branchId&&!routeOwner.current.global&&currentDraft.current.branchId===intent.branchId&&!pendingAdvanced.current&&draftRevision.current===savedDraft.current)};
@@ -188,8 +197,22 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const contexts={...contextList,data:[...(contextList.data??[]),...(selectedContext.data&&!contextList.data?.some(c=>c.id===selectedContext.data!.id)?[selectedContext.data]:[])]};
  const engines=useQuery({queryKey:['engines'],queryFn:()=>realApi.listEngines()});
  const agents=useQuery({queryKey:['branch-agents',draft.branchId],queryFn:()=>requestCollectionPage<import('@ponderosa/core').AgentDto>(`/api/branches/${draft.branchId}/agents?limit=100`),enabled:Boolean(draft.branchId),refetchInterval:5000});
- const histories=useInfiniteQuery({queryKey:['branch-executions',draft.branchId,route.executionFilter],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDto[]>(`/api/branches/${draft.branchId}/executions?${new URLSearchParams({...pageParam?{before:pageParam}:{},...route.executionFilter?{state:route.executionFilter}:{}})}`),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId),refetchInterval:3000});
- const executions=histories.data?.pages.flat()??[];
+ const filterKey=route.executionFilters?.join(',')??'';
+ const [historyFilter,setHistoryFilter]=useState({key:filterKey,revision:0});
+ // A previously visited filter starts at page one too, including browser Back and Forward.
+ const filterRevision=historyFilter.revision+Number(historyFilter.key!==filterKey);
+ if(historyFilter.key!==filterKey)setHistoryFilter({key:filterKey,revision:filterRevision});
+ const histories=useInfiniteQuery({
+  queryKey:['branch-executions',draft.branchId,filterKey,filterRevision],
+  initialPageParam:undefined as string|undefined,
+  queryFn:({pageParam})=>{
+   const params=new URLSearchParams(pageParam?{before:pageParam}:undefined);
+   for(const state of route.executionFilters??[])params.append('state',state);
+   return requestJson<BranchExecutionDto[]>(`/api/branches/${draft.branchId}/executions?${params}`);
+  },
+  getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId),refetchInterval:3000,
+ });
+ const executions=uniqueBy(histories.data?.pages.flat()??[],run=>run.id);
  const detailPages=useInfiniteQuery({queryKey:['branch-execution',executionId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDetailDto>(`/api/branch-executions/${executionId}${pageParam?'?cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.nextCursor,enabled:Boolean(executionId),structuralSharing:(saved,next)=>{
   const previous=(saved as InfiniteData<BranchExecutionDetailDto>|undefined)?.pages[0];
   const incoming=(next as InfiniteData<BranchExecutionDetailDto>).pages[0];
@@ -202,27 +225,27 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const detail={...detailPages,data:mergeHistory(detailPages.data?.pages)};
  const executionChats=useQuery({queryKey:['branch-execution-chats',draft.branchId,executionId],queryFn:()=>requestJson<Context[]>(`/api/branches/${draft.branchId}/chats?executionId=${encodeURIComponent(executionId)}`),enabled:Boolean(draft.branchId&&executionId&&tab==='executions'&&detail.data?.execution.id===executionId&&detail.data.execution.branchId===draft.branchId),refetchInterval:5000});
  const pinned=useQuery({queryKey:['branch-version',detail.data?.execution.versionId],queryFn:()=>requestJson<BranchVersionDto>(`/api/branches/${detail.data!.execution.branchId}/versions/${detail.data!.execution.versionId}`),enabled:Boolean(detail.data)});
- const [historyBranch,setHistoryBranch]=useState<string>(),[jsonOpen,setJsonOpen]=useState(false),[validationRequest,setValidationRequest]=useState(0);
- useEffect(()=>{setHistoryBranch(undefined);setJsonOpen(false);setValidationRequest(0)},[draft.branchId]);
+ const [historyBranch,setHistoryBranch]=useState<string>(),[validationRequest,setValidationRequest]=useState(0);
+ useEffect(()=>{setHistoryBranch(undefined);setInspectorPane(undefined);setDisableId(undefined);setValidationRequest(0);setProviderReturn(undefined)},[draft.branchId]);
  const versions=useInfiniteQuery({queryKey:['branch-versions',draft.branchId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchVersionSummaryDto[]>(`/api/branches/${draft.branchId}/versions${pageParam?'?before='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:Boolean(draft.branchId)&&historyBranch===draft.branchId});
- const settingsPanel=useRef<HTMLDivElement>(null);
  const selectedBranch=useQuery({queryKey:['branch',draft.branchId],queryFn:()=>requestJson<BranchDto>(`/api/branches/${draft.branchId}`),enabled:Boolean(draft.branchId),refetchInterval:5000});
  const current=selectedBranch.data;
+ const availability=useBranchAvailability(current?.id);
  useEffect(()=>{if(current)void client.invalidateQueries({queryKey:['branch-settings',current.id]})},[current?.id,current?.versionId,client]);
  const publishedVersion=useQuery({queryKey:['branch-version',current?.versionId],queryFn:()=>requestJson<BranchVersionDto>(`/api/branches/${current!.id}/versions/${current!.versionId}`),enabled:Boolean((preview||tab==='settings')&&current?.versionId)});
  const dirty=advancedDirty||Boolean(savedDraft.current&&savedDraft.current!==branchDraftRevision(draft));
  const trigger=useQuery({queryKey:['branch-trigger',current?.triggerId],queryFn:()=>requestJson<TriggerDefinitionDto>(`/api/branches/${current!.id}/trigger`),enabled:Boolean(current?.triggerId),refetchInterval:5000});
  const lifecycle=useQuery({queryKey:['branch-lifecycle-summary',current?.id],queryFn:()=>requestJson<BranchLifecycleDto>(`/api/branches/${current!.id}/lifecycle`),enabled:Boolean(current?.id),refetchInterval:3000});
  const changeChat=(chatId:string)=>setDraft(d=>{const chat=contexts.data?.find(c=>c.id===chatId);return {...d,chatId,bindings:{...d.bindings,agents:{},directories:Object.fromEntries(d.definition.steps.filter(s=>s.kind==='script').map(s=>[s.cwdRef,chat?.workingDirectory??''])),engines:{...d.bindings.engines,default:chat?.defaultEngine??engines.data?.[0]?.id??''}}}});
- const resetWorkflowBaseline=(next:Draft)=>{setWorkflowReadError(undefined);savedDraft.current=branchDraftRevision(next);draftHistory.current=emptyWorkflowHistory();setDraft(next,false);pendingAdvanced.current=false;setAdvancedDirty(false);setDeployedUpdate(undefined);setEditorKey(k=>k+1)};
- async function select(branch:BranchDto,force=false,reconcileBaseline?:string):Promise<boolean>{
+ const resetWorkflowBaseline=(next:Draft,retainEditor=false)=>{setWorkflowReadError(undefined);savedDraft.current=branchDraftRevision(next);if(!retainEditor)draftHistory.current=emptyWorkflowHistory();setDraft(next,false);pendingAdvanced.current=false;setAdvancedDirty(false);setDeployedUpdate(undefined);if(!retainEditor)setEditorKey(k=>k+1)};
+ async function select(branch:BranchDto,force=false,reconcileBaseline?:string,retainEditor=false):Promise<boolean>{
   if(!force){navigate({branchId:branch.id,tab:'workflow'});return true;}
   const sequence=++selection.current;setLoading(true);setError('');
   try{const next=await readWorkflowDraft(branch);
    if(sequence!==selection.current)return false;
    if(reconcileBaseline!==undefined&&(draftRevision.current!==reconcileBaseline||pendingAdvanced.current)){setDeployedUpdate({branch,reason:'dirty'});return false;}
-   if(currentDraft.current.branchId!==branch.id){setInput('');setRunOpen(false);run.reset();setOccurrenceKey(createClientId())}
-   resetWorkflowBaseline(next);
+   if(currentDraft.current.branchId!==branch.id){setInput('');setRunOpen(false);setRerunVersion(undefined);run.reset();setOccurrenceKey(createClientId())}
+   resetWorkflowBaseline(next,retainEditor);
    return true;
   }catch(e){if(sequence===selection.current){setWorkflowReadError({owner:branch.id,error:e});if(reconcileBaseline!==undefined)setDeployedUpdate({branch,reason:'failed'})}return false}finally{if(sequence===selection.current){setLoading(false);setOpeningLink(false)}}
  }
@@ -277,9 +300,14 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
   const leaving=workflowLeave.current?.attempt===attempt?workflowLeave.current:undefined;let synchronized=false;
   const owned=routeOwner.current.branchId===branch.id&&!routeOwner.current.global;
   if(owned)setPreview(undefined);
-  const readback=owned&&attempt.draftRevision===draftRevision.current&&!pendingAdvanced.current?select(branch,true,attempt.draftRevision):undefined;
+  const readback=owned&&attempt.draftRevision===draftRevision.current&&!pendingAdvanced.current?select(branch,true,attempt.draftRevision,true):undefined;
   client.setQueryData<BranchDto>(['branch',branch.id],branch);
-  if(owned){if(readback){synchronized=await readback;if(synchronized)notify({message:'Workflow Saved',key:`workflow-save:${branch.id}`})}else setDeployedUpdate({branch,reason:'dirty'})}
+  if(owned){if(readback){synchronized=await readback;if(synchronized){
+    if(!attempt.input.expectedVersionId&&!leaving)requestAnimationFrame(()=>{
+     if(routeOwner.current.branchId===branch.id&&!routeOwner.current.global)runButton.current?.focus({preventScroll:true});
+    });
+    else notify({message:'Workflow Saved',key:`workflow-save:${branch.id}`});
+   }}else setDeployedUpdate({branch,reason:'dirty'})}
   if(leaving)finishWorkflowLeave(synchronized,leaving);
   void client.invalidateQueries({queryKey:['branches']});void client.invalidateQueries({queryKey:['branch-versions',branch.id]});void client.invalidateQueries({queryKey:['branch-trigger']});void client.invalidateQueries({queryKey:['branch',branch.id]})
  },onError:(_error,attempt)=>{if(workflowLeave.current?.attempt===attempt)finishWorkflowLeave()},onSettled:()=>actionLocks.current.delete('deploy')});
@@ -294,7 +322,6 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
   if(!ownsDiscard(intent))throw new Error('The workflow changed while loading. Your newer edits are retained; close this confirmation and review them.');
   return {branch:verified,next};
  },onSuccess:({branch,next},intent)=>{const leaving=workflowLeave.current?.discard===intent?workflowLeave.current:undefined;if(!ownsDiscard(intent)){if(leaving)finishWorkflowLeave(false,leaving);return;}selection.current++;resetWorkflowBaseline(next);setPreview(undefined);review.reset();setDiscardIntent(undefined);client.setQueryData(['branch',branch.id],branch);if(leaving)finishWorkflowLeave(true,leaving)},onError:(error,intent)=>{if(workflowLeave.current?.discard===intent){setError(error.message);finishWorkflowLeave()}},onSettled:()=>actionLocks.current.delete('discard')});
- useEffect(()=>{if(route.tab!=='settings'||!(review.error instanceof ApiRequestError))return;const issue=(review.error.body as {issues?:import('@ponderosa/core').BranchValidationIssue[]})?.issues?.[0];if(issue?.section==='settings')settingsPanel.current?.querySelector<HTMLElement>('[aria-invalid="true"], :invalid')?.focus()},[route.tab,review.error]);
  const historyLocked=loading||openingLink||advancedDirty||review.isPending||deploy.isPending||discard.isPending||publicationUnconfirmed;
  const moveDraftHistory=(direction:'undo'|'redo')=>{if(editorGeneration!==selection.current||historyLocked||['review','deploy','discard'].some(key=>actionLocks.current.has(key)))return;const moved=moveWorkflowHistory(draftHistory.current,currentDraft.current,direction);if(!moved)return;draftHistory.current=moved.history;setDraft(d=>({...d,...moved.draft}),false)};
  const undoRedo={canUndo:!historyLocked&&draftHistory.current.past.length>0,canRedo:!historyLocked&&draftHistory.current.future.length>0,onUndo:()=>moveDraftHistory('undo'),onRedo:()=>moveDraftHistory('redo')};
@@ -302,26 +329,134 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const requestDiscard=()=>{if(discardDisabled||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global)return;finishWorkflowLeave();discard.reset();setDiscardIntent({branchId:draft.branchId!,selection:selection.current,revision:draftRevision.current,edits:workflowEdits.current})};
  useEffect(()=>{if(discardIntent&&(discardIntent.branchId!==route.branchId||route.global))setDiscardIntent(undefined)},[discardIntent,route.branchId,route.global]);
 
- const run=useMutation({mutationFn:(start:RunIntent)=>requestJson<BranchExecutionDto>(`/api/branches/${start.branchId}/executions`,{method:'POST',body:JSON.stringify({occurrenceKey:start.occurrenceKey,input:start.input})}),onSuccess:(execution,start)=>{if(routeOwner.current===start.route&&!routeOwner.current.global&&execution.branchId===start.branchId&&isCurrentWorkflowResponse(start,{branchId:currentDraft.current.branchId,selection:selection.current})){const accepted=navigate({branchId:start.branchId,tab:'executions',executionId:execution.id,...(start.route.executionFilter?{executionFilter:start.route.executionFilter}:{})},false,()=>setRunOpen(false));if(accepted)setRunOpen(false);notify({message:'Run requested',key:`workflow-run:${execution.branchId}`})}void client.invalidateQueries({queryKey:['branch-executions',execution.branchId]});void client.invalidateQueries({queryKey:['branches']})},onError:(_error,start)=>notify({key:`workflow-run:${start.branchId}`,severity:'error',message:'Run submission could not be confirmed. Reopen Run to review the protected input and retry.'}),onSettled:()=>{actionLocks.current.delete('run')}});
+ const run=useMutation({
+  mutationFn:(start:RunIntent)=>requestJson<BranchExecutionDto>(`/api/branches/${start.branchId}/executions`,{
+   method:'POST',body:JSON.stringify({occurrenceKey:start.occurrenceKey,input:start.input,expectedVersionId:start.expectedVersionId})
+  }),
+  onSuccess:(execution,start)=>{
+   if(routeOwner.current===start.route&&!routeOwner.current.global&&execution.branchId===start.branchId&&
+      isCurrentWorkflowResponse(start,{branchId:currentDraft.current.branchId,selection:selection.current})){
+    const accepted=navigate({branchId:start.branchId,tab:'executions',executionId:execution.id,
+     ...(start.route.executionFilters?{executionFilters:start.route.executionFilters}:{})},false,()=>setRunOpen(false));
+    if(accepted)setRunOpen(false);
+   }
+   void client.invalidateQueries({queryKey:['branch-executions',execution.branchId]});
+   void client.invalidateQueries({queryKey:['branches']});
+  },
+  onError:(_error,start)=>{if(start.expectedVersionId)void client.invalidateQueries({queryKey:['branch',start.branchId],exact:true})},
+  onSettled:()=>{actionLocks.current.delete('run')}
+ });
  const runAccepted=Boolean(run.isSuccess&&run.data?.branchId===draft.branchId);
  const runUnconfirmed=Boolean(run.isError&&run.variables?.branchId===draft.branchId&&!(run.error instanceof ApiRequestError&&run.error.status>=400&&run.error.status<500));
  const runInputError=unicodeCodePointLength(normalizeCanonicalText(input))>INLINE_TEXT_MAX_CODE_POINTS?'Run Input · maximum 10,000 characters · larger input: managed artifact reference':undefined;
- const runUnavailable=!current&&selectedBranch.isPending?'Checking workflow availability…':selectedBranch.error?'Workflow availability could not be verified. Retry loading the workflow.':!current?.versionId?'Save Workflow before running this unpublished workflow.':current.enabled===false?'This Branch is disabled. Enable it in Workflow trigger settings before running it.':lifecycle.data?.deleting?'This workflow is being deleted.':undefined;
- const openRun=()=>{if(run.isPending||actionLocks.current.has('run')||routeOwner.current.global||routeOwner.current.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;if(run.isSuccess||run.isError&&!runUnconfirmed){run.reset();setOccurrenceKey(createClientId())}setRunOpen(true)};
- const submitRun=()=>{if(run.isPending||loading||openingLink||routeOwner.current.global||routeOwner.current.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;if(runAccepted&&run.data){const accepted=navigate({branchId:draft.branchId,tab:'executions',executionId:run.data.id,...(run.variables?.route.executionFilter?{executionFilter:run.variables.route.executionFilter}:{})},false,()=>setRunOpen(false));if(accepted)setRunOpen(false);return;}if(!runUnconfirmed&&(runUnavailable||runInputError))return;const start=runUnconfirmed?{...run.variables!,selection:selection.current,route:routeOwner.current}:{branchId:draft.branchId!,selection:selection.current,route:routeOwner.current,input,occurrenceKey};return once('run',()=>run.mutateAsync(start))};
- const automatic=useMutation({mutationFn:()=>requestJson(`/api/branches/${current!.id}/trigger`,{method:'PATCH',body:JSON.stringify({enabled:!trigger.data!.enabled,reviewedTrigger:trigger.data})}),onSuccess:()=>{void client.invalidateQueries({queryKey:['branch-trigger']});void client.invalidateQueries({queryKey:['branches']})}});
+ const runUnavailable=!current&&selectedBranch.isPending?'Checking workflow availability…':selectedBranch.error?'Workflow availability could not be verified. Retry loading the workflow.':availability.isPending?'Workflow availability is changing.':!current?.versionId?'Publish the workflow before running it.':current.enabled===false?'Enable the workflow to run it.':lifecycle.data?.deleting?'This workflow is being deleted.':undefined;
+ const needsFirstStep=!draft.definition.steps.length&&!draft.definition.controls.length;
+ const requestFirstStep=()=>setFirstStepRequest(previous=>({selection:selection.current,count:previous.count+1}));
+ const openRun=()=>{
+  const owner=routeOwner.current;
+  if(runOpen||run.isPending||actionLocks.current.has('run')||owner.global||owner.branchId!==draft.branchId||currentDraft.current.branchId!==draft.branchId)return;
+  if(!runUnconfirmed&&current&&current.id===draft.branchId&&!current.versionId){
+   navigate({...owner,settingsSection:undefined,tab:'workflow'},false,()=>{
+    setInspectorPane(undefined);
+    if(needsFirstStep)requestFirstStep();
+    else reviewChanges();
+   });
+   return;
+  }
+  if(!runUnconfirmed){
+   if(current?.id!==draft.branchId||!current?.versionId)return;
+   if(rerunVersion||run.isSuccess||run.isError){
+    run.reset();if(rerunVersion)setInput('');setRerunVersion(undefined);
+   }
+   setOccurrenceKey(createClientId());
+   setRunVersion(current.versionId);
+  }
+  setRunOpen(true);
+ };
+ const openRerun=(execution:BranchExecutionDto,priorInput:string)=>{
+  if(runOpen||run.isPending||runUnconfirmed||routeOwner.current.global||routeOwner.current.executionId!==execution.id||
+     routeOwner.current.branchId!==execution.branchId||currentDraft.current.branchId!==execution.branchId||
+     current?.id!==execution.branchId||!current.versionId)return;
+  run.reset();setOccurrenceKey(createClientId());setInput(priorInput);setRunVersion(current.versionId);
+  setRerunVersion(execution.versionId);setRunOpen(true);
+ };
+ const submitRun=()=>{
+  if(!runOpen||run.isPending||loading||openingLink||routeOwner.current.global||routeOwner.current.branchId!==draft.branchId||
+     currentDraft.current.branchId!==draft.branchId)return;
+  if(runAccepted&&run.data){
+   const accepted=navigate({branchId:draft.branchId,tab:'executions',executionId:run.data.id,
+    ...(run.variables?.route.executionFilters?{executionFilters:run.variables.route.executionFilters}:{})},false,()=>setRunOpen(false));
+   if(accepted)setRunOpen(false);
+   return;
+  }
+  const owner={selection:selection.current,route:routeOwner.current};
+  if(runUnconfirmed)return once('run',()=>run.mutateAsync({...run.variables!,...owner}));
+  if(runUnavailable||runInputError||!runVersion)return;
+  const start={...owner,branchId:draft.branchId!,input,occurrenceKey,expectedVersionId:runVersion};
+  return once('run',()=>run.mutateAsync(start));
+ };
+ const automatic=useMutation({
+  mutationFn:({branchId,reviewedTrigger}:{branchId:string;reviewedTrigger:TriggerDefinitionDto})=>requestJson<TriggerDefinitionDto>(`/api/branches/${branchId}/trigger`,{method:'PATCH',body:JSON.stringify({enabled:!reviewedTrigger.enabled,reviewedTrigger})}),
+  onSuccess:next=>{client.setQueryData(['branch-trigger',next.id],next)},
+  onSettled:(_data,_error,{reviewedTrigger})=>Promise.all([client.invalidateQueries({queryKey:['branch-trigger',reviewedTrigger.id]}),client.invalidateQueries({queryKey:['branches']})]),
+ });
  const cancelInstallation=useMutation({mutationFn:(id:string)=>requestJson(`/api/branches/installations/${id}/cancel`,{method:'POST'}),onSuccess:()=>{void client.invalidateQueries({queryKey:['branch-lifecycle-summary']});void client.invalidateQueries({queryKey:['branches']})}});
- const importFile=async(file?:File,update=false)=>{if(!file)return;if(dirty){setError('Publish your current edits or discard them before importing or updating a Branch.');return;}const startedSelection=selection.current,startedRevision=draftRevision.current;try{if(file.size>AGENT_PACKAGE_MAX_BYTES)throw new Error(`Package exceeds the ${AGENT_PACKAGE_LIMIT_LABEL} limit`);const pkg=await requestJson<InstalledBranchPackage>('/api/branches/import-preview',{method:'POST',body:await file.text()});if(startedSelection!==selection.current||startedRevision!==draftRevision.current||pendingAdvanced.current)return;if(pkg.schema!=='ponderosa.branch-installation.v1')throw new Error('Choose a portable Branch installation package');setInstall({pkg,...(update?{branchId:draft.branchId}:{})})}catch(e){setError((e as Error).message)}};
+ const importFile=async(file?:File,update=false)=>{
+  if(!file)return;
+  if(dirty||advancedDirty){setError('Publish or discard your current edits before importing a workflow.');return}
+  const attempt=++importAttempt.current,owner=routeOwner.current,startedSelection=selection.current,startedRevision=draftRevision.current;
+  const currentImport=()=>attempt===importAttempt.current&&owner===routeOwner.current&&startedSelection===selection.current&&startedRevision===draftRevision.current&&!pendingAdvanced.current;
+  setImportProblem(undefined);
+  try{
+   if(file.size>AGENT_PACKAGE_MAX_BYTES)throw new Error(`Choose a workflow package smaller than ${AGENT_PACKAGE_LIMIT_LABEL}.`);
+   if(!file.size)throw new Error('The file is empty. Choose a JSON workflow package.');
+   const pkg=await requestJson<InstalledBranchPackage>('/api/branches/import-preview',{method:'POST',body:await file.text()});
+   if(!currentImport())return;
+   if(pkg.schema!=='ponderosa.branch-installation.v1')throw new Error('Choose a workflow package from Export Template or Export Full.');
+   setInstall({pkg,...(update?{branchId:draft.branchId}:{})});
+  }catch(cause){if(currentImport())setImportProblem({name:file.name,message:(cause as Error).message,update,owner})}
+ };
  const versionDefinition=async(version:BranchVersionSummaryDto,restore:boolean)=>{if(restore&&dirty){setError('Publish or discard your current edits before restoring another definition.');return;}const started={branchId:version.branchId,selection:selection.current},requestId=++versionRequest.current,startedDraft=draftRevision.current;setError('');try{const full=await requestJson<BranchVersionDto>(`/api/branches/${version.branchId}/versions/${version.id}`);if(restore){if(started.selection!==selection.current||requestId!==versionRequest.current||startedDraft!==draftRevision.current||pendingAdvanced.current)return;selection.current++;setDraft(d=>({...d,definition:full.definition,bindings:bindDefinitionDirectories(full.definition,d.bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory)}));setEditorKey(k=>k+1);setHistoryBranch(undefined);setTab('workflow')}else download(full.definition,'workflow-definition.json')}catch(e){if(started.selection===selection.current&&requestId===versionRequest.current)setError((e as Error).message)}};
  const exportFile=async(mode:'template'|'full'='template')=>{if(!draft.branchId)return;if(mode==='full'){setExportError(undefined);setFullExport({branchId:draft.branchId,name:draft.definition.name});return;}try{await downloadPackageExport(`/api/branches/${encodeURIComponent(draft.branchId)}/package`,{mode:'template',includeValues:false},`${draft.definition.name.replace(/[^a-z0-9_-]/gi,'_')}.ponderosa.json`)}catch(e){setError((e as Error).message)}};
  const confirmFullExport=async(fileSelections:import('@ponderosa/core').BranchExportFileSelections)=>{if(!fullExport||exportPending)return;const source=fullExport;setExportPending(true);setExportError(undefined);try{const prepared=await downloadPackageExport(`/api/branches/${encodeURIComponent(source.branchId)}/package`,{mode:'full',includeValues:true,fileSelections},`${source.name.replace(/[^a-z0-9_-]/gi,'_')}.ponderosa.json`);if(prepared?.workingFolderOmissions)notify(workingFolderOmissionNotice(prepared.workingFolderOmissions));setFullExport(undefined)}catch(e){setExportError((e as Error).message)}finally{setExportPending(false)}};
 
- const reviewChanges=()=>{if(discard.isPending)return;if(publicationUnconfirmed&&deploy.variables){setPreview(deploy.variables);return;}if(advancedDirty){setTab('workflow');return;}if(!current||current.id!==draft.branchId||review.isPending||deploy.isPending)return;setValidationRequest(value=>value+1);if(draft.definition.steps.some(step=>step.kind==='agent'&&'ref'in step.target&&!draft.bindings.agents[step.target.ref])){review.reset();deploy.reset();if(workflowLeave.current?.draft===draft)finishWorkflowLeave();return;}once('review',()=>{review.reset();deploy.reset();review.mutate(draft)})};
+ const reviewChanges=()=>{
+  if(discard.isPending)return;
+  if(publicationUnconfirmed&&deploy.variables){setPreview(deploy.variables);return;}
+  if(advancedDirty){setTab('workflow');return;}
+  if(!current||current.id!==draft.branchId||review.isPending||deploy.isPending)return;
+  if(needsFirstStep){
+   if(workflowLeave.current?.draft===draft)finishWorkflowLeave();
+   setTab('workflow');
+   setInspectorPane(undefined);
+   requestFirstStep();
+   return;
+  }
+  setValidationRequest(value=>value+1);
+  if(draft.definition.steps.some(step=>step.kind==='agent'&&'ref'in step.target&&!draft.bindings.agents[step.target.ref])){
+   review.reset();deploy.reset();
+   if(workflowLeave.current?.draft===draft){finishWorkflowLeave();setTab('workflow');}
+   return;
+  }
+  once('review',()=>{review.reset();deploy.reset();review.mutate(draft)});
+ };
  const publishChanges=()=>{if(!preview||discard.isPending)return;if(!(publicationUnconfirmed&&preview===deploy.variables)&&(preview.draftRevision!==draftRevision.current||pendingAdvanced.current)){setError('The draft changed. Review the current edits before publishing.');return;}once('deploy',()=>deploy.mutate(preview))};
  const saveDisabled=!current||Boolean(current.versionId&&!dirty)||advancedDirty||loading||openingLink||review.isPending||deploy.isPending||discard.isPending;
- const saveBeforeLeaving=(complete:(success:boolean)=>void)=>{if(saveDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}workflowLeave.current={kind:'save',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,...(publicationUnconfirmed?{attempt:deploy.variables}:{})};reviewChanges()};
+ const saveBeforeLeaving=(complete:(success:boolean)=>void)=>{
+  if(saveDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}
+  workflowLeave.current={kind:'save',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,...(publicationUnconfirmed?{attempt:deploy.variables}:{})};
+  if(!publicationUnconfirmed)setPreview(undefined);
+  reviewChanges();
+ };
  const discardBeforeLeaving=(complete:(success:boolean)=>void)=>{if(discardDisabled||workflowLeave.current||routeOwner.current.branchId!==draft.branchId||routeOwner.current.global){complete(false);return;}const intent={branchId:draft.branchId!,selection:selection.current,revision:draftRevision.current,edits:workflowEdits.current};workflowLeave.current={kind:'discard',branchId:draft.branchId!,draft,revision:draftRevision.current,complete,discard:intent};discard.reset();once('discard',()=>discard.mutate(intent))};
- useBranchWorkflowLeaveGuard({branchId:draft.branchId,save:saveBeforeLeaving,discard:discardBeforeLeaving,pending:review.isPending||deploy.isPending||discard.isPending,canSave:!saveDisabled,canDiscard:!discardDisabled});
+ useBranchWorkflowLeaveGuard({
+  branchId:draft.branchId,save:saveBeforeLeaving,discard:discardBeforeLeaving,
+  pending:review.isPending||deploy.isPending||discard.isPending,canSave:!saveDisabled,canDiscard:!discardDisabled,
+  actionHint:publicationUnconfirmed?'Confirm the previous publication before discarding edits.':advancedDirty?'Apply JSON edits or correct the invalid fields before saving.':undefined,
+  destinationName:next=>next.global?'Workspace settings':next.branchId
+   ?branches.data?.find(branch=>branch.id===next.branchId)?.name??client.getQueryData<BranchDto>(['branch',next.branchId])?.name
+   :'Workflows',
+ });
  useEffect(()=>{const intent=workflowLeave.current;if(intent&&(route.branchId!==intent.branchId||route.global||intent.revision!==draftRevision.current&&draftRevision.current!==savedDraft.current||pendingAdvanced.current))finishWorkflowLeave()},[route.branchId,route.global,draft,advancedDirty]);
  useEffect(()=>()=>finishWorkflowLeave(),[]);
  const editorGeneration=selection.current;
@@ -330,7 +465,21 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const applyRename=(name:string)=>{if(!renameId||routeOwner.current.global||renameId!==routeOwner.current.branchId||renameId!==draft.branchId||editorGeneration!==selection.current||loading||openingLink||review.isPending||deploy.isPending)return;setDraft(d=>({...d,definition:{...d.definition,name:name.trim()}}));setRenameId(undefined)};
 
  const branchDeleted=(branchId:string,generation:number)=>{const owner=routeOwner.current;if(owner.branchId!==branchId||owner.global||selection.current!==generation)return false;const settled=++selection.current;savedDraft.current=undefined;draftHistory.current=emptyWorkflowHistory();canvasViews.current.delete(branchId);setDraft(emptyDraft(),false);setAdvancedDirty(false);setPreview(undefined);client.removeQueries({queryKey:['branch',branchId],exact:true});requestAnimationFrame(()=>{if(routeOwner.current===owner&&selection.current===settled)navigate({tab:'workflow'},true)});return true};
- const createBranch=async(force=false)=>{if(actionLocks.current.has('create'))return;if(!force){guard(()=>void createBranch(true),true);return;}actionLocks.current.add('create');setCreating(true);creation.current??=createClientId();try{const branch=await requestJson<BranchDto>('/api/branches',{method:'POST',body:JSON.stringify({name:'Untitled Branch',idempotencyKey:creation.current})});requestAnimationFrame(()=>navigate({branchId:branch.id,tab:'workflow'}));creation.current=undefined;notify({message:'Workflow Created',key:'workflow-create'});void client.invalidateQueries({queryKey:['branches']})}catch(e){setError((e as Error).message)}finally{actionLocks.current.delete('create');setCreating(false)}};
+ const createBranch=async(kind:'blank'|'approval'='blank',force=false)=>{
+  if(actionLocks.current.has('create'))return;
+  if(!force){guard(()=>void createBranch(kind,true),true);return}
+  actionLocks.current.add('create');setCreating(true);setCreationFailure(undefined);setError('');
+  const owner=routeOwner.current,idempotencyKey=creation.current[kind]??=createClientId();
+  try{
+   const input:CreateBranchRequest=kind==='approval'?{example:'approval',idempotencyKey}:{name:newDefinition().name,idempotencyKey};
+   const branch=await requestJson<BranchDto>('/api/branches',{method:'POST',body:JSON.stringify(input)});
+   delete creation.current[kind];
+   if(routeOwner.current===owner)navigate({branchId:branch.id,tab:'workflow'});
+   void client.invalidateQueries({queryKey:['branches']});
+  }catch(cause){if(routeOwner.current===owner)setCreationFailure({kind,message:(cause as Error).message,owner})}
+  finally{actionLocks.current.delete('create');setCreating(false)}
+ };
+
  useEffect(()=>{setPreview(undefined)},[draft,advancedDirty]);
  useEffect(()=>{try{localStorage.setItem(BRANCHES_SIDEBAR_STORAGE_KEY,serializeWorkspaceSidebarState(sidebarPresentation))}catch{}},[sidebarPresentation]);
  useEffect(()=>{if(!mobileWorkspace&&mobileNavOpen)setMobileNavOpen(false)},[mobileWorkspace,mobileNavOpen]);
@@ -339,17 +488,31 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const historyExecution=executions.find(e=>e.id===executionId);
  useEffect(()=>{if(historyExecution&&detail.data?.execution.id===historyExecution.id&&detail.data.execution.revision<historyExecution.revision)void detailPages.refetch()},[historyExecution?.id,historyExecution?.revision,detail.data?.execution.revision]);
  const detailOwned=Boolean(detail.data&&detail.data.execution.id===executionId&&detail.data.execution.branchId===draft.branchId&&route.branchId===draft.branchId);
+ useEffect(()=>{
+  if(detailOwned&&detail.data)rememberedRuns.current.set(detail.data.execution.branchId,detail.data.execution.id);
+ },[detailOwned,detail.data]);
  const detailFresh=detailOwned&&!detail.error&&(!historyExecution||detail.data!.execution.revision>=historyExecution.revision);
- const openingWorkspace=(loading||openingLink)&&!(tab==='executions'&&detailOwned);
- const shownExecutions=executions.map(e=>e.id===detail.data?.execution.id&&detail.data.execution.revision>=e.revision?detail.data.execution:e);
- const actionFailure=error||(review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty?review.error?.message:undefined)||run.error?.message||automatic.error?.message||cancelInstallation.error?.message;
+ const publishingReadback=loading&&deploy.isPending&&draft.branchId===route.branchId&&!openingLink;
+ const openingWorkspace=(loading||openingLink)&&!publishingReadback&&!(tab==='executions'&&detailOwned);
+ const selectedExecution=detailOwned?detail.data?.execution:undefined;
+ const missingAgent=Boolean(validationRequest&&draft.definition.steps.some(step=>step.kind==='agent'&&'ref'in step.target&&!draft.bindings.agents[step.target.ref]));
+ const publicationIssues=review.error instanceof ApiRequestError&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current?(review.error.body as {issues?:BranchValidationIssue[]})?.issues:undefined;
+ const settingsActive=tab==='settings'&&!loading&&!openingLink&&deployedUpdate?.reason!=='failed';
+ const executionSettingsIssue=publicationIssues?.find(issue=>issue.section==='settings'&&issue.field!=='trigger');
+ const reviewFailure=review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty?review.error?.message:undefined;
+ const actionFailure=error||cancelInstallation.error?.message;
  const workflowReadOwner=route.branchId??`execution:${route.executionId??''}`;
  const failedOpening=Boolean((error||workflowReadError?.owner===workflowReadOwner)&&!openingLink&&!loading&&(route.branchId||route.executionId)&&(!draft.branchId||route.branchId!==draft.branchId));
  const failure=actionFailure;
- useEffect(()=>{if(actionFailure){feedback.current?.scrollIntoView({block:'center',behavior:'instant'});feedback.current?.focus({preventScroll:true});if(review.error&&actionFailure===review.error.message&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty)setValidationRequest(value=>value+1)}},[actionFailure]);
+ useEffect(()=>{if(actionFailure){feedback.current?.scrollIntoView({block:'center',behavior:'instant'});feedback.current?.focus({preventScroll:true});}},[actionFailure]);
  const searchReturnFocus=useRef<HTMLElement>();
- const restoreSearchTrigger=()=>{const previous=searchReturnFocus.current;searchReturnFocus.current=undefined;restoreOverlayFocus(previous,'[aria-label="Open Workspace Navigation"], [aria-label="Search Branch Chats"]')};
+ const restoreSearchTrigger=()=>{const previous=searchReturnFocus.current;searchReturnFocus.current=undefined;restoreOverlayFocus(previous,'[aria-label="Open Workspace Navigation"], [aria-label="Search Workflow Chats"]')};
  const closeMobileNavigation=()=>setMobileNavOpen(false);
+ const restoreMobileNavigationFocus=(drawer:HTMLElement)=>{
+  const focused=document.activeElement;
+  if(globalSearchOpen||leaveConfirmationOpen||(focused!==document.body&&!drawer.contains(focused)))return;
+  restoreOverlayFocus(sharedNavigationButton.current??undefined,'[aria-label="Open Workspace Navigation"]');
+ };
  const openGlobalSearch=()=>{searchReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setGlobalSearchOpen(true);setMobileNavOpen(false)};
  const openGlobalSearchSelection=async(selection:GlobalSearchSelection)=>{
   try{
@@ -360,11 +523,14 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    navigate(branchWorkspaceRoute(context,workspace as NonNullable<BranchRoute['workspace']>));
   }catch(cause){setError(cause instanceof Error?cause.message:'The selected Branch Chat could not be opened.')}
  };
- useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[]);
+ useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();if(!leaveConfirmationOpen)openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[leaveConfirmationOpen]);
+ const starWorkflow=(branch:BranchDto)=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',branch.id));
  const workflowPanel=(drawer:boolean)=>preferences.data?<BranchFolders branches={branches.data??[]} preferences={preferences.data} filtering={Boolean(search.trim())}
-    onRename={requestRename} onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
-    renderRow={b=><SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Branch ${b.name}`} title={b.name} selected={draft.branchId===b.id} emphasis={Boolean(branchUnread.data?.branches?.[b.id]?.totalCount||branchUnread.data?.branches?.[b.id]?.quietUnreadCount)} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
-      starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',b.id))}
+    onRename={branch=>{if(drawer)closeMobileNavigation();requestRename(branch)}}
+    onStar={starWorkflow} onViewRuns={branch=>{if(!branch.versionId)return;if(drawer)closeMobileNavigation();navigate({branchId:branch.id,tab:'executions'})}}
+    onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
+    renderRow={(b,openMenu)=><SidebarResourceRow onOpenMenu={openMenu} href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Workflow ${b.name}`} title={b.name} selected={draft.branchId===b.id} emphasis={Boolean(branchUnread.data?.branches?.[b.id]?.totalCount||branchUnread.data?.branches?.[b.id]?.quietUnreadCount)} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
+      starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>starWorkflow(b)}
       onOpen={()=>{if(loading||openingLink||creating||deploy.isPending)return;if(drawer)closeMobileNavigation();void select(b)}}/>}>
     {({starredRows,allRows})=><SharedSidebarPanel
       icon={<AccountTreeOutlinedIcon/>}
@@ -390,46 +556,168 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
       drawer={drawer}
     />}</BranchFolders>:<Typography role="status">{preferences.error?"Workflow preferences unavailable":"Loading workflows…"}</Typography>;
  const home=!route.global&&!route.branchId&&!route.executionId&&!draft.branchId&&!loading&&!openingLink;
- const editorAvailable=!loading&&!openingLink&&!failedOpening&&Boolean(draft.branchId)&&!(deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===draft.branchId);
+ const editorAvailable=(!loading||publishingReadback)&&!openingLink&&!failedOpening&&Boolean(draft.branchId)&&!(deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===draft.branchId);
  const workflowFeedback=<>
-    {deployedUpdate&&deployedUpdate.branch.id===draft.branchId&&route.branchId===draft.branchId&&<Alert severity={deployedUpdate.reason==='failed'?'warning':'info'} action={<Button onClick={()=>deployedUpdate.reason==='failed'?void reloadWorkflow(deployedUpdate.branch.id):guard(()=>void reloadWorkflow(deployedUpdate.branch.id),true)}>{deployedUpdate.reason==='failed'?'Retry Loading':'Load Deployed Version'}</Button>}>{deployedUpdate.reason==='failed'?'Changes were published, but the deployed workflow could not be loaded. Retry loading before editing.':'The deployed workflow changed while this draft has local edits. Load the deployed version when you are ready.'}</Alert>}{failure&&<Box component="details" ref={feedback} tabIndex={-1} open={Boolean(review.error&&failure===review.error.message)}><summary>Workflow Action Needs Attention</summary><Typography sx={{overflowWrap:"anywhere"}}>{failure}</Typography><Button onClick={event=>{const details=event.currentTarget.closest('details');if(details)details.open=false}}>Close</Button></Box>}
+    {creationFailure?.owner===route&&<Alert severity="error" action={<Button color="inherit" onClick={()=>void createBranch(creationFailure.kind)}>Retry creation</Button>}>
+     {creationFailure.kind==='approval'?'Could not open the example.':'Could not create the workflow.'} {creationFailure.message}
+    </Alert>}
+    {deployedUpdate&&deployedUpdate.branch.id===draft.branchId&&route.branchId===draft.branchId&&<Alert severity={deployedUpdate.reason==='failed'?'warning':'info'} action={<Button onClick={()=>deployedUpdate.reason==='failed'?void reloadWorkflow(deployedUpdate.branch.id):guard(()=>void reloadWorkflow(deployedUpdate.branch.id),true)}>{deployedUpdate.reason==='failed'?'Retry Loading':'Load Deployed Version'}</Button>}>{deployedUpdate.reason==='failed'?'Changes were published, but the deployed workflow could not be loaded. Retry loading before editing.':'The deployed workflow changed while this draft has local edits. Load the deployed version when you are ready.'}</Alert>}{failure&&<Alert severity="error" ref={feedback} tabIndex={-1} sx={{overflowWrap:"anywhere"}}>{failure}</Alert>}
     {publicationUnconfirmed&&<Alert severity="warning" action={<Button onClick={reviewChanges}>Review Publication</Button>}>Publication unconfirmed · reconcile same publication before discarding edits</Alert>}
      {editorAvailable&&lifecycle.data&&(lifecycle.data.deleting||lifecycle.data.updates.length>0||lifecycle.data.pendingRemoval.length>0)&&<BranchLifecycleStatus lifecycle={lifecycle.data} canceling={cancelInstallation.isPending} onCancelUpdate={id=>cancelInstallation.mutate(id)}/>}
 
-     {editorAvailable&&advancedDirty&&<Alert severity="warning">Unapplied/invalid fields · review in Workflow before deployment</Alert>}
+    {tab!=='workflow'&&reviewFailure&&<Alert severity="error" action={<Button onClick={()=>setTab('workflow')}>Open Workflow</Button>}>{reviewFailure}</Alert>}
+    {editorAvailable&&tab!=='workflow'&&advancedDirty&&<Alert severity="warning" action={<Button onClick={()=>setTab('workflow')}>Open Workflow</Button>}>Review unapplied or invalid fields before publishing.</Alert>}
 
  </>;
  const noticeHasSavedData=route.global?preferences.data!==undefined:tab==='executions'?(executionId?detailOwned:Boolean(route.branchId&&draft.branchId===route.branchId&&histories.data!==undefined)):tab==='chats'?Boolean(contexts.data?.some(context=>context.id===route.chatId&&context.branchId===route.branchId)):Boolean(route.branchId&&draft.branchId===route.branchId);
  const sidebarPanel=(drawer:boolean)=>route.global?<SettingsSidebarPanel route={{kind:'settings',section:branchSettingsSection(route.global)}} version={health.data?.version} onNavigate={next=>{if(next.kind==='settings')onGlobal(next.section??'general')}} hrefForRoute={next=>branchRoutePath({...route,global:next.kind==='settings'?next.section??'general':undefined})}/>:workflowPanel(drawer);
+ const ownedInspector=Boolean(draft.branchId&&route.branchId===draft.branchId&&!route.global);
+ const availabilityLocked=!current||Boolean(selectedBranch.error||lifecycle.error)||!lifecycle.data||lifecycle.data.deleting||lifecycle.data.updates.length>0;
+ const externalPane=
+  discardIntent&&discardIntent.branchId===route.branchId?'discard':
+  preview?'review':
+  runOpen?'run':
+  disableId&&disableId===current?.id?'disable':
+  renameId&&renameId===draft.branchId?'rename':
+  historyBranch&&historyBranch===draft.branchId?'history':
+  deletionOpen&&tab==='settings'?'delete':undefined;
+ const variablesSettingsRoute={...route,tab:'settings',settingsSection:'variables'} as const;
+ const localInspector=ownedInspector&&editorAvailable&&!externalPane&&Boolean(inspectorPane&&tab==='workflow');
+ const activePane=ownedInspector?(externalPane??(localInspector?inspectorPane:undefined)):undefined;
+ const draftTrigger=draft.definition.trigger;
+ const liveOverlap=scheduleOverlapSummary(trigger.data?.sourceConfig);
+ const draftOverlap=draftTrigger.kind==='schedule'?scheduleOverlapSummary(draft.bindings.triggers?.[draftTrigger.configRef]?.sourceConfig):undefined;
+ const liveConfig=trigger.data?.sourceConfig;
+ const onceAt=trigger.data?.sourceKind==='schedule'&&liveConfig&&'scheduleKind' in liveConfig&&liveConfig.scheduleKind==='once'?Date.parse(liveConfig.at):undefined;
+ const pausedOnce=trigger.data?.enabled===false&&onceAt!==undefined;
+ const onceFired=pausedOnce&&!trigger.data?.nextFireAt&&Date.parse(trigger.data?.lastFiredAt??'')===onceAt;
+ const onceExpired=pausedOnce&&onceAt<=trigger.dataUpdatedAt;
+ const publishedIntake=current?.versionId&&<Paper component="section" aria-label="Published trigger" variant="outlined" sx={{p:1.5}}>
+  {trigger.data?<Stack spacing={1}>
+   <Typography fontWeight={600}>Published · {workflowTriggerSummary(trigger.data.sourceKind,trigger.data.sourceConfig)}</Typography>
+   {onceFired||onceExpired?<Typography variant="body2" role="status">
+    {onceFired?'This one-time schedule already fired.':'This one-time schedule expired before it fired.'} Change the trigger below to schedule future runs.
+   </Typography>:<Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
+    <Typography variant="body2" role="status">{!trigger.data.enabled?'Automatic runs paused':current.enabled===false?'Automatic runs off while the workflow is disabled':'Automatic runs on'}</Typography>
+    <Button disabled={automatic.isPending||Boolean(trigger.error)||availabilityLocked} aria-busy={automatic.isPending||undefined} onClick={()=>{if(trigger.data)once('trigger',()=>automatic.mutateAsync({branchId:current.id,reviewedTrigger:trigger.data}).catch(()=>{}).finally(()=>actionLocks.current.delete('trigger')))}}>{automatic.isPending?'Saving…':`${trigger.data.enabled?'Pause':'Resume'} ${trigger.data.sourceKind==='schedule'?'schedule':'automatic runs'}`}</Button>
+   </Stack>}
+   {automatic.error&&automatic.variables?.branchId===current.id&&<Alert severity="error">{automatic.error.message}</Alert>}
+   {liveOverlap&&liveOverlap!==draftOverlap&&<Typography variant="body2" color="text.secondary">When already running · {liveOverlap}</Typography>}
+   {trigger.data.enabled&&current.enabled!==false&&trigger.data.nextFireAt&&<Typography variant="body2" color="text.secondary">Next run {new Date(trigger.data.nextFireAt).toLocaleString()}</Typography>}
+   {trigger.data.sourceKind==='webhook'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{window.location.origin}/api/trigger-webhooks/{trigger.data.id}</Typography>}
+  </Stack>:current.triggerId?<Typography role="status">{trigger.error?'Published trigger unavailable.':'Loading published trigger…'}</Typography>:<Typography fontWeight={600}>Published · Start manually</Typography>}
+ </Paper>;
+ const reviewedTriggerChange=preview?.result.triggerChange;
+ const reviewOverlapChanged=scheduleOverlapSummary(reviewedTriggerChange?.before?.sourceConfig)!==scheduleOverlapSummary(reviewedTriggerChange?.after?.sourceConfig);
+ const triggerReviewLabel=(source:NonNullable<typeof reviewedTriggerChange>['before'])=>{
+  if(!source)return 'Start manually';
+  const overlap=reviewOverlapChanged?scheduleOverlapSummary(source.sourceConfig):undefined;
+  return `${workflowTriggerSummary(source.sourceKind,source.sourceConfig)} · Automatic runs ${source.enabled?(current?.enabled===false?'on when workflow is enabled':'on'):'paused'}${overlap?' · '+overlap:''}`;
+ };
+ const discardForm=<ConfirmDialog inWorkflowInspector open title={`Discard changes to “${draft.definition.name}”?`} confirmLabel="Discard Changes" pendingLabel="Discarding Changes…" pending={discard.isPending} error={discard.error?.message} onCancel={()=>setDiscardIntent(undefined)} onConfirm={()=>{if(discardIntent)once('discard',()=>discard.mutate(discardIntent))}}>Discard all unpublished workflow edits? Published work and independent settings are kept.</ConfirmDialog>;
+ const noPublicationChanges=Boolean(current?.versionId)&&!reviewedTriggerChange&&preview?.result.operations.every(op=>op.kind==='unchanged');
+ const reviewForm=preview&&<WorkflowInspectorPage title="Review changes" pending={deploy.isPending||discard.isPending}
+  onBack={()=>{finishWorkflowLeave();setPreview(undefined)}}
+  actions={<>
+   <Button color="error" sx={{mr:'auto'}} disabled={discardDisabled} onClick={requestDiscard}>Discard Changes</Button>
+   <Button variant="contained" disabled={deploy.isPending||discard.isPending||!publicationUnconfirmed&&(advancedDirty||noPublicationChanges)}
+    onClick={publishChanges}>{deploy.isPending?'Publishing…':publicationUnconfirmed?'Retry publication':'Publish workflow'}</Button>
+  </>}>
+  <Stack spacing={2}>
+   {error&&<Alert severity="error">{error}</Alert>}
+   {deploy.error&&<Alert severity="error">{deploy.error.message}</Alert>}
+   <Typography>{preview.input.definition.name}</Typography>
+   {preview.input.definition.trigger.kind==='manual'&&!reviewedTriggerChange&&<Typography color="text.secondary">This workflow starts only when you choose Run once.</Typography>}
+   {reviewedTriggerChange&&<Alert severity="info">
+    <Typography>Published · {triggerReviewLabel(reviewedTriggerChange.before)}</Typography>
+    <Typography>After publishing · {triggerReviewLabel(reviewedTriggerChange.after)}</Typography>
+   </Alert>}
+   {preview.result.unchangedScheduleEnabled!==undefined&&<Typography variant="body2" color="text.secondary">
+    {preview.result.unchangedScheduleEnabled
+     ?current?.enabled===false?'Automatic runs stay off while the workflow is disabled.':'Automatic runs stay on.'
+     :'Automatic runs stay paused.'}
+   </Typography>}
+   {preview.result.operations.filter(op=>op.kind!=='unchanged').map((op,i)=><Accordion key={i}>
+    <AccordionSummary><Stack direction="row" spacing={1}>
+     <Chip label={op.kind==='detach'?'Remove':op.kind==='create'?'Add':'Change'} size="small"/>
+     <Typography>{op.resource} · {deploymentOperationLabel(op,preview.input.definition,publishedVersion.data?.definition)}</Typography>
+    </Stack></AccordionSummary>
+    <AccordionDetails>{(['before','after'] as const).map(key=>op[key]!==undefined&&<Box key={key}>
+     <Typography fontWeight={600}>{key==='before'?'Before':'After'}</Typography>
+     <Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto'}}>{op[key]}</Typography>
+    </Box>)}</AccordionDetails>
+   </Accordion>)}
+   {preview.result.operations.some(op=>op.kind==='unchanged')&&<Accordion>
+    <AccordionSummary>Unchanged local bindings</AccordionSummary>
+    <AccordionDetails>{preview.result.operations.filter(op=>op.kind==='unchanged').map((op,i)=><Typography key={i} sx={{overflowWrap:'anywhere'}}>
+     {op.resource} · {deploymentOperationLabel(op,preview.input.definition,publishedVersion.data?.definition)}: {op.after??op.before}
+    </Typography>)}</AccordionDetails>
+   </Accordion>}
+   {noPublicationChanges&&<Typography>No definition or binding changes.</Typography>}
+   <PublishingEffects notes={preview.result.notes}/>
+  </Stack>
+ </WorkflowInspectorPage>;
+ const runForm=<ConfirmDialog inWorkflowInspector open={runOpen} title={rerunVersion?'Run again with edited input':dirty&&current?.versionId?'Run Published Workflow':'Run once'} confirmLabel={runAccepted?'View Run':runUnconfirmed?'Retry Run Submission':rerunVersion?'Start new run':dirty&&current?.versionId?'Run Published Workflow':'Run once'} pendingLabel="Submitting…" pending={run.isPending} error={run.error?.message} confirmDisabled={!runAccepted&&!runUnconfirmed&&Boolean(runUnavailable||runInputError)} onCancel={()=>setRunOpen(false)} onConfirm={submitRun}>
+   <Stack spacing={2} sx={{pt:1}}>
+    {dirty&&runVersion&&<Alert severity="info">Run uses published version {runVersion} · unpublished edits excluded</Alert>}
+    {rerunVersion&&runVersion&&rerunVersion!==runVersion&&!runAccepted&&<Alert severity="info">
+     The new run will use published version {runVersion}. The canceled run used {rerunVersion}.
+    </Alert>}
+    {runUnconfirmed&&<Alert severity="warning">Submission unconfirmed · retry: same Run Input + key · no separate Run</Alert>}
+    {runAccepted&&<Alert severity="success">Run accepted · unsaved settings retained · open accepted Run when ready</Alert>}
+    {runUnavailable&&!runUnconfirmed&&!runAccepted&&<Alert severity="warning" action={<Button onClick={()=>{setRunOpen(false);setTab('workflow')}}>Open Workflow</Button>}>{runUnavailable}</Alert>}
+    <TextField autoFocus={Boolean(rerunVersion)} label="Run Input" helperText={runInputError??'Optional. Leave blank if this workflow needs no input.'} error={Boolean(runInputError)} multiline minRows={3} value={input} disabled={run.isPending||runUnconfirmed||runAccepted} onChange={event=>{if(run.isError&&!runUnconfirmed){run.reset();setOccurrenceKey(createClientId())}setInput(event.target.value)}}/>
+   </Stack>
+  </ConfirmDialog>;
+ const disableForm=(
+  <ConfirmDialog inWorkflowInspector open title="Disable workflow?" confirmLabel="Disable workflow" confirmDisabled={availabilityLocked||current?.enabled===false} onCancel={()=>setDisableId(undefined)} onConfirm={()=>{if(!current||availabilityLocked||current.enabled===false||availability.isPending)return;setDisableId(undefined);availability.mutate({id:current.id,enabled:false})}}>
+   <Typography>Disabling blocks new manual and automatic runs. Runs already in progress continue.</Typography>
+  </ConfirmDialog>);
+ const renameForm=<TextInputDialog inWorkflowInspector key={renameId} open title="Rename Workflow" label="Workflow Name" confirmLabel="Apply To Draft" initialValue={draft.definition.name} pending={review.isPending||deploy.isPending} validate={value=>!value.trim()?'Enter a workflow name.':value.trim().length>240?'Use 240 characters or fewer.':undefined} helperText="Review and publish to apply this name." onCancel={()=>setRenameId(undefined)} onConfirm={applyRename}/>;
+ const historyForm=<WorkflowInspectorPage title="Version history" onBack={()=>setHistoryBranch(undefined)}>{error&&<Alert severity="error">{error}</Alert>}<Stack spacing={1}>
+      <Typography color="text.secondary">Restore definition → draft → review → publish</Typography>
+      <WorkspaceQueryError read={workspaceRead(`branch:${draft.branchId}`,"Version History",versions)}/>
+      {versions.isPending?<Typography role="status">Loading version history…</Typography>:!versions.error&&!versions.data?.pages.flat().length&&<Typography color="text.secondary">No published versions yet.</Typography>}{versions.data?.pages.flat().map(version=><Paper variant="outlined" key={version.id} sx={{p:2}}><Stack direction="row" alignItems="center" gap={1} flexWrap="wrap"><Typography sx={{flex:1}}>{new Date(version.createdAt).toLocaleString()}</Typography>{version.id===current?.versionId&&<Chip size="small" label="Deployed"/>}<Button onClick={()=>void versionDefinition(version,false)}>Download Definition</Button><Button onClick={()=>void versionDefinition(version,true)}>Use As Draft</Button></Stack></Paper>)}{versions.hasNextPage&&<Button onClick={()=>void versions.fetchNextPage()}>Load Older Versions</Button>}</Stack></WorkflowInspectorPage>;
+ const inspectorContent=activePane&&externalPane?{discard:discardForm,review:reviewForm,run:runForm,disable:disableForm,rename:renameForm,history:historyForm,delete:null}[externalPane]:null;
  return <WorkspaceRefreshProvider connection={connection}><WorkspaceConnectionProvider value={connection}><Box sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',minHeight:0}}><PrimaryHeaderActionsProvider onOpenProviderSettings={()=>onGlobal('providers')} workspaceStatus={<WorkspaceConnectionNotice connection={connection} hasSavedData={noticeHasSavedData}/>}><MobileNavigationProvider buttonRef={sharedNavigationButton} desktopVisible={sidebarPresentation.collapsed} onOpen={()=>mobileWorkspace?setMobileNavOpen(true):setSidebarPresentation(state=>({...state,collapsed:false}))}><Box sx={{height:'100%',display:'grid',gridTemplateColumns:{xs:'minmax(0,1fr)',md:'auto minmax(0,1fr)'},overflow:'hidden',bgcolor:'background.default'}}>
   <Box sx={{display:{xs:'none',md:'block'},height:'100%',minHeight:0}}>{(!mobileWorkspace||desktopNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>navigate({tab:'workflow'})} onSearch={openGlobalSearch} panel={sidebarPanel(false)} notifications={!mobileWorkspace?<BranchNotifications onNavigate={navigate}/>:undefined} collapsed={sidebarPresentation.collapsed} width={sidebarPresentation.width} onCollapsedChange={collapsed=>{setSidebarPresentation(state=>({...state,collapsed}));if(collapsed)requestAnimationFrame(()=>sharedNavigationButton.current?.focus())}} onWidthChange={width=>setSidebarPresentation(state=>({...state,width}))}/>}</Box>
   <input ref={workflowImportInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(mobileNavOpen)closeMobileNavigation();void importFile(e.target.files?.[0]);e.target.value=''}}/>
   <Box component="a" href="#main-content" sx={{position:'absolute',left:8,top:-80,zIndex:1500,p:1,bgcolor:'background.paper','&:focus':{top:8}}}>Skip to main content</Box>
   <Box component="main" id="main-content" tabIndex={-1} sx={{position:'relative',minWidth:0,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden',...(dirty&&!route.global&&route.branchId===draft.branchId?{'&::after':{content:'""',position:'absolute',inset:0,border:'1px solid',borderColor:'warning.main',pointerEvents:'none',zIndex:1}}:{})}}>
-   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!openingWorkspace&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} dirty={dirty} runCounts={lifecycle.data?.runCounts} executionsUnavailable={Boolean(selectedBranch.error||lifecycle.error)} onRun={openRun} runPending={run.isPending} onTab={setTab} discardDisabled={discardDisabled} onDiscard={requestDiscard} onRename={()=>current&&requestRename(current)} onHistory={()=>setHistoryBranch(draft.branchId)} onEditJson={()=>setJsonOpen(true)} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
+   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!openingWorkspace&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} dirty={dirty} runCounts={lifecycle.data?.runCounts} executionsUnavailable={Boolean(selectedBranch.error||lifecycle.error)} onRun={current&&(current.versionId||runUnconfirmed||!needsFirstStep||tab!=='workflow')?openRun:undefined} runButton={runButton} runLabel={current?.versionId||runUnconfirmed?'Run once':needsFirstStep?'Add your first step':'Publish to run'} runDisabled={runUnconfirmed?false:current?.versionId?Boolean(runUnavailable):!needsFirstStep&&saveDisabled} runPending={run.isPending} availability={current?.versionId?<BranchAvailability branch={current} mutation={availability} disabled={availabilityLocked} onDisable={()=>setDisableId(current.id)}/>:current&&<Typography variant="caption" color="text.secondary">Unpublished</Typography>} onTab={setTab} discardDisabled={discardDisabled} onDiscard={requestDiscard} onRename={()=>current&&requestRename(current)} onHistory={()=>setHistoryBranch(draft.branchId)} onVariables={()=>{setTab('workflow');setInspectorPane('variables')}} onEditJson={()=>{setTab('workflow');setInspectorPane('json')}} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
    {!route.global&&!home&&(openingWorkspace||failedOpening||!draft.branchId||route.branchId!==draft.branchId)&&<CompactWorkspaceHeader icon={<AccountTreeOutlinedIcon/>} title={failedOpening?'Workflow Unavailable':'Opening Workflow…'}/>}
    <input ref={packageUpdateInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(packageUpdateSelection.current===selection.current)void importFile(e.target.files?.[0],true);e.target.value=''}}/>
    <WorkspaceQueryErrors reportOnly={Boolean(route.global&&!preferences.data)} reads={[workspaceRead("workspace","Preferences",preferences),workspaceRead("workspace","Engines",engines),workspaceRead("branches","Workflows",branches),workspaceRead("branches","Organized Workflows",organized),workspaceRead(`branch:${draft.branchId}`,"Chats",contextList),workspaceRead(`branch:${draft.branchId}`,"Agents",agents),workspaceRead(`branch:${draft.branchId}`,"Workflow",selectedBranch),workspaceRead(`branch:${draft.branchId}`,"Trigger",trigger),workspaceRead(`branch:${draft.branchId}`,"Lifecycle",lifecycle),workspaceRead("branches","Unread Status",branchUnread),workspaceRead(`execution:${executionId}`,"Execution",detailPages),{...workspaceRead(`branch:${draft.branchId}`,"Published Variables",publishedVersion),active:tab==='settings'}]}/>
    <WorkspaceQueryError initial={failedOpening} read={{owner:`workflow:${workflowReadOwner}`,resource:"Workflow",error:workflowReadError&&workflowReadError.owner===workflowReadOwner?workflowReadError.error:undefined,hasData:Boolean(route.branchId&&draft.branchId===route.branchId),success:Boolean(route.branchId&&draft.branchId===route.branchId&&!workflowReadError),retry:()=>{if(failedOpening){setOpeningLink(true);setOpeningAttempt(value=>value+1);return;}return reloadWorkflow(route.branchId!)}}}/>
 
 
-   {route.global?(preferences.data?<LazyBranchGlobalSettings view={route.global} preferences={preferences.data} engines={engines.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onClose={()=>navigate({...route,global:undefined})}/>:preferences.error?<WorkspaceQueryError initial read={workspaceRead("workspace","Preferences",preferences,false)}/>:<Typography role="status">Loading settings…</Typography>):<Stack spacing={home||tab==='workflow'||tab==='executions'?0:{xs:1.5,md:2}} sx={{p:home||tab==='workflow'||tab==='executions'?0:tab==='chats'?1:{xs:1.5,sm:2,md:3},flex:1,minWidth:0,minHeight:0,overflowY:home||tab==='workflow'||tab==='chats'||tab==='executions'?'hidden':'auto',overflowX:'hidden'}}>
+   <WorkflowInspector open={Boolean(activePane)} pane={activePane} mobile={mobileWorkspace} fallbackFocus={()=>document.getElementById(`branch-${tab}-tab`)}
+    content={<><Box ref={setInspectorTarget} hidden={!localInspector} sx={{height:'100%',minHeight:0}}/><Box ref={setDeletionTarget} hidden={externalPane!=='delete'} sx={{height:'100%',minHeight:0}}/>{externalPane&&<Box key={externalPane} sx={{height:'100%',minHeight:0}}>{inspectorContent}</Box>}</>}>
+   {route.global&&(preferences.data?<LazyBranchGlobalSettings view={route.global} preferences={preferences.data} engines={engines.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onClose={()=>navigate({...route,global:undefined})} returnLabel={providerReturn===draft.branchId&&draft.branchId?'Back to step settings':'Back to Workflows'}/>:preferences.error?<WorkspaceQueryError initial read={workspaceRead("workspace","Preferences",preferences,false)}/>:<Typography role="status">Loading settings…</Typography>)}
+   {(!route.global||Boolean(providerReturn&&providerReturn===draft.branchId))&&<Stack hidden={Boolean(route.global)} spacing={home||tab==='workflow'||tab==='executions'?0:{xs:1.5,md:2}} sx={{display:route.global?'none':undefined,p:home||tab==='workflow'||tab==='executions'?0:tab==='chats'?1:{xs:1.5,sm:2,md:3},flex:1,minWidth:0,minHeight:0,overflowY:home||tab==='workflow'||tab==='chats'||tab==='executions'?'hidden':'auto',overflowX:'hidden'}}>
+    {importProblem?.owner===route&&<Alert severity="error" onClose={()=>setImportProblem(undefined)} sx={{flexShrink:0}}>
+     <Typography sx={{overflowWrap:'anywhere'}}>Workflow file · {importProblem.name}</Typography>
+     <Typography>{importProblem.message}</Typography>
+     <Button color="inherit" onClick={()=>{if(importProblem.update){packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}else workflowImportInput.current?.click()}}>Choose another file</Button>
+    </Alert>}
     {tab==='workflow'?<Box data-workflow-feedback sx={{maxHeight:'40%',flexShrink:0,overflowY:'auto','&:empty':{display:'none'},'& > * + *':{mt:1.5}}}>{workflowFeedback}</Box>:workflowFeedback}
-    {openingWorkspace?<Typography role="status">Opening workflow…</Typography>:failedOpening?<Typography role="status">Workflow unavailable · retry loading</Typography>:deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===draft.branchId&&!(tab==='executions'&&detailOwned)?<Typography role="status">The published workflow is waiting to be loaded.</Typography>:!draft.branchId?<BranchHome engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} enginesError={engines.error?.message} onRetryEngines={()=>void engines.refetch()} onNavigate={navigate} onCreate={()=>void createBranch()} onImport={()=>workflowImportInput.current?.click()} creating={creating}/>:<>
-     <Box role="tabpanel" id="branch-workflow-panel" aria-labelledby="branch-workflow-tab" hidden={tab!=='workflow'} sx={{display:tab==='workflow'?'flex':'none',flex:1,minHeight:0,minWidth:0}}><RetainedBranchWorkflow editing={dirty} saveControl={<Button variant="contained" disabled={saveDisabled} aria-busy={review.isPending||deploy.isPending||discard.isPending||undefined} onClick={reviewChanges}>Save Workflow</Button>} canvasViews={canvasViews.current} undoRedo={undoRedo} onDraft={(edit:WorkflowDraftEdit)=>{if(editorGeneration===selection.current)setDraft(d=>{const definition=edit.definition??d.definition,bindings=edit.bindings??d.bindings;return {...d,definition,bindings:edit.definition?bindDefinitionDirectories(definition,bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory):bindings}})}} branchId={draft.branchId??''} onSettingsIssue={()=>setTab('settings')} validationIssues={review.error instanceof ApiRequestError&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current?(review.error.body as {issues?:import("@ponderosa/core").BranchValidationIssue[]})?.issues:undefined} active={tab==='workflow'&&!route.global&&!loading&&!openingLink} onInvalidStep={()=>setTab('workflow')} jsonOpen={jsonOpen} onCloseJson={()=>setJsonOpen(false)} validationRequest={validationRequest} triggerDirty={Boolean(savedDraft.current&&(JSON.stringify(JSON.parse(savedDraft.current).definition.trigger)!==JSON.stringify(draft.definition.trigger)||JSON.stringify(JSON.parse(savedDraft.current).bindings.triggers)!==JSON.stringify(draft.bindings.triggers)))} intake={trigger.data&&<Paper variant="outlined" sx={{p:2}}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography sx={{flex:1}}>Published {trigger.data.sourceKind} intake · {trigger.data.enabled?'Enabled':'Paused'}</Typography><Button disabled={automatic.isPending} onClick={()=>automatic.mutate()}>{trigger.data.enabled?'Pause Intake':'Resume Intake'}</Button></Stack><Typography variant="caption" color="text.secondary">Last automatic run: {trigger.data.lastFiredAt?new Date(trigger.data.lastFiredAt).toLocaleString():'None'} · Next automatic run: {current?.enabled===false?'Paused while Branch is disabled':!trigger.data.enabled?'Paused':trigger.data.nextFireAt?new Date(trigger.data.nextFireAt).toLocaleString():'Not scheduled'}</Typography>{trigger.data.sourceKind==='webhook'&&<><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{window.location.origin}/api/trigger-webhooks/{trigger.data.id}</Typography></>}</Paper>} availability={current&&<BranchAvailability key={current.id} branch={current} disabled={!lifecycle.data||Boolean(lifecycle.error)||lifecycle.data.deleting||lifecycle.data.updates.length>0}/>} onPendingEdits={reportPendingEdits} key={editorKey} definition={draft.definition} bindings={draft.bindings} chatId={draft.chatId} contexts={contexts.data??[]} agents={agents.data?.items??[]} engines={engines.data??[]} existing={Boolean(draft.branchId)} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition,bindings:bindDefinitionDirectories(definition,d.bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory)}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}} onChat={changeChat}/></Box>
+    {openingWorkspace?<Typography role="status">Opening workflow…</Typography>:failedOpening?<Typography role="status">Workflow unavailable · retry loading</Typography>:deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===draft.branchId&&!(tab==='executions'&&detailOwned)?<Typography role="status">The published workflow is waiting to be loaded.</Typography>:!draft.branchId?<BranchHome engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} enginesError={engines.error?.message} onRetryEngines={()=>void engines.refetch()} onNavigate={navigate} onCreate={()=>void createBranch()} onExample={()=>void createBranch('approval')} onImport={()=>workflowImportInput.current?.click()} creating={creating}/>:<>
+     <Box role="tabpanel" id="branch-workflow-panel" aria-labelledby="branch-workflow-tab" hidden={tab!=='workflow'} sx={{display:tab==='workflow'?'flex':'none',flex:1,minHeight:0,minWidth:0}}><RetainedBranchWorkflow editing={dirty} saveControl={<Stack spacing={.5} sx={{alignItems:'flex-end',maxWidth:'min(340px, 100%)'}}>
+      <Button variant="contained" disabled={saveDisabled} aria-busy={review.isPending||deploy.isPending||discard.isPending||undefined} onClick={reviewChanges}>Review changes</Button>
+      {(reviewFailure||missingAgent||advancedDirty)&&<Typography role="alert" variant="caption" color="error.main" sx={{textAlign:'right'}}>{reviewFailure??(missingAgent?'Assign an Agent to each Agent step before publishing.':'Apply JSON edits or correct the invalid fields before review.')}</Typography>}
+     </Stack>} canvasViews={canvasViews.current} undoRedo={undoRedo} onDraft={(edit:WorkflowDraftEdit)=>{if(editorGeneration===selection.current)setDraft(d=>{const definition=edit.definition??d.definition,bindings=edit.bindings??d.bindings;return {...d,definition,bindings:edit.definition?bindDefinitionDirectories(definition,bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory):bindings}})}} branchId={draft.branchId??''} onSettingsIssue={field=>{if(field==='trigger')setInspectorPane('trigger');else setTab('settings')}} validationIssues={publicationIssues} active={tab==='workflow'&&!route.global&&editorAvailable} onInvalidStep={()=>setTab('workflow')} firstStepRequest={firstStepRequest.selection===editorGeneration?firstStepRequest.count:0} variablesSettingsHref={branchRoutePath(variablesSettingsRoute)} onVariablesSettings={()=>navigate(variablesSettingsRoute)} onProviderSetup={()=>navigate({...route,global:'providers'},false,()=>setProviderReturn(draft.branchId))} inspectorPane={inspectorPane} onInspectorPane={setInspectorPane} inspectorTarget={inspectorTarget} inspectorActive={localInspector} validationRequest={validationRequest} triggerDirty={Boolean(savedDraft.current&&(JSON.stringify(JSON.parse(savedDraft.current).definition.trigger)!==JSON.stringify(draft.definition.trigger)||JSON.stringify(JSON.parse(savedDraft.current).bindings.triggers)!==JSON.stringify(draft.bindings.triggers)))} intake={publishedIntake} onPendingEdits={reportPendingEdits} key={editorKey} definition={draft.definition} bindings={draft.bindings} chatId={draft.chatId} contexts={contexts.data??[]} agents={agents.data?.items??[]} engines={engines.data??[]} existing={Boolean(draft.branchId)} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition,bindings:bindDefinitionDirectories(definition,d.bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory)}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}} onChat={changeChat}/></Box>
      <Box role="tabpanel" id="branch-executions-panel" aria-labelledby="branch-executions-tab" hidden={tab!=='executions'} sx={{display:tab==='executions'?'flex':'none',flex:1,minHeight:0,minWidth:0}}>
-      <RetainedBranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={shownExecutions} selectedId={executionId} selectedRun={detailOwned?detail.data?.execution:undefined} filter={route.executionFilter} onFilter={value=>navigate({...route,executionFilter:value||undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} read={workspaceRead(`branch:${draft.branchId}`,"Executions",histories)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={<BranchTriggerAudit branchId={draft.branchId} onNavigate={navigate} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
+      <RetainedBranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={executions} rememberedId={rememberedRuns.current.get(draft.branchId)} selectedId={executionId} selectedRun={selectedExecution} filters={route.executionFilters} onFilter={value=>navigate({...route,executionFilters:value.length?value:undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} read={workspaceRead(`branch:${draft.branchId}`,"Executions",histories)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={(onViewRun,onViewRunExited)=>draft.branchId&&<BranchTriggerAudit branchId={draft.branchId} hasAutomaticTrigger={current?.id===draft.branchId&&current?.versionId?Boolean(current.triggerId):undefined} onViewRun={onViewRun} onViewRunExited={onViewRunExited} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
        <Stack spacing={2}>
         <WorkspaceQueryError initial={!detailOwned} read={workspaceRead(`execution:${executionId}`,"Run",detail,detailOwned)}/>{!detail.error&&executionId&&!detailOwned?<Typography role="status">Loading this Run…</Typography>:null}
         {tab==='executions'&&detailOwned&&detail.data&&<>
-         <ExecutionPanel key={detail.data.execution.id} authorityFresh={detailFresh} viewStates={executionViewStates.current} detail={detail.data} definition={pinned.data?.id===detail.data.execution.versionId&&pinned.data.branchId===detail.data.execution.branchId?pinned.data.definition:undefined} onBudgetSettings={branchId=>navigate({branchId:branchId??draft.branchId,tab:'settings',settingsSection:'execution-controls'})} runLinks={<Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
-          {executionChats.data?.length?<Button onClick={()=>navigate({...route,tab:'chats',chatId:undefined,workspace:undefined})}>Open {executionChats.data.length} Temporary {executionChats.data.length===1?'Chat':'Chats'}</Button>:executionChats.isPending?<Typography variant="body2" color="text.secondary">Checking temporary Chats…</Typography>:!executionChats.error&&<Typography variant="body2" color="text.secondary">No temporary Chats for this Run.</Typography>}
-          <WorkspaceQueryError read={workspaceRead(`execution:${executionId}`,"Temporary Chats",executionChats)}/>
-          <Button onClick={()=>navigate({...route,tab:'chats',executionId:undefined,chatId:undefined,workspace:undefined})}>Manage Persistent Chats</Button>
-         </Stack>} onMoreResults={detailPages.hasNextPage?()=>void detailPages.fetchNextPage():undefined} loadingMoreResults={detailPages.isFetchingNextPage} evidenceControls={<>
+         <ExecutionPanel key={detail.data.execution.id} authorityFresh={detailFresh} onRerun={openRerun} rerunDisabled={runUnconfirmed||run.isPending} viewStates={executionViewStates.current} detail={detail.data} definition={pinned.data?.id===detail.data.execution.versionId&&pinned.data.branchId===detail.data.execution.branchId?pinned.data.definition:undefined} onBudgetSettings={branchId=>navigate({branchId:branchId??draft.branchId,tab:'settings',settingsSection:'execution-controls'})} runLinks={<>
+          {executionChats.data?.length?<Button sx={{alignSelf:'start'}} onClick={()=>navigate({...route,tab:'chats',chatId:undefined,workspace:undefined})}>Open {executionChats.data.length} Temporary {executionChats.data.length===1?'Chat':'Chats'}</Button>:null}
+          {executionChats.error&&<WorkspaceQueryError read={workspaceRead(`execution:${executionId}`,"Temporary Chats",executionChats)}/>}
+         </>} onMoreResults={detailPages.hasNextPage?()=>void detailPages.fetchNextPage():undefined} loadingMoreResults={detailPages.isFetchingNextPage} evidenceControls={<>
           <WorkspaceQueryError read={workspaceRead(`execution:${executionId}`,"Run Graph",pinned)}/>{pinned.isPending?<Typography role="status">Loading the published Run Graph…</Typography>:null}
-          {detailPages.isFetchNextPageError&&<Box component="details"><summary>Displayed Audit History Is Incomplete</summary><Button disabled={detailPages.isFetchingNextPage} onClick={()=>{setDetailLoadTarget(0);void detailPages.fetchNextPage()}}>Retry Older Details</Button></Box>}
-          {detailPages.hasNextPage&&<Alert severity="info" action={<Stack direction="row" useFlexGap flexWrap="wrap"><Button onClick={()=>void detailPages.fetchNextPage()} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Older Details</Button><Button onClick={()=>setDetailLoadTarget((detailPages.data?.pages.length??0)+10)} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Next 10 Pages</Button></Stack>}><Stack spacing={0.5}><Typography>Loaded audit records only · search + filters</Typography><Typography>Full Run evidence · load older pages</Typography><Typography>Current required actions · retrieved separately</Typography></Stack></Alert>}
+          {detailPages.isFetchNextPageError?<Alert severity="warning" action={<Button disabled={detailPages.isFetchingNextPage} onClick={()=>{setDetailLoadTarget(0);void detailPages.fetchNextPage()}}>Retry Older Details</Button>}>Older evidence could not be loaded.</Alert>
+          :detailPages.hasNextPage&&<Alert severity="info" action={<Stack direction="row" useFlexGap flexWrap="wrap"><Button onClick={()=>void detailPages.fetchNextPage()} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Older Details</Button><Button onClick={()=>setDetailLoadTarget((detailPages.data?.pages.length??0)+10)} disabled={detailPages.isFetchingNextPage||detailLoadTarget>(detailPages.data?.pages.length??0)}>Load Next 10 Pages</Button></Stack>}>Search and filters cover loaded evidence.</Alert>}
          </>}/>
 
         </>}
@@ -439,29 +727,15 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
      <Box role="tabpanel" id="branch-chats-panel" aria-labelledby="branch-chats-tab" hidden={tab!=='chats'} sx={{display:tab==='chats'?'flex':'none',flex:1,minHeight:0}}>{tab==='chats'&&draft.branchId&&<BranchChats key={draft.branchId} branchId={draft.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} executionId={route.executionId} branchRoute={route} onNavigate={navigate}/>}</Box>
 
     </>}
-    {current&&route.branchId===draft.branchId&&current.id===draft.branchId&&<Box ref={settingsPanel} role="tabpanel" id="branch-settings-panel" aria-labelledby="branch-settings-tab" hidden={tab!=='settings'||loading||openingLink||deployedUpdate?.reason==='failed'}><RetainedBranchSettings executionSettings={<LazyWorkflowExecutionSettings definition={draft.definition} bindings={draft.bindings} agents={agents.data?.items??[]} contexts={contexts.data??[]} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}}/>} key={current.id} branch={current} definition={!publishedVersion.error&&publishedVersion.data?.id===current.versionId&&publishedVersion.data.branchId===current.id?publishedVersion.data.definition:undefined} active={tab==='settings'&&!loading&&!openingLink&&deployedUpdate?.reason!=='failed'} focusVariables={route.settingsSection==='variables'} focusExecutionControls={route.settingsSection==='execution-controls'} variablesFeedback={current.versionId&&(publishedVersion.error?<WorkspaceQueryError active={tab==='settings'} read={workspaceRead(`branch:${draft.branchId}`,"Published Variables",publishedVersion)}/>:publishedVersion.isPending?<Typography role="status">Loading published variables…</Typography>:undefined)} onDeleted={()=>branchDeleted(current.id,editorGeneration)}/></Box>}
+    {current&&route.branchId===draft.branchId&&current.id===draft.branchId&&<Box role="tabpanel" id="branch-settings-panel" aria-labelledby="branch-settings-tab" hidden={tab!=='settings'||loading||openingLink||deployedUpdate?.reason==='failed'}><RetainedBranchSettings executionSettingsError={executionSettingsIssue?.message} executionSettings={<LazyWorkflowExecutionSettings validationIssue={settingsActive?executionSettingsIssue:undefined} definition={draft.definition} bindings={draft.bindings} agents={agents.data?.items??[]} contexts={contexts.data??[]} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}}/>} key={current.id} branch={current} definition={!publishedVersion.error&&publishedVersion.data?.id===current.versionId&&publishedVersion.data.branchId===current.id?publishedVersion.data.definition:undefined} active={settingsActive} focusVariables={route.settingsSection==='variables'} focusExecutionControls={route.settingsSection==='execution-controls'} variablesFeedback={current.versionId&&(publishedVersion.error?<WorkspaceQueryError active={tab==='settings'} read={workspaceRead(`branch:${draft.branchId}`,"Published Variables",publishedVersion)}/>:publishedVersion.isPending?<Typography role="status">Loading published variables…</Typography>:undefined)} deletionTarget={deletionTarget} onDeletionOpen={setDeletionOpen} onDeleted={()=>branchDeleted(current.id,editorGeneration)}/></Box>}
    </Stack>}
+   </WorkflowInspector>
   </Box>
-  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen} onOpen={()=>{if(mobileWorkspace)setMobileNavOpen(true)}} onClose={closeMobileNavigation} SlideProps={{onExited:()=>{if(!globalSearchOpen&&document.activeElement===document.body)sharedNavigationButton.current?.focus({preventScroll:true})}}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
+  {(mobileWorkspace||mobileNavigationMounted)&&<SwipeableDrawer open={mobileWorkspace&&mobileNavOpen&&!leaveConfirmationOpen} onOpen={()=>{if(mobileWorkspace&&!leaveConfirmationOpen)setMobileNavOpen(true)}} onClose={closeMobileNavigation} ModalProps={{disableRestoreFocus:true}} SlideProps={{onExited:restoreMobileNavigationFocus}} disableDiscovery disableSwipeToOpen={!mobileWorkspace} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'},onTouchStart:()=>{if(mobileWorkspace)setMobileNavigationMounted(true)}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}>{(mobileNavOpen||mobileNavigationMounted)&&<BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/>}</SwipeableDrawer>}
   <GlobalChatSearch open={globalSearchOpen} onClose={()=>setGlobalSearchOpen(false)} onExited={restoreSearchTrigger} onSelect={selection=>void openGlobalSearchSelection(selection)}/>
   {fullExport&&<BranchPackageExportDialog key={fullExport.branchId} source={fullExport} pending={exportPending} error={exportError} onCancel={()=>setFullExport(undefined)} onConfirm={confirmFullExport}/>}
-  <ConfirmDialog open={runOpen&&Boolean(draft.branchId&&draft.branchId===route.branchId&&!route.global)} title={dirty&&current?.versionId?'Run Published Workflow':'Run Workflow'} confirmLabel={runAccepted?'View Run':runUnconfirmed?'Retry Run Submission':dirty&&current?.versionId?'Run Published Workflow':'Run Workflow'} pendingLabel="Submitting…" pending={run.isPending} error={run.error?.message} confirmDisabled={!runAccepted&&!runUnconfirmed&&Boolean(runUnavailable||runInputError)} maxWidth="sm" onCancel={()=>setRunOpen(false)} onConfirm={submitRun}>
-   <Stack spacing={2} sx={{pt:1}}>
-    {dirty&&current?.versionId&&<Alert severity="info">Run uses published workflow · unpublished edits excluded</Alert>}
-    {runUnconfirmed&&<Alert severity="warning">Submission unconfirmed · retry: same Run Input + key · no separate Run</Alert>}
-    {runAccepted&&<Alert severity="success">Run accepted · unsaved settings retained · open accepted Run when ready</Alert>}
-    {runUnavailable&&!runUnconfirmed&&!runAccepted&&<Alert severity="warning" action={<Button onClick={()=>{setRunOpen(false);setTab('workflow')}}>Open Workflow</Button>}>{runUnavailable}</Alert>}
-    <TextField autoFocus label="Run Input" helperText={runInputError??'Optional Run input · saved variables + schedule unchanged'} error={Boolean(runInputError)} multiline minRows={3} value={input} disabled={run.isPending||runUnconfirmed||runAccepted} onChange={event=>{if(run.isError&&!runUnconfirmed){run.reset();setOccurrenceKey(createClientId())}setInput(event.target.value)}}/>
-   </Stack>
-  </ConfirmDialog>
-  {renameId&&renameId===draft.branchId&&renameId===route.branchId&&!loading&&!openingLink&&<TextInputDialog key={renameId} open title="Rename Workflow" label="Workflow Name" confirmLabel="Apply To Draft" initialValue={draft.definition.name} pending={review.isPending||deploy.isPending} validate={value=>!value.trim()?'Enter a workflow name.':value.trim().length>240?'Use 240 characters or fewer.':undefined} helperText="Review and publish to apply this name." onCancel={()=>setRenameId(undefined)} onConfirm={applyRename}/>}
   {install&&<BranchPackageDialog pkg={install.pkg} branchId={install.branchId} branches={branches.data??[]} engines={engines.data??[]} onClose={()=>setInstall(undefined)} onInstalled={branch=>{if(branch.id!==route.branchId){const accepted=navigate({branchId:branch.id,tab:'workflow'});if(accepted)setInstall(undefined);return accepted}return guard(()=>{setInstall(undefined);void reloadWorkflow(branch.id)},true)}}/>}
-  <Dialog open={Boolean(draft.branchId&&historyBranch===draft.branchId)} onClose={()=>setHistoryBranch(undefined)} fullWidth maxWidth="md"><DialogTitle>Version History</DialogTitle><DialogContent>{error&&<Alert severity="error">{error}</Alert>}<Stack spacing={1}>
-      <Typography color="text.secondary">Restore definition → draft → review → publish</Typography>
-      <WorkspaceQueryError read={workspaceRead(`branch:${draft.branchId}`,"Version History",versions)}/>
-      {versions.isPending?<Typography role="status">Loading version history…</Typography>:!versions.error&&!versions.data?.pages.flat().length&&<Typography color="text.secondary">No published versions yet.</Typography>}{versions.data?.pages.flat().map(version=><Paper variant="outlined" key={version.id} sx={{p:2}}><Stack direction="row" alignItems="center" gap={1} flexWrap="wrap"><Typography sx={{flex:1}}>{new Date(version.createdAt).toLocaleString()}</Typography>{version.id===current?.versionId&&<Chip size="small" label="Deployed"/>}<Button onClick={()=>void versionDefinition(version,false)}>Download Definition</Button><Button onClick={()=>void versionDefinition(version,true)}>Use As Draft</Button></Stack></Paper>)}{versions.hasNextPage&&<Button onClick={()=>void versions.fetchNextPage()}>Load Older Versions</Button>}</Stack></DialogContent><DialogActions><Button onClick={()=>setHistoryBranch(undefined)}>Close</Button></DialogActions></Dialog>
-  <Dialog open={Boolean(preview)} onClose={()=>{if(!deploy.isPending&&!discard.isPending){finishWorkflowLeave();setPreview(undefined)}}} fullWidth maxWidth="md" slotProps={{transition:{onExited:clearReviewPresentation}}}><DialogTitle>Review Deployment</DialogTitle><DialogContent><Stack spacing={2}>{deploy.error&&<Alert severity="error">{deploy.error.message}</Alert>}<Typography>{reviewPresentation?.input.definition.name}</Typography>{reviewPresentation?.result.operations.filter(op=>op.kind!=='unchanged').map((op,i)=><Accordion key={i}><AccordionSummary><Stack direction="row" spacing={1}><Chip label={op.kind==='detach'?'Remove':op.kind==='create'?'Add':'Change'} size="small"/><Typography>{op.resource} · {deploymentOperationLabel(op,reviewPresentation.input.definition,publishedVersion.data?.definition)}</Typography></Stack></AccordionSummary><AccordionDetails>{op.before!==undefined&&<><Typography fontWeight={600}>Before</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto'}}>{op.before}</Typography></>}{op.after!==undefined&&<><Typography fontWeight={600}>After</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto'}}>{op.after}</Typography></>}</AccordionDetails></Accordion>)}{reviewPresentation?.result.operations.some(op=>op.kind==='unchanged')&&<Accordion><AccordionSummary>Unchanged local bindings</AccordionSummary><AccordionDetails>{reviewPresentation.result.operations.filter(op=>op.kind==='unchanged').map((op,i)=><Typography key={i} sx={{overflowWrap:'anywhere'}}>{op.resource} · {deploymentOperationLabel(op,reviewPresentation.input.definition,publishedVersion.data?.definition)}: {op.after??op.before}</Typography>)}</AccordionDetails></Accordion>}{Boolean(current?.versionId)&&reviewPresentation?.result.operations.every(op=>op.kind==='unchanged')&&<Typography>No definition or binding changes.</Typography>}<PublishingEffects notes={reviewPresentation?.result.notes??[]}/></Stack></DialogContent><DialogActions sx={{gap:1,flexWrap:'wrap'}}><Button color="error" sx={{mr:'auto'}} disabled={discardDisabled} onClick={requestDiscard}>Discard Changes</Button><Button disabled={deploy.isPending||discard.isPending} onClick={()=>{finishWorkflowLeave();setPreview(undefined)}}>Back To Editing</Button><Button variant="contained" disabled={!preview||deploy.isPending||discard.isPending||!publicationUnconfirmed&&(advancedDirty||Boolean(current?.versionId)&&preview?.result.operations.every(op=>op.kind==='unchanged'))} onClick={publishChanges}>{deploy.isPending?'Publishing Changes…':'Publish Workflow'}</Button></DialogActions></Dialog>
-  <ConfirmDialog open={Boolean(discardIntent&&discardIntent.branchId===route.branchId&&!route.global)} title={`Discard changes to “${draft.definition.name}”?`} confirmLabel="Discard Changes" pendingLabel="Discarding Changes…" pending={discard.isPending} error={discard.error?.message} onCancel={()=>setDiscardIntent(undefined)} onConfirm={()=>{if(discardIntent)once('discard',()=>discard.mutate(discardIntent))}}>Discard all unpublished workflow edits? Published work and independent settings are kept.</ConfirmDialog>
 
+  {leaveConfirmation}
  </Box></MobileNavigationProvider></PrimaryHeaderActionsProvider></Box></WorkspaceConnectionProvider></WorkspaceRefreshProvider>;
 }

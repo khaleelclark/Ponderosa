@@ -12,7 +12,7 @@ export function branchDefinitionChanges(before:BranchDefinition|undefined,after:
   const a=oldNodes.find(n=>n.id===id),b=newNodes.find(n=>n.id===id),name=b?.label??a?.label??id;
   if(!a||!b)compare('Step',name,a,b);
   else for(const key of new Set([...Object.keys(a),...Object.keys(b)]))if(key!=='id'){
-   const labels:Record<string,string>={source:'Script',instructions:'Agent instructions',predicate:'Condition',target:'Agent target',failure:'Failure policy',branchRef:'Branch dependency',joinId:'Parallel join',inputOrder:'Join input order',label:'Step name'};
+   const labels:Record<string,string>={source:'Script',instructions:'Agent instructions',predicate:'Condition',matchLabel:'If it matches label',otherwiseLabel:'Otherwise label',target:'Agent target',failure:'Failure policy',branchRef:'Branch dependency',joinId:'Parallel join',inputOrder:'Join input order',label:'Step name'};
    compare(labels[key]??`Step ${key}`,name,(a as unknown as Record<string,unknown>)[key],(b as unknown as Record<string,unknown>)[key]);
   }
  }

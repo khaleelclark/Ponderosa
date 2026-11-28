@@ -569,7 +569,7 @@ export class LocalMemoryService{
   this.missingExistingScopes.delete(scope);this.knownScopes.add(scope);
  }
 
- private unusedMemorySignature(agentId:string,chatId:string,runId:string,writeOnlyCopyWitness=false):string{
+ private unusedMemorySignature(agentId:string,chatId:string,runId:string,writeOnlyCopyWitness=false,retirementResetSequence?:number):string{
   this.live();const store=this.ports.store,agent=store.getAgent(agentId),owner=activeChatResourceOwner(store,'agent',agentId);
   if(!agent||!owner||agent.conversationId!==chatId)throw Error('Memory witness owner changed');
   const policies=new CapabilityPolicyStore(store.sqlite),policy=policies.resolveForAgent(agentId,runId);
@@ -579,7 +579,7 @@ export class LocalMemoryService{
      this.coordination.requestSteeringAdmission(runId,agentId,expert.requestId)!=='turn'))throw Error('Temporary agent copy memory witness is not authorized');
   const grant=expert?{readGlobal:false,writeGlobal:false}:this.getGrant(chatId,owner.branchId?'branches':'dev');
   const sourcePolicy=expert?policies.resolveForAgent(expert.sourceAgentId).layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];}):undefined;
-  const reset=(store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) seq FROM events WHERE agent_id=? AND type='session_reset'").get(agentId) as {seq:number}).seq;
+  const reset=(store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) seq FROM events WHERE agent_id=? AND type='session_reset' AND seq<>?").get(agentId,retirementResetSequence??0) as {seq:number}).seq;
   return JSON.stringify([agentId,agent.projectId,chatId,owner.branchId,reset,grant,
    policy.layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];}),...(expert?[expert,sourcePolicy]:[])]);
  }
@@ -605,9 +605,9 @@ export class LocalMemoryService{
  }
  /** Exact per-Run receipts survive a normal restart. Missing, unfinished, or
   * conflicting receipts cannot prove that the provider context is reusable. */
- transitionAuthorization(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string):{signature:string;attempted:boolean}|undefined{
+ transitionAuthorization(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string,retirementResetSequence?:number):{signature:string;attempted:boolean}|undefined{
   try{
-   const db=this.ports.store.sqlite,signature=createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,sourceRunId)).digest('hex');
+   const db=this.ports.store.sqlite,signature=createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,sourceRunId,false,retirementResetSequence)).digest('hex');
    const origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    const source=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    if(!origin||!source||origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token)return undefined;
@@ -645,25 +645,25 @@ export class LocalMemoryService{
    return true;
   })();
  }
- transitionAuthorizationStillValid(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string,allowDirty=false):boolean{
+ transitionAuthorizationStillValid(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string,allowDirty=false,retirementResetSequence?:number):boolean{
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {provider_session_id:string|null}|undefined;
-   if(!source?.provider_session_id||createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,runId)).digest('hex')!==expected)return false;
+   if(!source?.provider_session_id||createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,runId,false,retirementResetSequence)).digest('hex')!==expected)return false;
    const lineageStart=memoryLineageStart(this.ports.store,agentId,chatId,originRunId);
    if(lineageStart===undefined)return false;
    if(!allowDirty&&db.prepare(`SELECT 1 FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
     WHERE r.agent_id=? AND r.fencing_token>=?
     AND r.fencing_token<=(SELECT fencing_token FROM scheduler_runs WHERE id=?) AND e.mutation_epoch<>e.checked_epoch LIMIT 1`)
     .get(agentId,lineageStart,sourceRunId))return false;
-   return this.transitionAuthorization(agentId,chatId,source.provider_session_id,originRunId,sourceRunId)?.signature===expected;
+   return this.transitionAuthorization(agentId,chatId,source.provider_session_id,originRunId,sourceRunId,retirementResetSequence)?.signature===expected;
   }catch{return false;}
  }
- async validateTransitionReads(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string):Promise<boolean>{
-  const pending=this.validateTransitionReadsNow(agentId,chatId,originRunId,sourceRunId,runId,expected);this.calls.add(pending);
+ async validateTransitionReads(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string,retirementResetSequence?:number):Promise<boolean>{
+  const pending=this.validateTransitionReadsNow(agentId,chatId,originRunId,sourceRunId,runId,expected,retirementResetSequence);this.calls.add(pending);
   try{return await pending;}finally{this.calls.delete(pending);}
  }
- private async validateTransitionReadsNow(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string):Promise<boolean>{
-  const valid=()=>this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected,true);
+ private async validateTransitionReadsNow(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string,retirementResetSequence?:number):Promise<boolean>{
+  const valid=()=>this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected,true,retirementResetSequence);
   if(!valid())return false;
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
@@ -681,7 +681,7 @@ export class LocalMemoryService{
     for(const ref of refs){const row=await this.core.database.get(ref.source_id,[ref.scope]);if(!row||this.transitionChunkHash(row)!==ref.content_hash)throw new MemoryDenied('Memory source changed');}
    });
    return valid()&&this.acceptTransitionSourceEpochs(epochs)&&
-    this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected);
+    this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected,false,retirementResetSequence);
   }catch{return false;}
  }
  /** Legacy sessions have no exposure receipts. A later explicit setting of

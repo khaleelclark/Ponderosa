@@ -32,7 +32,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,replayedTreeCallInput,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptTreeRetryDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
-import {readBranchRunCounts,readBranchLiveOutputs,readBranchEffectiveStatuses,branchEffectiveStatusPage,runExitUnprovenSql,BRANCH_EFFECTIVE_STATUSES} from './branch-run-status.js';
+import {readBranchRunCounts,readBranchLiveOutputs,readBranchEffectiveStatuses,branchStatusPage,runExitUnprovenSql} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
 import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
@@ -52,7 +52,7 @@ import {
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
-  type BranchEffectiveStatus,
+  BRANCH_EFFECTIVE_STATUSES, BRANCH_RUN_STATUSES, type BranchRunStatus,
 } from "@ponderosa/core";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
 import { branchKey, branchText,branchGateResolutionOutput, validateBranchBindings, validateBranchDefinition } from "./branch-definition.js";
@@ -461,9 +461,9 @@ export class BranchStore {
     })();
   }
   getBranch(id: string): BranchDto | undefined {
-    const r = this.row('SELECT b.*,t.enabled trigger_enabled FROM branches b LEFT JOIN trigger_definitions t ON t.id=b.trigger_id WHERE b.id=?', id);
+    const r = this.row('SELECT b.*,t.enabled trigger_enabled,t.source_kind trigger_kind,t.next_fire_at FROM branches b LEFT JOIN trigger_definitions t ON t.id=b.trigger_id WHERE b.id=?', id);
     return r && { id: r.id, chatId: r.chat_id, enabled: Boolean(r.enabled), name: r.name, versionId: r.active_version_id, bindingRevisionId: r.binding_revision_id,
-      ...(r.trigger_id ? { triggerId: r.trigger_id, triggerEnabled: Boolean(r.trigger_enabled) } : {}), createdAt: r.created_at };
+      ...(r.trigger_id ? { triggerId: r.trigger_id, triggerEnabled: Boolean(r.trigger_enabled), triggerKind:r.trigger_kind??undefined, nextFireAt:r.next_fire_at??undefined } : {}), createdAt: r.created_at };
   }
   version(branchId: string, versionId: string): BranchVersionDto | undefined {
     const row = this.row("SELECT * FROM branch_versions WHERE branch_id = ? AND id = ?", branchId, versionId);
@@ -497,12 +497,12 @@ export class BranchStore {
     ), active AS MATERIALIZED (
       SELECT branch_id,COUNT(*) n FROM branch_executions WHERE state IN ('queued','running','waiting') GROUP BY branch_id
     )
-      SELECT page.*,t.enabled trigger_enabled,COALESCE(active.n,0) active_executions
+      SELECT page.*,t.enabled trigger_enabled,t.source_kind trigger_kind,t.next_fire_at,COALESCE(active.n,0) active_executions
       FROM page LEFT JOIN trigger_definitions t ON t.id=page.trigger_id LEFT JOIN active ON active.branch_id=page.id
       ORDER BY page.navigation_rank`,options.recency??'[]',JSON.stringify(sort==='custom'?options.order??[]:[]),sort,sort,sort,sort,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]',beforeId??null,options.completeOrganized&&options.ids?-1:options.limit??100);
     const runCounts=readBranchRunCounts(this.sqlite,rows.map(row=>row.id));
     return rows.map(r=>({runCounts:runCounts.get(r.id)!,id:r.id,chatId:r.chat_id,enabled:Boolean(r.enabled),name:r.name,versionId:r.active_version_id,bindingRevisionId:r.binding_revision_id,
-      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled)}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
+      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled),triggerKind:r.trigger_kind??undefined,nextFireAt:r.next_fire_at??undefined}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
   }
   preview(input: DeployBranchRequest): BranchDeploymentPreviewDto {
     const definition=validateBranchDefinition(input.definition),bindings=validateBranchBindings(input.bindings,definition);if(input.chatId)this.chat(input.chatId);
@@ -647,10 +647,11 @@ export class BranchStore {
       return result;
     })();
   }
-  accept(branchId: string, occurrenceKey: string, value: string, now = new Date().toISOString()): BranchExecutionDto {
+  accept(branchId: string, occurrenceKey: string, value: string, now = new Date().toISOString(), expectedVersionId?: string): BranchExecutionDto {
     branchKey(occurrenceKey);
+    if(expectedVersionId!==undefined)branchKey(expectedVersionId);
     const input = branchText(value), hash = payloadHash({ input, source: "manual" });
-    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
+    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual", undefined, expectedVersionId);
   }
   /** Recreate private data owners without an acceptance, budget debit or dispatchable frontier. */
   importRuntimeTree(planId:string,data:import('@ponderosa/core').BranchPortableExecutionTree,plan:import('@ponderosa/core').BranchRuntimeTreePlan,branchMap:Record<string,string>,chatMap:Record<string,string>,agentMap:Record<string,string>,now=new Date().toISOString()) {
@@ -1780,17 +1781,19 @@ export class BranchStore {
     validateHistoricalRequest(request,host.updates.filter(update=>update.row.request_id===request.id).map(update=>update.row).sort((a,b)=>a.resulting_version-b.resulting_version),host);
     return true;
   }
-  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call", reservedId?:string): BranchExecutionDto {
+  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call", reservedId?:string, expectedVersionId?:string): BranchExecutionDto {
     return this.unitTransaction(() => {
-      const prior = this.row("SELECT id, input_hash, admission_source FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
+      const prior = this.row("SELECT id, input_hash, admission_source, version_id FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
       if (prior) {
-        if (prior.input_hash !== hash || prior.admission_source !== admissionSource || reservedId!==undefined&&prior.id!==reservedId) throw new Error("Branch occurrence idempotency conflict");
+        if (prior.input_hash !== hash || prior.admission_source !== admissionSource ||
+          (reservedId!==undefined&&prior.id!==reservedId) || (expectedVersionId!==undefined&&prior.version_id!==expectedVersionId)) throw new Error("Branch occurrence idempotency conflict");
         return this.execution(prior.id)!;
       }
       const branch = this.getBranch(branchId);
       if (!branch) throw new Error("Branch not found");
       if(!branch.enabled || this.row("SELECT deleting FROM branches WHERE id=?",branchId)?.deleting) throw new Error("Branch is disabled");
       if(!branch.versionId)throw new Error('Publish the Branch definition before running it');
+      if(expectedVersionId!==undefined&&branch.versionId!==expectedVersionId)throw new Error('The published workflow version changed. Review the current version before starting a new run.');
       if(branch.chatId)this.chat(branch.chatId);
       if (this.row("SELECT COUNT(*) n FROM branch_executions WHERE branch_id = ? AND state = 'queued'", branchId)!.n >= 1000) throw new Error("Branch pending execution limit reached");
       const definition=this.version(branchId,branch.versionId)!.definition;
@@ -2643,6 +2646,8 @@ export class BranchStore {
     const attempt=this.row(`SELECT a.*,s.path_id,p.step_execution_id AS current_step,p.fork_invocation_id
       FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id WHERE a.id=?`,attemptId);
     const request=attempt?.request_id?this.coordination.getRequest(attempt.request_id):undefined;
+    if(request&&this.coordination.settingsTransitionRequestHold({projectId:request.projectId,requestId:request.id}))
+      return 'The original Agent Request is held for session recovery.';
     const unknown=attempt?.state==='outcome_unknown'||request?.state==='outcome_unknown';
     if(!attempt||(attempt.state!=='failed'&&!unknown&&!this.snapshotRetryAvailable(execution.id,attempt)))return 'Only a failed or uncertain attempt can be retried.';
     if(attempt.current_step!==attempt.step_execution_id||this.row('SELECT 1 FROM branch_attempts WHERE step_execution_id=? AND number>?',attempt.step_execution_id,attempt.number))return 'This Step has already advanced; start a new execution.';
@@ -2687,19 +2692,41 @@ export class BranchStore {
       p.result_json path_result_json`,'branch_map_items m JOIN branch_map_invocations mi ON mi.id=m.map_invocation_id JOIN branch_paths p ON p.id=m.path_id','m','mi.execution_id');
     const nextCursor=Object.values(positions).some(n=>n>0)?Buffer.from(JSON.stringify({executionId:id,positions})).toString('base64url'):undefined;
     const definition=this.definition(execution);
-    return { execution, liveOutputs:readBranchLiveOutputs(this.sqlite,id,attempts.map(attempt=>attempt.id)), ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
+    const attemptDetails=attempts.map(row=>this.attemptDto(execution,definition,row));
+    const attemptsById=new Map(attemptDetails.map(attempt=>[attempt.id,attempt]));
+    const structuredOutput=/^\s*[\[{]/u;
+    let operatorRecordedAttempts:Set<string>|undefined;
+    const technicalScriptOutput=(output?:string,attemptId?:string):boolean=>{
+      if(!attemptId||!output||!structuredOutput.test(output))return false;
+      const evidence=attemptsById.has(attemptId)?attemptsById.get(attemptId)!.scriptEvidence:this.scriptEvidence(attemptId);
+      if(evidence?.stdout!==output||evidence.error)return false;
+      try { JSON.parse(output); } catch { return false; }
+      operatorRecordedAttempts??=new Set(this.rows(`SELECT json_extract(evidence_json,'$.attemptId') attempt_id
+        FROM branch_checkpoints WHERE execution_id=? AND kind='operator_intervention'
+        AND json_extract(evidence_json,'$.action')='resolve_script'`,id).map(row=>row.attempt_id));
+      return !operatorRecordedAttempts.has(attemptId);
+    };
+    // The root path identifies the last sealed result even when its attempt is outside this page.
+    const rootResult=execution.output&&structuredOutput.test(execution.output)&&this.row(`SELECT r.terminal_attempt_id, r.result_json
+      FROM branch_paths p JOIN branch_sealed_results r ON r.id=p.last_result_id
+      WHERE p.execution_id=? AND p.parent_path_id IS NULL`,id);
+    const executionOutputTechnical=Boolean(rootResult&&JSON.parse(rootResult.result_json).output===execution.output&&
+      technicalScriptOutput(execution.output,rootResult.terminal_attempt_id));
+    return { execution, ...(executionOutputTechnical?{executionOutputTechnical:true}:{}), liveOutputs:readBranchLiveOutputs(this.sqlite,id,attempts.map(attempt=>attempt.id)), ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
       sealedResults:sealedResults.map(r=>({id:r.id,executionId:id,pathId:r.path_id,stepExecutionId:r.step_execution_id,terminalAttemptId:r.terminal_attempt_id,result:JSON.parse(r.result_json),contentHash:r.content_hash,createdAt:r.created_at})),
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),
-      steps: steps.map(r => this.stepDto(r)), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
+      steps: steps.map(r => this.stepDto(r,technicalScriptOutput)), attempts: attemptDetails,
       resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...((r.error??this.resourceCompletionError(r))?{error:r.error??this.resourceCompletionError(r)}:{})})),
       paths: paths.map(r => ({ id: r.id, state: r.state, input: r.input_text, ...(r.node_id ? { nodeId: r.node_id } : {}), ...(r.step_execution_id?{stepExecutionId:r.step_execution_id}:{}), ...(r.parent_path_id ? { parentPathId: r.parent_path_id } : {}), ...(r.fork_invocation_id ? { forkInvocationId: r.fork_invocation_id, edgeId: r.edge_id } : {}), ...(r.last_result_id?{lastResultId:r.last_result_id}:{}), ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) })),
       gates: gates.map(r => this.gateDto(execution,definition,r)) };
   }
-  private stepDto(r:Row):BranchStepExecutionDto {
-    const sealed=this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+  private stepDto(r:Row,technicalScriptOutput?:(output?:string,attemptId?:string)=>boolean):BranchStepExecutionDto {
+    const sealed=this.row('SELECT id,terminal_attempt_id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+    const result=r.result_json?JSON.parse(r.result_json) as BranchResult:undefined;
     return {id:r.id,executionId:r.execution_id,stepId:r.step_id,pathId:r.path_id,invocation:r.invocation,state:r.state,input:r.input_text,
-      ...(r.result_json?{result:JSON.parse(r.result_json)}:{}),...(sealed?{sealedResultId:sealed.id}:{})};
+      ...(result?{result}:{}),...(sealed?{sealedResultId:sealed.id}:{}),
+      ...(technicalScriptOutput?.(result?.output,sealed?.terminal_attempt_id)?{resultOutputTechnical:true}:{})};
   }
   private gateDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):BranchGateDto {
     const step=definition.steps.find(step=>step.id===r.step_id);
@@ -2890,16 +2917,18 @@ export class BranchStore {
     const child=this.row('SELECT id,state,version_id FROM branch_executions WHERE parent_attempt_id=?',attemptId);
     return {...(branch?{calledBranch:{id:branch.id,name:branch.name,enabled:branch.enabled!==false}}:{}),...(child?{childExecution:{id:child.id,state:child.state,versionId:child.version_id}}:{})};
   }
-  listExecutions(branchId: string, beforeId?: string, state?: string, mergeFor?:string): BranchExecutionDto[] {
-    const effective=(BRANCH_EFFECTIVE_STATUSES as readonly string[]).includes(state??'');
-    if(state&&!effective&&!['completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
-    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(state)throw new Error('Merge candidates use their own eligible states');}
+  listExecutions(branchId: string, beforeId?: string, state?: string | readonly string[], mergeFor?:string): BranchExecutionDto[] {
+    const filters = typeof state === 'string' ? (state ? [state] : []) : state ?? [];
+    if (!filters.every(value => (BRANCH_RUN_STATUSES as readonly string[]).includes(value))) throw new Error('Invalid execution status filter');
+    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(filters.length)throw new Error('Merge candidates use their own eligible states');}
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
-    const ids=effective?branchEffectiveStatusPage(this.sqlite,branchId,state as BranchEffectiveStatus,before):this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
-      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:state?" AND state = ?":"")+
-      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r=>r.id as string);
-    const statuses=readBranchEffectiveStatuses(this.sqlite,ids);
+    const now = new Date().toISOString();
+    const effective = filters.some(value => (BRANCH_EFFECTIVE_STATUSES as readonly string[]).includes(value));
+    const ids=effective?branchStatusPage(this.sqlite,branchId,filters as readonly BranchRunStatus[],before,now):this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
+      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:filters.length?" AND state IN (SELECT value FROM json_each(?))":"")+
+      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:filters.length?[JSON.stringify(filters)]:[])).map(r=>r.id as string);
+    const statuses=readBranchEffectiveStatuses(this.sqlite,ids,now);
     return ids.map(id=>{const execution=this.execution(id)!,status=statuses.get(id);return status?{...execution,effectiveStatus:status}:execution;});
   }
   /** Global execution membership is canonical, independent of sidebar pages, search and folders. */
@@ -3596,6 +3625,106 @@ export class BranchStore {
       return detail;
     })();
   }
+  savedResultCandidate(executionId:string,stepExecutionId:string):{requestId:string;sourceRunId:string;reportId:string;outputSeq:number;text:string;outputHash:string}|undefined {
+    const execution=this.execution(executionId);
+    if(!execution||!['queued','running','waiting'].includes(execution.state))return;
+    const stepRow=this.row('SELECT step_id FROM branch_step_executions WHERE id=? AND execution_id=?',stepExecutionId,executionId);
+    const step=this.definition(execution).steps.find(item=>item.id===stepRow?.step_id);
+    if(step?.kind!=='agent'||step.requireUserCommunication)return;
+    // Work log segments lack per-Request attribution. Require one submitted Request and a complete output receipt.
+    const rows=this.rows(`SELECT request.id AS requestId,source.id AS sourceRunId,report.id AS reportId,
+        output.first_seq AS outputSeq,json_extract(receipt.payload_json,'$.text') AS outputText
+      FROM branch_executions execution JOIN branch_step_executions step ON step.execution_id=execution.id
+      JOIN branch_paths path ON path.id=step.path_id AND path.step_execution_id=step.id
+      JOIN branch_attempts attempt ON attempt.step_execution_id=step.id
+      JOIN coordination_requests request ON request.id=attempt.request_id
+      JOIN activation_sources report_link ON report_link.source_kind='request' AND report_link.source_id=request.id
+      JOIN agent_activations report ON report.id=report_link.activation_id AND report.project_id=request.project_id
+        AND report.agent_id=request.recipient_agent_id AND report.kind='coordination_request'
+        AND report.scope_key=CASE WHEN request.conversation_id IS NOT NULL THEN 'conversation:'||request.conversation_id
+          ELSE 'agent:'||request.recipient_agent_id END
+      JOIN scheduler_runs source ON source.id=json_extract(report.payload_json,'$.resultRepair.sourceRunId')
+        AND source.project_id=report.project_id AND source.agent_id=report.agent_id AND source.scope_key=report.scope_key
+      JOIN provider_inputs packet ON packet.scheduler_run_id=source.id AND packet.agent_id=source.agent_id
+        AND packet.project_id=source.project_id
+      JOIN run_output_segments output ON output.agent_id=source.agent_id AND output.execution_id=packet.execution_id
+        AND output.event_type='text'
+      JOIN events receipt ON receipt.agent_id=source.agent_id AND receipt.type='agent_output'
+        AND receipt.seq>output.last_seq AND json_extract(receipt.payload_json,'$.executionId')=packet.execution_id
+        AND json_extract(receipt.payload_json,'$.sourceSeqStart')=output.first_seq
+        AND json_extract(receipt.payload_json,'$.sourceSeqEnd')=output.last_seq
+        AND length(CAST(json_extract(receipt.payload_json,'$.text') AS BLOB))=output.canonical_utf8_bytes
+      WHERE execution.id=? AND step.id=? AND execution.cancel_requested=0 AND attempt.cancel_requested=0
+        AND NOT EXISTS(SELECT 1 FROM run_output_segments fragment
+          WHERE fragment.agent_id=output.agent_id AND fragment.execution_id=output.execution_id
+            AND fragment.event_type='text' AND fragment.first_seq<>output.first_seq)
+        AND step.state='waiting' AND attempt.state='waiting' AND request.state IN ('open','in_progress')
+        AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=step.id AND newer.number>attempt.number)
+        AND json_extract(report.payload_json,'$.requestId')=request.id
+        AND source.status='completed' AND source.terminal_at IS NOT NULL AND source.prompt_injection_state='injected'
+        AND report.state IN ('pending','retry_pending') AND EXISTS(SELECT 1 FROM activation_sources hold
+          WHERE hold.activation_id=report.id AND hold.source_kind='settings_transition_reservation_wait')
+        AND EXISTS(SELECT 1 FROM scheduler_run_activations original
+          JOIN activation_sources origin ON origin.activation_id=original.activation_id
+          JOIN agent_activations original_activation ON original_activation.id=original.activation_id
+          JOIN scheduler_prompt_injections delivery ON delivery.run_id=original.run_id AND delivery.kind='turn'
+            AND delivery.state='acknowledged' AND delivery.submitted_at IS NOT NULL AND delivery.acknowledged_at IS NOT NULL
+            AND json_array_length(delivery.activation_ids_json)=1
+            AND json_extract(delivery.activation_ids_json,'$[0]')=original.activation_id
+          WHERE original.run_id=source.id AND original.consumed_at IS NOT NULL
+            AND origin.source_kind='request' AND origin.source_id=request.id
+            AND original_activation.kind='coordination_request' AND original_activation.project_id=request.project_id
+            AND original_activation.agent_id=source.agent_id AND original_activation.scope_key=source.scope_key
+            AND json_extract(original_activation.payload_json,'$.requestId')=request.id
+            AND json_extract(original_activation.payload_json,'$.resultRepair') IS NULL
+            AND NOT EXISTS(SELECT 1 FROM activation_sources unrelated
+              WHERE unrelated.activation_id=original.activation_id AND unrelated.source_kind='request' AND unrelated.source_id<>request.id)
+            AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations shared
+              WHERE shared.run_id=source.id AND shared.activation_id<>original.activation_id)
+            AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections other_delivery
+              WHERE other_delivery.run_id=source.id AND other_delivery.id<>delivery.id
+                AND (other_delivery.state IN ('submitted','acknowledged','outcome_unknown')
+                  OR other_delivery.submitted_at IS NOT NULL OR other_delivery.acknowledged_at IS NOT NULL
+                  OR other_delivery.provider_turn_id IS NOT NULL)))
+        AND NOT EXISTS(SELECT 1 FROM activation_sources other_link JOIN agent_activations other ON other.id=other_link.activation_id
+          WHERE other_link.source_kind='request' AND other_link.source_id=request.id AND other.id<>report.id
+            AND other.state IN ('pending','retry_pending','leased','running'))
+        AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations attachment JOIN scheduler_runs run ON run.id=attachment.run_id
+          WHERE attachment.activation_id=report.id AND (run.terminal_at IS NULL OR ${runExitUnprovenSql('run.id','run.prompt_injection_state')}))
+        AND NOT EXISTS(SELECT 1 FROM context_rollovers rollover
+          JOIN activation_sources link ON link.source_kind='context_rollover' AND link.source_id=rollover.id
+          JOIN agent_activations handoff ON handoff.id=link.activation_id
+          WHERE json_extract(handoff.payload_json,'$.settingsTransition.activationId')=report.id
+            AND (rollover.terminal_at IS NULL OR EXISTS(SELECT 1 FROM scheduler_run_activations held
+              JOIN scheduler_runs run ON run.id=held.run_id WHERE held.activation_id=handoff.id
+                AND (run.terminal_at IS NULL OR ${runExitUnprovenSql('run.id','run.prompt_injection_state')}))))
+      LIMIT 2`,executionId,stepExecutionId);
+    if(rows.length!==1||!Number.isSafeInteger(rows[0]?.outputSeq))return;
+    const {requestId,sourceRunId,reportId,outputSeq,outputText}=rows[0]!;
+    let text:string;
+    try{text=branchText(outputText);}catch{return;}
+    if(!text.trim())return;
+    return {requestId,sourceRunId,reportId,outputSeq,text,outputHash:createHash('sha256').update(text).digest('hex')};
+  }
+
+  recoverSavedResult(executionId:string,stepExecutionId:string,input:{commandKey:string;expectedRevision:number;
+    sourceRunId:string;outputHash:string;disposition:'completed'|'blocked'},
+    now=new Date().toISOString()):BranchExecutionDetailDto {
+    return this.command(executionId,input.commandKey,{stepExecutionId,...input},()=>{
+      const execution=this.execution(executionId);
+      if(execution?.revision!==input.expectedRevision)throw Error('This run changed. Refresh before using its saved result.');
+      const saved=this.savedResultCandidate(executionId,stepExecutionId);
+      if(!saved||saved.sourceRunId!==input.sourceRunId)throw Error('This step no longer has a recoverable saved result.');
+      if(saved.outputHash!==input.outputHash)throw Error('The saved result changed.');
+      const result=this.coordination.recordReviewedBranchResult({requestId:saved.requestId,
+        updateId:`branch-result-recovery:${payloadHash({executionId,stepExecutionId,key:input.commandKey})}`,
+        kind:input.disposition,text:saved.text,sourceRunId:saved.sourceRunId,outputSeq:saved.outputSeq,outputHash:input.outputHash,now});
+      if(result.state!==input.disposition)throw Error('The recovered result could not be recorded.');
+      this.run("UPDATE agent_activations SET state='cancelled',terminal_at=?,updated_at=? WHERE id=?",now,now,saved.reportId);
+      this.checkpoint(executionId,`saved-result:${saved.requestId}`,'saved_agent_result_recovered',
+        {requestId:saved.requestId,sourceRunId:saved.sourceRunId,outputSeq:saved.outputSeq,outputHash:input.outputHash,disposition:input.disposition},now);
+    },now);
+  }
   resolveGate(id: string, input: BranchGateResolution, now = new Date().toISOString()): BranchExecutionDetailDto {
     const gate = this.row("SELECT g.*, s.execution_id, s.path_id, s.step_id, s.input_text FROM branch_gates g JOIN branch_step_executions s ON s.id = g.step_execution_id WHERE g.id = ?", id);
     if (!gate) throw new Error("Gate not found");
@@ -3725,6 +3854,8 @@ export class BranchStore {
           return;
         }
         const request = attempt.request_id ? this.coordination.getRequest(attempt.request_id) : undefined;
+        if(input.action==='retry'&&request&&this.coordination.settingsTransitionRequestHold({projectId:request.projectId,requestId:request.id}))
+          throw Error('The original Agent Request is held for session recovery.');
         const unknown = attempt.state === "outcome_unknown" || request?.state === "outcome_unknown";
         if (attempt.state !== "failed" && !unknown) throw new Error("Only failed or outcome-unknown attempts accept intervention");
         if (unknown && (input.externalEffectsReconciled !== true || attempt.process_identity_json)) throw new Error("Reconcile external effects and drain process authority before intervention");
@@ -3789,7 +3920,7 @@ export class BranchStore {
     for (const run of runs) {
       const key = `branch-cancel:${attempt.id}:${run.id}`;
       if (['failed', 'cancelled'].includes(run.status) && !cleanupOperation(run.id) &&
-          this.coordination.canRetryUninjectedRun(run.id)) continue;
+          this.coordination.canRetryUninjectedRun(run.id) && this.runProcessesExited(run)) continue;
       // A Run that already left leased/running has no live work to interrupt. Its
       // owned cleanup is settled only by observed process exits, never by status alone.
       if (!['leased','running'].includes(run.status) && !cleanupOperation(run.id) && this.runProcessesExited(run)) {
@@ -3848,7 +3979,7 @@ export class BranchStore {
     // Pending original deliveries/notices must not start replacement work after
     // an exclusive cancellation. Shared active work retains its cancellation steering.
     if (settled || runs.every(run => Boolean(cleanupOperation(run.id)) ||
-        (['failed','cancelled'].includes(run.status) && this.coordination.canRetryUninjectedRun(run.id)))) {
+        (['failed','cancelled'].includes(run.status) && this.coordination.canRetryUninjectedRun(run.id) && this.runProcessesExited(run)))) {
       for (const activation of this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
         SELECT DISTINCT a.id FROM agent_activations a JOIN request_source_lineage source ON source.activation_id=a.id
         WHERE source.request_id=? AND a.agent_id=? AND a.kind IN ('coordination_request','coordination_cancelled') AND a.state IN ('pending','retry_pending')`, request.id, request.recipientAgentId)) {

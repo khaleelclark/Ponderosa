@@ -1,3 +1,4 @@
+import {requiredWorkflowImportDirectories} from '@ponderosa/core';
 import type {InstalledBranchPackage,BranchInstallationPreviewDto,BranchBindings,BranchPortableRuntimeData,BranchPortableExecutionTree,BranchRuntimeDataReadback,BranchRuntimeTreeReadback} from '@ponderosa/core';
 export type RuntimePackageData=BranchPortableRuntimeData|BranchPortableExecutionTree;
 export type RuntimePackageReadback=BranchRuntimeDataReadback|BranchRuntimeTreeReadback;
@@ -9,7 +10,17 @@ export const runtimeBranches=(data:RuntimePackageData):BranchPortableRuntimeData
 export function parseTreeBindings(pkg:InstalledBranchPackage,bytes:Record<string,string>):Record<string,BranchBindings>{
  const nodes=pkg.definitionTree?.nodes??[];
  if(Object.keys(bytes).length!==nodes.length)throw Error('Choose bindings for every source Branch');
- return Object.fromEntries(nodes.map(node=>{const value:unknown=JSON.parse(bytes[node.sourceBranchId]??'');if(!object(value)||!object(value.agents)||Object.keys(value.agents).length||value.branches&&(!object(value.branches)||Object.keys(value.branches).length)||!object(value.directories)||!Object.values(value.directories).every(text)||value.engines&&(!object(value.engines)||!Object.values(value.engines).every(text)))throw Error('Each Branch needs directories/Engines; Agent and called-Branch bindings must be empty');return [node.sourceBranchId,value as unknown as BranchBindings];}));
+ return Object.fromEntries(nodes.map(node=>{
+  let value:unknown;
+  try{value=JSON.parse(bytes[node.sourceBranchId]??'')}catch{throw Error(`${node.definition.name}: enter valid destination bindings JSON.`)}
+  if(!object(value)||!object(value.agents)||Object.keys(value.agents).length||value.branches&&(!object(value.branches)||Object.keys(value.branches).length)||!object(value.directories)||value.engines&&(!object(value.engines)||!Object.values(value.engines).every(text)))throw Error(`${node.definition.name}: enter folder and provider bindings, and leave Agent and called Workflow bindings empty.`);
+  const directories=value.directories;
+  for(const ref of new Set([...requiredWorkflowImportDirectories(node.definition,node.chatRefs.length>0),...Object.keys(directories)])){
+   const directory=directories[ref];
+   if(!Object.hasOwn(directories,ref)||typeof directory!=='string'||!directory.trim())throw Error(`${node.definition.name}: enter an existing working folder for “${ref}”.`);
+  }
+  return [node.sourceBranchId,value as unknown as BranchBindings];
+ }));
 }
 export function runtimePackageReviewError(pkg:InstalledBranchPackage,preview:BranchInstallationPreviewDto,branchId?:string,bindings?:Record<string,BranchBindings>):string {
  const d=pkg.executionTree??pkg.runtimeData,r=preview.runtimeDataReview,t=pkg.definitionTree,tr=preview.definitionTreeReview;

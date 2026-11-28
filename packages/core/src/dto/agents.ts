@@ -344,6 +344,8 @@ export interface AgentCreationRecoveryDto {
 }
 export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
 
+export const AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED = "AGENT_CREATION_DRAFT_ATTACHMENTS_EXPIRED";
+
 /** Reuse the existing preset-guidance ceiling for bounded standing setup. */
 export function normalizeAgentRole(value: string | null | undefined): string | undefined {
   if (value === undefined || value === null) return undefined;

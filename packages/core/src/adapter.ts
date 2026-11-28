@@ -486,6 +486,8 @@ export interface EngineCapabilities {
   modelCatalog?: EngineModelCatalog;
   commands: EngineCommand[];
   mcpServers: EngineMcpServer[];
+  /** The adapter could only return fallback entries for the MCP inventory. */
+  mcpInventoryIncomplete?: boolean;
   composerCapabilities: EngineComposerCapability[];
 }
 
@@ -661,6 +663,8 @@ export interface EngineAuthStatus {
 export interface EngineProbeOptions {
   /** One validated sign-in observation reused within this explicit check. */
   authObservation?: EngineAuthStatus;
+  onRuntimeTeardown?: () => void;
+  proactiveAuthRefresh?: boolean;
   onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
   signal?: AbortSignal;
 }

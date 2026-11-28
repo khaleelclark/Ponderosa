@@ -8,7 +8,7 @@ import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 const out=process.env.PONDEROSA_UI_EVIDENCE;assert(out,'Owned evidence directory required');await mkdir(out,{recursive:true});
 const result={kind:'Branch navigation first visibility/open and retained resize state',requests:[],pageErrors:[],cleanup:[]};
 let f,web,browser,context,page;
-const navigation=()=>page.locator('aside[aria-label="Branches Navigation"]');
+const navigation=()=>page.locator('aside[aria-label="Workflows Navigation"]');
 const search=()=>page.getByRole('textbox',{name:'Find A Workflow',exact:true});
 const open=()=>page.getByRole('tabpanel',{name:'Chats',exact:true}).getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
 const close=async()=>{const button=page.getByRole('button',{name:'Close Workspace Navigation',exact:true});await button.click();await button.waitFor({state:'hidden'});};
